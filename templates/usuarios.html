@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block titulo %}Usuarios · NEXORA{% endblock %}
+
+{% block contenido %}
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+  <!-- Alta de usuario -->
+  <section class="lg:col-span-1 card h-fit">
+    <h2 class="text-sm font-semibold text-zinc-100 mb-1">Registrar usuario</h2>
+    <p class="text-xs text-zinc-500 mb-4">Autoriza un nuevo usuario del bot/dashboard.</p>
+
+    <form method="post" action="/usuarios/alta" class="space-y-3">
+      <div>
+        <label class="label-field">Telegram ID</label>
+        <input
+          name="telegram_id" type="number" required
+          placeholder="p.ej. 123456789"
+          class="input-field"
+        >
+        <p class="text-[11px] text-zinc-500 mt-1">Debe ser único: identifica al usuario en Telegram.</p>
+      </div>
+
+      <div>
+        <label class="label-field">Nombre</label>
+        <input
+          name="nombre" type="text" required maxlength="100"
+          placeholder="Nombre completo"
+          class="input-field"
+        >
+      </div>
+
+      <div>
+        <label class="label-field">Rol</label>
+        <select name="rol" required class="input-field">
+          {% for r in roles_usuario %}
+          <option value="{{ r }}">{{ r }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <button type="submit" class="btn-primary w-full">
+        Registrar usuario
+      </button>
+    </form>
+  </section>
+
+  <!-- Listado de usuarios -->
+  <section class="lg:col-span-2 card">
+    <h2 class="text-sm font-semibold text-zinc-100 mb-4">Usuarios registrados</h2>
+
+    <div class="overflow-x-auto -mx-5">
+      <table class="table-shell">
+        <thead>
+          <tr class="table-head-row">
+            <th class="table-head-cell">Código</th>
+            <th class="table-head-cell">Nombre</th>
+            <th class="table-head-cell">Rol</th>
+            <th class="table-head-cell">Grado</th>
+            <th class="table-head-cell">Estado</th>
+            <th class="table-head-cell">CAMARA</th>
+            <th class="table-head-cell">Último acceso</th>
+            <th class="table-head-cell text-right">Acciones</th>
+          </tr>
+        </thead>
+        <tbody class="table-body">
+          {% for u in usuarios %}
+          <tr class="table-row">
+            <td class="table-cell font-mono text-zinc-400">{{ u.codigo_operativo or '—' }}</td>
+            <td class="table-cell text-zinc-100">{{ u.nombre }}</td>
+            <td class="table-cell text-zinc-300">{{ u.rol }}</td>
+            <td class="table-cell text-zinc-400">{{ u.grado_operativo or '—' }}</td>
+            <td class="table-cell">
+              {% if u.estado == 'activo' %}
+              <span class="badge-success">
+                <span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span> Activo
+              </span>
+              {% else %}
+              <span class="badge-neutral">
+                <span class="h-1.5 w-1.5 rounded-full bg-zinc-500"></span> Inactivo
+              </span>
+              {% endif %}
+            </td>
+            <td class="table-cell">
+              {% if u.rol == 'Operador' %}
+                {% if u.estado_camara == 'ACTIVA' %}
+                <span class="badge-success"><span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span> Activa</span>
+                {% elif u.estado_camara == 'EN_ALERTA' %}
+                <span class="badge-warning"><span class="h-1.5 w-1.5 rounded-full bg-amber-400"></span> En alerta</span>
+                {% else %}
+                <span class="badge-danger"><span class="h-1.5 w-1.5 rounded-full bg-red-400"></span> Suspendida</span>
+                {% endif %}
+              {% else %}
+              <span class="text-zinc-600">—</span>
+              {% endif %}
+            </td>
+            <td class="table-cell text-zinc-400 whitespace-nowrap">{{ u.ultimo_acceso or '—' }}</td>
+            <td class="table-cell text-right">
+              <a href="/usuarios/{{ u.id }}" class="btn-secondary btn-sm">Ver ficha</a>
+            </td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="8" class="px-5 py-8 text-center text-zinc-500 text-sm">No hay usuarios registrados todavía.</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+{% endblock %}

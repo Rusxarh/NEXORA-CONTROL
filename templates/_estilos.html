@@ -1,0 +1,16 @@
+{#
+  _estilos.html
+  Hoja de estilos compartida por base.html y login.html vía {% include %}.
+
+  Antes cargaba Tailwind desde https://cdn.tailwindcss.com. Eso requería
+  que el NAVEGADOR tuviera internet; sin conexión producía en consola:
+    - "net::ERR_NAME_NOT_RESOLVED" al no poder resolver el CDN
+    - "Uncaught ReferenceError: tailwind is not defined" (el script nunca
+      cargó, así que la config y las clases @layer nunca se aplicaron)
+
+  Ahora se sirve un único archivo CSS local (static/css/app.css) mediante
+  FastAPI StaticFiles (ver main.py), sin ninguna petición a un host externo.
+  El favicon también se resuelve localmente para evitar el 404 en consola.
+#}
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/css/app.css?v=2">

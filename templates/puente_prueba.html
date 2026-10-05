@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+{% block titulo %}Pre-puente Connector · NEXORA{% endblock %}
+
+{% block contenido %}
+<div class="max-w-2xl mx-auto space-y-6">
+
+  <section class="card">
+    <h2 class="text-sm font-semibold text-zinc-100 mb-1">NEXORA · PRE-PUENTE CONNECTOR</h2>
+    <p class="text-xs text-zinc-500 mb-4">
+      Prueba aislada de comunicación con NEXORA-CONNECTOR. Esta pantalla NO ejecuta RGM ni Judicial:
+      solo envía <span class="font-mono">CONSULTAR_PLACA</span> y muestra la respuesta cruda del Connector.
+    </p>
+
+    <div class="space-y-4">
+      <div>
+        <label class="label-field">ID DEL CONNECTOR</label>
+        <input
+          type="text" id="inputExtensionId"
+          placeholder="ID de la extensión (brave://extensions, modo desarrollador)"
+          autocomplete="off"
+          class="input-field font-mono"
+        >
+      </div>
+
+      <div>
+        <label class="label-field">PLACA</label>
+        <input
+          type="text" id="inputPlacaPuente"
+          placeholder="GCV471"
+          maxlength="6"
+          autocomplete="off"
+          class="input-field font-mono tracking-widest"
+        >
+      </div>
+
+      <button type="button" id="btnConectarConsultar" class="btn-primary">
+        CONECTAR Y CONSULTAR
+      </button>
+    </div>
+  </section>
+
+  <section class="card">
+    <p class="label-field mb-2">RESPUESTA DEL CONNECTOR</p>
+    <pre id="salidaRespuestaConnector" class="text-xs font-mono text-zinc-300 whitespace-pre-wrap">(todavía no se ha enviado ninguna consulta)</pre>
+  </section>
+
+</div>
+
+<script>
+  // PRE-PUENTE WEB → CONNECTOR: usa EXCLUSIVAMENTE chrome.runtime.sendMessage
+  // hacia el ID de extension que el usuario pega manualmente (no se
+  // hardcodea ningun ID). No usa fetch, no usa WebSocket, no hace polling,
+  // no crea ninguna API intermedia: es transporte directo navegador <-> extension.
+  (function () {
+    var CLAVE_EXTENSION_ID = "nexora-connector-id";
+
+    // Esta pantalla de prueba representa UNA sola placa de automovil
+    // colombiano, patron LLLDDD (motos LLLDDX quedan fuera de esta
+    // prueba). No se valida aqui si la placa existe: solo su FORMATO.
+    var PATRON_PLACA_AUTO_PRUEBA = /^[A-Z]{3}[0-9]{3}$/;
+
+    // Enmascarado en vivo: construye el valor permitido caracter por
+    // caracter (3 letras, luego 3 numeros), descartando cualquier
+    // caracter que no corresponda a su posicion y cualquier caracter
+    // extra despues del sexto. Como el campo es un unico input de texto,
+    // esto es lo que garantiza que NUNCA pueda quedar mas de una placa
+    // (completa o parcial) acumulada: escribir una placa nueva completa
+    // sobre el valor anterior (seleccionando todo, o borrando y
+    // retecleando) sustituye el contenido del campo, nunca lo concatena.
+    function filtrarPlacaMientrasEscribe(valorCrudo) {
+      var mayus = (valorCrudo || "").toUpperCase();
+      var resultado = "";
+      for (var i = 0; i < mayus.length && resultado.length < 6; i++) {
+        var c = mayus[i];
+        if (resultado.length < 3) {
+          if (/[A-Z]/.test(c)) resultado += c;
+        } else {
+          if (/[0-9]/.test(c)) resultado += c;
+        }
+      }
+      return resultado;
+    }
+
+    var inputId = document.getElementById("inputExtensionId");
+    var inputPlaca = document.getElementById("inputPlacaPuente");
+    var boton = document.getElementById("btnConectarConsultar");
+    var salida = document.getElementById("salidaRespuestaConnector");
+
+    // Conveniencia de navegador (no es parte del contrato ni se envia a
+    // ningun lado): recuerda el ultimo ID de extension usado en este
+    // mismo navegador, para no tener que pegarlo en cada prueba.
+    try {
+      var idGuardado = localStorage.getItem(CLAVE_EXTENSION_ID);
+      if (idGuardado) inputId.value = idGuardado;
+    } catch (e) { /* localStorage no disponible: sin efecto, se sigue pidiendo manual */ }
+
+    function mostrarSalida(texto) {
+      salida.textContent = texto;
+    }
+
+    // Funcion UNICA de consulta: el boton y la tecla Enter/Intro en el
+    // campo PLACA llaman exactamente a esta misma funcion (ver los dos
+    // addEventListener mas abajo). Nada de su cuerpo cambio respecto al
+    // handler original del boton: solo se le puso nombre para poder
+    // reutilizarla sin duplicar logica.
+    function ejecutarConsulta() {
+      var extensionId = (inputId.value || "").trim();
+      // Normalizacion EXPLICITA de la placa, justo antes de construir el
+      // mensaje: quitar espacios al inicio/final y convertir a mayusculas.
+      // No depende del oninput del campo (que ya la muestra en mayusculas
+      // mientras se escribe): este paso es la garantia real de que lo que
+      // se envia a CONSULTAR_PLACA siempre esta normalizado, sin importar
+      // como haya llegado el valor al input (tecleado, pegado, etc.).
+      var placa = (inputPlaca.value || "").trim().toUpperCase();
+
+      if (!extensionId) {
+        mostrarSalida("ERROR: falta el ID del Connector.");
+        return;
+      }
+      if (!placa) {
+        mostrarSalida("ERROR: falta la placa.");
+        return;
+      }
+      // Regla de esta prueba: solo UNA placa completa, formato LLLDDD
+      // exacto. Una placa incompleta o con formato distinto NO se envia
+      // al Connector (no se valida aqui si existe, solo su formato).
+      if (!PATRON_PLACA_AUTO_PRUEBA.test(placa)) {
+        mostrarSalida(
+          "ERROR: formato invalido. Se espera LLLDDD (3 letras + 3 numeros), ej. GCT953.\n" +
+          "Valor actual: \"" + placa + "\"."
+        );
+        return;
+      }
+
+      if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.sendMessage) {
+        mostrarSalida(
+          "ERROR: chrome.runtime no está disponible en esta página.\n" +
+          "Verifica que NEXORA-CONNECTOR esté cargado en este navegador y que " +
+          "esta URL (" + window.location.origin + ") esté en su 'externally_connectable'."
+        );
+        return;
+      }
+
+      try { localStorage.setItem(CLAVE_EXTENSION_ID, extensionId); } catch (e) { /* sin efecto */ }
+
+      mostrarSalida("Enviando CONSULTAR_PLACA para \"" + placa + "\"...");
+
+      chrome.runtime.sendMessage(
+        extensionId,
+        { accion: "CONSULTAR_PLACA", placa: placa },
+        function (respuesta) {
+          if (chrome.runtime.lastError) {
+            mostrarSalida("ERROR (chrome.runtime.lastError): " + chrome.runtime.lastError.message);
+            return;
+          }
+          if (respuesta === undefined) {
+            mostrarSalida("ERROR: no se recibió ninguna respuesta del Connector.");
+            return;
+          }
+          mostrarSalida(JSON.stringify(respuesta, null, 2));
+        }
+      );
+    }
+
+    // Aplica el enmascarado en cada evento "input" (cubre tecleo, pegado
+    // y arrastrar texto): reemplaza el valor del campo por su version
+    // filtrada, nunca lo concatena.
+    inputPlaca.addEventListener("input", function () {
+      inputPlaca.value = filtrarPlacaMientrasEscribe(inputPlaca.value);
+    });
+
+    boton.addEventListener("click", ejecutarConsulta);
+
+    // Enter/Intro/Return con el foco en PLACA ejecuta EXACTAMENTE la misma
+    // funcion que el boton (ejecutarConsulta), nunca una copia. Como los
+    // campos no viven dentro de un <form>, Enter hoy no dispara ninguna
+    // navegacion por si solo; preventDefault() se deja de forma defensiva
+    // por si el campo alguna vez queda dentro de un form.
+    inputPlaca.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        ejecutarConsulta();
+      }
+    });
+  })();
+</script>
+{% endblock %}

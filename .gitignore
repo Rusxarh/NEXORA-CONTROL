@@ -1,0 +1,18 @@
+# Base de datos real (contiene usuarios, vehiculos, sesiones y logs de
+# auditoria reales -- confirmado por auditoria, nunca debe versionarse)
+*.db
+*.sqlite
+*.sqlite3
+
+# Bytecode Python compilado (regenerable, no es codigo fuente)
+__pycache__/
+*.pyc
+
+# Backups/snapshots comprimidos (uno de ellos demostro contener la DB real
+# empaquetada dentro -- nunca deben versionarse)
+*.zip
+
+# Variables de entorno / secretos (ninguno existe hoy en este proyecto;
+# regla preventiva para si se introduce uno en el futuro)
+.env
+.env.*

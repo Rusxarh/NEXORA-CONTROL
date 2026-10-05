@@ -1,0 +1,29 @@
+{#
+  Barra de secciones compartida por las páginas que forman el módulo
+  único "Gestión Masiva de Placas" (Carga masiva, Baja masiva,
+  Reactivación masiva, Consulta/Estudio masivo). Cada página que la
+  incluye pasa `seccion_activa` ('carga' | 'baja' | 'reactivacion' | 'estudio').
+
+  No crea rutas nuevas: "Carga masiva" sigue siendo /vehiculos/carga-masiva
+  (sin cambios de comportamiento) y "Consulta / Estudio masivo" sigue
+  siendo /gestion-masiva. Baja masiva y Reactivación masiva todavía no
+  están implementadas (ver hoja de ruta): se muestran como parte de la
+  estructura del módulo, pero deshabilitadas, para no crear enlaces
+  muertos ni fingir una funcionalidad que no existe.
+#}
+<div class="flex flex-wrap gap-2 mb-6">
+  <a href="/vehiculos/carga-masiva"
+     class="btn-sm {{ 'btn-primary' if seccion_activa == 'carga' else 'btn-secondary' }}">
+    📥 Carga masiva de placas
+  </a>
+  <span class="btn-sm btn-secondary opacity-50 cursor-not-allowed" title="Próximamente">
+    📤 Baja masiva
+  </span>
+  <span class="btn-sm btn-secondary opacity-50 cursor-not-allowed" title="Próximamente">
+    🔄 Reactivación masiva
+  </span>
+  <a href="/gestion-masiva"
+     class="btn-sm {{ 'btn-primary' if seccion_activa == 'estudio' else 'btn-secondary' }}">
+    🔎 Consulta / Estudio masivo
+  </a>
+</div>

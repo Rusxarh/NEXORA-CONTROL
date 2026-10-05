@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block titulo %}Logs de Auditoría · NEXORA{% endblock %}
+
+{% block contenido %}
+<section class="card">
+  <div class="flex flex-wrap items-end justify-between gap-4 mb-4">
+    <div>
+      <h2 class="text-sm font-semibold text-zinc-100">Historial de auditoría</h2>
+      <p class="text-xs text-zinc-500 mt-0.5">Toda alta o baja queda registrada aquí, con el usuario que la ejecutó.</p>
+    </div>
+
+    <form method="get" action="/auditoria" class="flex flex-wrap items-end gap-2 text-xs">
+      <div>
+        <label class="block text-zinc-400 mb-1">Placa</label>
+        <input name="placa" value="{{ placa }}" type="text" placeholder="Todas"
+               oninput="this.value = this.value.toUpperCase()"
+               class="w-28 input-field font-mono py-1.5">
+      </div>
+      <div>
+        <label class="block text-zinc-400 mb-1">Usuario ID</label>
+        <input name="usuario_id" value="{{ usuario_id }}" type="number" placeholder="Todos"
+               class="w-24 input-field py-1.5">
+      </div>
+      <div>
+        <label class="block text-zinc-400 mb-1">Límite</label>
+        <input name="limite" value="{{ limite }}" type="number" min="1" max="1000"
+               class="w-20 input-field py-1.5">
+      </div>
+      <button type="submit" class="btn-primary btn-sm">
+        Filtrar
+      </button>
+      <a href="/auditoria" class="btn-secondary btn-sm">
+        Limpiar
+      </a>
+    </form>
+  </div>
+
+  <div class="overflow-x-auto -mx-5">
+    <table class="table-shell">
+      <thead>
+        <tr class="table-head-row">
+          <th class="table-head-cell">Fecha y hora</th>
+          <th class="table-head-cell">Usuario ID</th>
+          <th class="table-head-cell">Acción</th>
+          <th class="table-head-cell">Placa afectada</th>
+        </tr>
+      </thead>
+      <tbody class="table-body">
+        {% for log in logs %}
+        <tr class="table-row">
+          <td class="table-cell text-zinc-400 whitespace-nowrap">{{ log.fecha_hora }}</td>
+          <td class="table-cell">{{ log.usuario_id }}</td>
+          <td class="table-cell">
+            {% if log.accion == 'ALTA_PLACA' %}
+            <span class="badge-success">Alta</span>
+            {% elif log.accion == 'BAJA_PLACA' %}
+            <span class="badge-danger">Baja</span>
+            {% else %}
+            <span class="badge-neutral">{{ log.accion }}</span>
+            {% endif %}
+          </td>
+          <td class="table-cell font-mono tracking-wider text-zinc-300">{{ log.placa_afectada or '—' }}</td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="4" class="px-5 py-8 text-center text-zinc-500 text-sm">No hay registros de auditoría para este filtro.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block titulo %}{{ objetivo.nombre }} · Usuarios · NEXORA{% endblock %}
+
+{% block contenido %}
+<div class="max-w-2xl mx-auto space-y-6">
+
+  <div class="flex items-center justify-between gap-3">
+    <h2 class="text-sm font-semibold text-zinc-100">Ficha de usuario</h2>
+    <a href="/usuarios" class="text-xs text-zinc-500 hover:text-zinc-300 transition">← Volver a Usuarios</a>
+  </div>
+
+  <!-- Resumen -->
+  <section class="card">
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-4 pb-4 border-b border-zinc-800">
+      <div>
+        <p class="text-lg font-semibold text-zinc-100">{{ objetivo.nombre }}</p>
+        <p class="text-xs text-zinc-500 mt-0.5">{{ objetivo.rol }}{% if objetivo.username %} · usuario web: {{ objetivo.username }}{% endif %}</p>
+      </div>
+      {% if objetivo.estado == 'activo' %}
+      <span class="badge-success"><span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span> Activo</span>
+      {% else %}
+      <span class="badge-neutral"><span class="h-1.5 w-1.5 rounded-full bg-zinc-500"></span> Inactivo</span>
+      {% endif %}
+    </div>
+
+    <dl class="space-y-2 text-sm">
+      <div class="flex justify-between gap-3">
+        <dt class="text-zinc-500">Código operativo</dt>
+        <dd class="text-zinc-300 font-mono">{{ objetivo.codigo_operativo or '—' }}</dd>
+      </div>
+      <div class="flex justify-between gap-3">
+        <dt class="text-zinc-500">Telegram ID</dt>
+        <dd class="text-zinc-300 font-mono">{{ objetivo.telegram_id }}</dd>
+      </div>
+      <div class="flex justify-between gap-3">
+        <dt class="text-zinc-500">Último acceso</dt>
+        <dd class="text-zinc-300">{{ objetivo.ultimo_acceso or '—' }}</dd>
+      </div>
+      {% if objetivo.rol == 'Operador' %}
+      <div class="flex justify-between gap-3">
+        <dt class="text-zinc-500">Grado Operativo</dt>
+        <dd class="text-zinc-300">{{ objetivo.grado_operativo or 'Sin asignar' }}</dd>
+      </div>
+      <div class="flex justify-between gap-3">
+        <dt class="text-zinc-500">Estado CAMARA</dt>
+        <dd>
+          {% if objetivo.estado_camara == 'ACTIVA' %}
+          <span class="badge-success"><span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span> Activa</span>
+          {% elif objetivo.estado_camara == 'EN_ALERTA' %}
+          <span class="badge-warning"><span class="h-1.5 w-1.5 rounded-full bg-amber-400"></span> En alerta</span>
+          {% else %}
+          <span class="badge-danger"><span class="h-1.5 w-1.5 rounded-full bg-red-400"></span> Suspendida</span>
+          {% endif %}
+        </dd>
+      </div>
+      <div class="flex justify-between gap-3">
+        <dt class="text-zinc-500">Última actividad CAMARA</dt>
+        <dd class="text-zinc-300">{{ objetivo.ultima_actividad_camara or 'Sin actividad registrada' }}</dd>
+      </div>
+      {% endif %}
+    </dl>
+  </section>
+
+  <!-- Activar / Desactivar -->
+  <section class="card">
+    <h3 class="text-sm font-semibold text-zinc-100 mb-1">Estado del usuario</h3>
+    <p class="text-xs text-zinc-500 mb-4">Desactivar NO elimina al usuario ni su historial: es una baja lógica. Invalida sus sesiones web existentes.</p>
+    <form method="post" action="/usuarios/estado">
+      <input type="hidden" name="usuario_id_objetivo" value="{{ objetivo.id }}">
+      <input type="hidden" name="volver_a" value="/usuarios/{{ objetivo.id }}">
+      {% if objetivo.estado == 'activo' %}
+      <input type="hidden" name="nuevo_estado" value="inactivo">
+      <button type="submit" class="btn-danger-soft btn-sm">Desactivar usuario</button>
+      {% else %}
+      <input type="hidden" name="nuevo_estado" value="activo">
+      <button type="submit" class="btn-success-soft btn-sm">Reactivar usuario</button>
+      {% endif %}
+    </form>
+  </section>
+
+  {% if objetivo.rol == 'Operador' %}
+  <!-- Grado Operativo -->
+  <section class="card">
+    <h3 class="text-sm font-semibold text-zinc-100 mb-1">Grado Operativo</h3>
+    <p class="text-xs text-zinc-500 mb-4">
+      Define la antigüedad mínima de placa que este Operador puede trabajar (Grado 1: todas · Grado 2: 15+ días · Grado 3: 30+ días).
+      No modifica ninguna placa: la antigüedad se calcula siempre a partir de su fecha de ingreso.
+    </p>
+    <form method="post" action="/usuarios/{{ objetivo.id }}/grado" class="flex flex-wrap items-end gap-2">
+      <div>
+        <label class="label-field">Grado</label>
+        <select name="grado_operativo" required class="input-field">
+          {% for g in grados_operativos %}
+          <option value="{{ g }}" {% if objetivo.grado_operativo == g %}selected{% endif %}>{{ g }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button type="submit" class="btn-primary btn-sm">Guardar grado</button>
+    </form>
+  </section>
+
+  <!-- CAMARA -->
+  {% if objetivo.estado_camara in ('EN_ALERTA', 'SUSPENDIDA') %}
+  <section class="card">
+    <h3 class="text-sm font-semibold text-zinc-100 mb-1">Servicio CAMARA</h3>
+    <p class="text-xs text-zinc-500 mb-4">
+      Reactivar CAMARA es independiente de reactivar al usuario: el usuario sigue activo, solo se restaura el servicio.
+    </p>
+    <form method="post" action="/usuarios/{{ objetivo.id }}/camara/reactivar" class="flex flex-wrap items-end gap-2">
+      <div class="flex-1">
+        <label class="label-field">Motivo (opcional)</label>
+        <input type="text" name="motivo" class="input-field" placeholder="Ej: confirmado por el Operador">
+      </div>
+      <button type="submit" class="btn-warning-soft btn-sm">▶ Reactivar CAMARA</button>
+    </form>
+  </section>
+  {% endif %}
+  {% endif %}
+
+  <!-- Cambiar contraseña -->
+  {% if objetivo.username %}
+  <section class="card">
+    <h3 class="text-sm font-semibold text-zinc-100 mb-1">Cambiar contraseña</h3>
+    <p class="text-xs text-zinc-500 mb-4">Solo Admin puede hacerlo. Invalida las sesiones web existentes de este usuario. Nunca se muestra ni se registra en auditoría.</p>
+    <form method="post" action="/usuarios/{{ objetivo.id }}/password" class="flex flex-wrap items-end gap-2">
+      <div class="flex-1">
+        <label class="label-field">Nueva contraseña (mínimo 8 caracteres)</label>
+        <input type="password" name="nueva_password" required minlength="8" class="input-field">
+      </div>
+      <button type="submit" class="btn-primary btn-sm">Actualizar contraseña</button>
+    </form>
+  </section>
+  {% endif %}
+
+</div>
+{% endblock %}

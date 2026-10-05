@@ -1,0 +1,649 @@
+{% extends "base.html" %}
+{% block titulo %}Consulta de Placas · NEXORA{% endblock %}
+
+{% block contenido %}
+<div class="max-w-2xl mx-auto space-y-6">
+
+  <section class="card">
+    <h2 class="text-sm font-semibold text-zinc-100 mb-1">Consulta de placas</h2>
+    <p class="text-xs text-zinc-500 mb-4">Busca un vehículo por su placa para ver su información y su historial. Esta página es de solo lectura.</p>
+
+    <form method="get" action="/consulta" class="flex flex-wrap gap-2" autocomplete="off">
+      <div class="relative flex-1" style="min-width:200px;">
+        <input
+          type="text" name="q" id="inputPlacaConsulta" value="{{ q }}"
+          placeholder="Ingrese una placa..."
+          oninput="this.value = this.value.toUpperCase()"
+          autofocus
+          autocomplete="off"
+          class="input-field w-full font-mono tracking-widest"
+        >
+        <ul id="sugerenciasPlaca"
+            class="hidden absolute left-0 right-0 mt-1 z-10 rounded-md border border-zinc-800 bg-zinc-900 shadow-lg overflow-hidden"
+            style="max-height:220px; overflow-y:auto;">
+        </ul>
+      </div>
+      <button type="submit" class="btn-primary btn-sm">Buscar</button>
+      {% if buscado %}
+      <a href="/consulta" class="btn-secondary btn-sm">Nueva consulta</a>
+      {% endif %}
+    </form>
+  </section>
+
+  {% if buscado %}
+    {% if vehiculo %}
+    <section class="card">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-4 pb-4 border-b border-zinc-800">
+        <div>
+          <p class="text-2xl font-mono font-bold tracking-widest text-zinc-100">{{ vehiculo.placa }}</p>
+          <p class="text-xs text-zinc-500 capitalize mt-0.5">{{ vehiculo.tipo_vehiculo }}</p>
+        </div>
+        {% if vehiculo.estado == 'activo' %}
+        <span class="badge-success"><span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span> Activo</span>
+        {% else %}
+        <span class="badge-danger"><span class="h-1.5 w-1.5 rounded-full bg-red-400"></span> Baja</span>
+        {% endif %}
+      </div>
+
+      <dl class="space-y-2 text-sm">
+        <div class="flex justify-between gap-3">
+          <dt class="text-zinc-500">Fecha de ingreso</dt>
+          <dd class="text-zinc-300">{{ vehiculo.fecha_ingreso }}</dd>
+        </div>
+        <div class="flex justify-between gap-3">
+          <dt class="text-zinc-500">Fecha de baja</dt>
+          <dd class="text-zinc-300">{{ vehiculo.fecha_baja or '—' }}</dd>
+        </div>
+        <div class="flex justify-between gap-3">
+          <dt class="text-zinc-500">Registrado por</dt>
+          <dd class="text-zinc-300">{{ vehiculo.registrado_por or '—' }}</dd>
+        </div>
+      </dl>
+
+      {% if vehiculo.observaciones %}
+      <div class="mt-4 pt-4 border-t border-zinc-800">
+        <p class="label-field">Observaciones</p>
+        <p class="text-sm text-zinc-300">{{ vehiculo.observaciones }}</p>
+      </div>
+      {% endif %}
+
+      <div class="mt-4 pt-4 border-t border-zinc-800">
+        <a href="/historial/{{ vehiculo.placa }}" class="btn-secondary btn-sm">Ver historial</a>
+      </div>
+    </section>
+    {% else %}
+    <section class="card text-center py-8">
+      <p class="text-sm text-zinc-400">
+        No se encontró ningún vehículo con la placa <span class="font-mono text-zinc-200">{{ q | trim | upper }}</span>.
+      </p>
+      <a href="/consulta" class="btn-secondary btn-sm inline-flex mt-4">Nueva consulta</a>
+    </section>
+    {% endif %}
+  {% endif %}
+
+  <!-- ============================================================
+       CONSULTA NEXORA — sección INDEPENDIENTE de la ficha local de
+       arriba. No toca el formulario/ficha existente (GET /consulta?q=),
+       que sigue funcionando exactamente igual. Habla directamente con
+       NEXORA-CONNECTOR vía chrome.runtime (sendMessage + connect/Port),
+       usando EXACTAMENTE el contrato ya validado en /puente, sin
+       inventar ningún estado ni campo nuevo del Connector.
+  ============================================================ -->
+  <section class="card">
+    <h2 class="text-sm font-semibold text-zinc-100 mb-1">CONSULTA NEXORA</h2>
+    <p class="text-xs text-zinc-500 mb-4">Consulta en vivo contra NEXORA-CONNECTOR (RGM + Judicial). Independiente de la ficha local de arriba.</p>
+
+    <div class="space-y-3">
+      <div>
+        <label class="label-field">Placa</label>
+        <input
+          type="text" id="nexoraInputPlaca"
+          maxlength="6" autocomplete="off"
+          placeholder="GCT953"
+          class="input-field font-mono tracking-widest"
+        >
+      </div>
+
+      <div class="flex flex-wrap gap-2">
+        <button type="button" id="nexoraBtnConsultar" class="btn-primary">CONSULTAR RGM + JUDICIAL</button>
+        <button type="button" id="nexoraBtnReconectar" class="btn-secondary hidden">RECONECTAR</button>
+      </div>
+
+      <div>
+        <p class="label-field mb-1">Estado</p>
+        <p id="nexoraEstadoTexto" class="text-sm text-zinc-300">Sin consulta activa.</p>
+        <p id="nexoraEstadoTipoReal" class="text-[11px] text-zinc-600 font-mono mt-0.5"></p>
+      </div>
+    </div>
+  </section>
+
+  <section class="card hidden" id="nexoraSeccionRgm">
+    <h2 class="text-sm font-semibold text-zinc-100 mb-3">DATOS RGM</h2>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+      <div>
+        <p class="label-field mb-1">Deudor / Garante</p>
+        <dl class="space-y-1">
+          <div class="flex justify-between gap-2"><dt class="text-zinc-500">Nombre</dt><dd id="nexoraRgmNombre" class="text-zinc-200 text-right"></dd></div>
+          <div class="flex justify-between gap-2"><dt class="text-zinc-500">Tipo identificación</dt><dd id="nexoraRgmTipoId" class="text-zinc-200 text-right"></dd></div>
+          <div class="flex justify-between gap-2"><dt class="text-zinc-500">Número identificación</dt><dd id="nexoraRgmNumeroId" class="text-zinc-200 text-right"></dd></div>
+          <div class="flex justify-between gap-2"><dt class="text-zinc-500">Ciudad</dt><dd id="nexoraRgmCiudad" class="text-zinc-200 text-right"></dd></div>
+        </dl>
+      </div>
+      <div>
+        <p class="label-field mb-1">Acreedor</p>
+        <dl class="space-y-1">
+          <div class="flex justify-between gap-2"><dt class="text-zinc-500">Razón social</dt><dd id="nexoraRgmAcreedor" class="text-zinc-200 text-right"></dd></div>
+        </dl>
+      </div>
+      <div class="sm:col-span-2">
+        <p class="label-field mb-1">Vehículo</p>
+        <dl class="space-y-1">
+          <div class="flex justify-between gap-2"><dt class="text-zinc-500">Tipo de bien</dt><dd id="nexoraVehTipoBien" class="text-zinc-200 text-right"></dd></div>
+          <div class="flex justify-between gap-2"><dt class="text-zinc-500">Marca</dt><dd id="nexoraVehMarca" class="text-zinc-200 text-right"></dd></div>
+          <div class="flex justify-between gap-2"><dt class="text-zinc-500">Fabricante</dt><dd id="nexoraVehFabricante" class="text-zinc-200 text-right"></dd></div>
+          <div class="flex justify-between gap-2"><dt class="text-zinc-500">Modelo</dt><dd id="nexoraVehModelo" class="text-zinc-200 text-right"></dd></div>
+          <div class="flex justify-between gap-2"><dt class="text-zinc-500">Placa</dt><dd id="nexoraVehPlaca" class="text-zinc-200 text-right font-mono"></dd></div>
+          <div class="flex justify-between gap-2"><dt class="text-zinc-500">Número serial</dt><dd id="nexoraVehSerial" class="text-zinc-200 text-right"></dd></div>
+          <div class="flex justify-between gap-2"><dt class="text-zinc-500">Tipo servicio</dt><dd id="nexoraVehServicio" class="text-zinc-200 text-right"></dd></div>
+          <div class="flex justify-between gap-2"><dt class="text-zinc-500">Descripción</dt><dd id="nexoraVehDescripcion" class="text-zinc-200 text-right"></dd></div>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <section class="card hidden" id="nexoraSeccionJudicial">
+    <h2 class="text-sm font-semibold text-zinc-100 mb-3">PROCESOS JUDICIALES</h2>
+    <p class="text-xs text-zinc-500 mb-3">Nombre buscado: <span id="nexoraNombreBuscado" class="text-zinc-300 font-medium"></span></p>
+    <div id="nexoraListaProcesos" class="space-y-2"></div>
+  </section>
+
+  <section class="card hidden" id="nexoraSeccionDetalle">
+    <h2 class="text-sm font-semibold text-zinc-100 mb-3">DETALLE / ACTUACIONES</h2>
+    <dl class="space-y-1 text-sm mb-4">
+      <div class="flex justify-between gap-2"><dt class="text-zinc-500">Radicado seleccionado</dt><dd id="nexoraDetalleRadicado" class="text-zinc-200 text-right font-mono"></dd></div>
+      <div class="flex justify-between gap-2"><dt class="text-zinc-500">Estado</dt><dd id="nexoraDetalleEstado" class="text-zinc-200 text-right"></dd></div>
+    </dl>
+    <p class="label-field mb-1">Actuaciones</p>
+    <div class="overflow-x-auto">
+      <table class="table-shell">
+        <thead>
+          <tr class="table-head-row">
+            <th class="table-head-cell">Fecha actuación</th>
+            <th class="table-head-cell">Actuación</th>
+            <th class="table-head-cell">Anotación</th>
+            <th class="table-head-cell">Inicia término</th>
+            <th class="table-head-cell">Finaliza término</th>
+            <th class="table-head-cell">Fecha registro</th>
+          </tr>
+        </thead>
+        <tbody id="nexoraCuerpoActuaciones" class="table-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+</div>
+
+<script>
+  // Autocompletado de Consulta: busca SOLO contra la base real (/consulta/autocompletar),
+  // sin crear datos nuevos, sin ejecutar RGM ni Judicial. Si la peticion falla o la
+  // respuesta no es JSON valido (ej. sesion expirada -> redirect a /login), se ignora
+  // silenciosamente y el formulario normal (submit) sigue funcionando igual que siempre.
+  (function () {
+    var input = document.getElementById("inputPlacaConsulta");
+    var lista = document.getElementById("sugerenciasPlaca");
+    var controlador = null;
+    var temporizador = null;
+
+    function ocultar() {
+      lista.classList.add("hidden");
+      lista.innerHTML = "";
+    }
+
+    function pintar(coincidencias) {
+      lista.innerHTML = "";
+      if (!coincidencias || coincidencias.length === 0) {
+        ocultar();
+        return;
+      }
+      coincidencias.forEach(function (item) {
+        var li = document.createElement("li");
+        li.className = "px-3 py-2 text-sm font-mono cursor-pointer hover:bg-zinc-800 flex items-center justify-between gap-2";
+        var badge = item.estado === "activo"
+          ? '<span class="badge-success text-[10px]">Activo</span>'
+          : '<span class="badge-danger text-[10px]">Baja</span>';
+        li.innerHTML = '<span class="text-zinc-100">' + item.placa + '</span>' + badge;
+        li.addEventListener("click", function () {
+          input.value = item.placa;
+          ocultar();
+          input.form.submit();
+        });
+        lista.appendChild(li);
+      });
+      lista.classList.remove("hidden");
+    }
+
+    input.addEventListener("input", function () {
+      var valor = input.value.trim();
+      clearTimeout(temporizador);
+
+      if (!valor) {
+        ocultar();
+        return;
+      }
+
+      temporizador = setTimeout(function () {
+        if (controlador) controlador.abort();
+        controlador = new AbortController();
+
+        fetch("/consulta/autocompletar?q=" + encodeURIComponent(valor), { signal: controlador.signal })
+          .then(function (resp) { return resp.json(); })
+          .then(function (datos) { pintar(datos.coincidencias); })
+          .catch(function () { /* sesion expirada u otro fallo: no romper el formulario */ });
+      }, 200);
+    });
+
+    document.addEventListener("click", function (e) {
+      if (e.target !== input) ocultar();
+    });
+  })();
+</script>
+
+<script>
+  // CONSULTA NEXORA — habla con NEXORA-CONNECTOR vía chrome.runtime.
+  // Seccion COMPLETAMENTE INDEPENDIENTE del script de arriba (ficha
+  // local / autocompletado): no comparte variables, no toca el <form>
+  // ni el input "q" de la ficha local. Mismo contrato ya validado en
+  // /puente: sendMessage (inicio) + connect/Port (eventos posteriores).
+  (function () {
+    // ID de la extension, constante claramente identificada (seccion 3
+    // del encargo). Si la extension se vuelve a cargar desde otra ruta
+    // en el futuro, este es el UNICO lugar que habria que actualizar.
+    var EXTENSION_ID_NEXORA_CONNECTOR = "ffmpfdlipjjodljhkheemiajmfjogefb";
+    var CLAVE_CONSULTA_ACTIVA = "nexora-consulta-activa";
+    var ESTADOS_TERMINALES = ["CONSULTA_COMPLETADA", "CONSULTA_ERROR", "CONSULTA_CANCELADA"];
+
+    var elInputPlaca = document.getElementById("nexoraInputPlaca");
+    var elBtnConsultar = document.getElementById("nexoraBtnConsultar");
+    var elBtnReconectar = document.getElementById("nexoraBtnReconectar");
+    var elEstadoTexto = document.getElementById("nexoraEstadoTexto");
+    var elEstadoTipoReal = document.getElementById("nexoraEstadoTipoReal");
+    var elSeccionRgm = document.getElementById("nexoraSeccionRgm");
+    var elSeccionJudicial = document.getElementById("nexoraSeccionJudicial");
+    var elSeccionDetalle = document.getElementById("nexoraSeccionDetalle");
+    var elListaProcesos = document.getElementById("nexoraListaProcesos");
+    var elNombreBuscado = document.getElementById("nexoraNombreBuscado");
+    var elDetalleRadicado = document.getElementById("nexoraDetalleRadicado");
+    var elDetalleEstado = document.getElementById("nexoraDetalleEstado");
+    var elCuerpoActuaciones = document.getElementById("nexoraCuerpoActuaciones");
+
+    var consultaIdActual = null;
+    var placaOrigenActual = null;
+    var ultimoEstadoConocido = null;
+    var puertoActivo = null;
+
+    // --- utilidades --------------------------------------------------
+
+    // Seccion 23 (seguridad): SIEMPRE textContent para datos del
+    // Connector, nunca innerHTML con esos valores.
+    function usarTexto(el, valor) {
+      if (!el) return;
+      el.textContent = (valor === null || valor === undefined || valor === "") ? "No disponible" : String(valor);
+    }
+
+    function guardarConsultaActiva(consultaId, placaOrigen) {
+      try {
+        localStorage.setItem(CLAVE_CONSULTA_ACTIVA, JSON.stringify({ consultaId: consultaId, placaOrigen: placaOrigen }));
+      } catch (e) { /* sin efecto: la consulta sigue viva en el Connector, solo no se podra recuperar tras recargar */ }
+    }
+
+    function leerConsultaActiva() {
+      try {
+        var crudo = localStorage.getItem(CLAVE_CONSULTA_ACTIVA);
+        return crudo ? JSON.parse(crudo) : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function limpiarConsultaActiva() {
+      try { localStorage.removeItem(CLAVE_CONSULTA_ACTIVA); } catch (e) {}
+    }
+
+    // Enmascarado LLLDDD en vivo: mismo patron ya probado en /puente
+    // (3 letras, luego 3 numeros), reutilizado tal cual.
+    function filtrarPlacaMientrasEscribe(valorCrudo) {
+      var mayus = (valorCrudo || "").toUpperCase();
+      var resultado = "";
+      for (var i = 0; i < mayus.length && resultado.length < 6; i++) {
+        var c = mayus[i];
+        if (resultado.length < 3) {
+          if (/[A-Z]/.test(c)) resultado += c;
+        } else {
+          if (/[0-9]/.test(c)) resultado += c;
+        }
+      }
+      return resultado;
+    }
+    elInputPlaca.addEventListener("input", function () {
+      elInputPlaca.value = filtrarPlacaMientrasEscribe(elInputPlaca.value);
+    });
+
+    // --- render --------------------------------------------------------
+
+    function renderizarRgm(rgm) {
+      if (!rgm) { elSeccionRgm.classList.add("hidden"); return; }
+      var deudor = rgm.deudor_garante || {};
+      var acreedor = rgm.acreedor || {};
+      var vehiculo = rgm.vehiculo || {};
+      usarTexto(document.getElementById("nexoraRgmNombre"), deudor.nombre);
+      usarTexto(document.getElementById("nexoraRgmTipoId"), deudor.tipo_identificacion);
+      usarTexto(document.getElementById("nexoraRgmNumeroId"), deudor.numero_identificacion);
+      usarTexto(document.getElementById("nexoraRgmCiudad"), deudor.ciudad);
+      usarTexto(document.getElementById("nexoraRgmAcreedor"), acreedor.razon_social);
+      usarTexto(document.getElementById("nexoraVehTipoBien"), vehiculo.tipo_bien);
+      usarTexto(document.getElementById("nexoraVehMarca"), vehiculo.marca);
+      usarTexto(document.getElementById("nexoraVehFabricante"), vehiculo.fabricante);
+      usarTexto(document.getElementById("nexoraVehModelo"), vehiculo.modelo);
+      usarTexto(document.getElementById("nexoraVehPlaca"), vehiculo.placa);
+      usarTexto(document.getElementById("nexoraVehSerial"), vehiculo.numero_serial);
+      usarTexto(document.getElementById("nexoraVehServicio"), vehiculo.tipo_servicio);
+      usarTexto(document.getElementById("nexoraVehDescripcion"), vehiculo.descripcion_bien);
+      elSeccionRgm.classList.remove("hidden");
+    }
+
+    // Construye el bloque de sujetos procesales (dato del Connector:
+    // SIEMPRE textContent, nunca innerHTML). Si el arreglo viene vacio
+    // (proceso privado sin datos expuestos, o simplemente no disponibles),
+    // muestra el aviso en vez de inventar un sujeto.
+    function crearElementoSujetos(sujetosProcesales) {
+      var contenedor = document.createElement("div");
+      contenedor.className = "mt-2 space-y-0.5";
+
+      if (!sujetosProcesales || sujetosProcesales.length === 0) {
+        var aviso = document.createElement("p");
+        aviso.className = "text-xs text-zinc-500";
+        aviso.textContent = "Sujetos procesales no disponibles";
+        contenedor.appendChild(aviso);
+        return contenedor;
+      }
+
+      sujetosProcesales.forEach(function (sujeto) {
+        var linea = document.createElement("p");
+        linea.className = "text-xs text-zinc-400";
+
+        var elRol = document.createElement("span");
+        elRol.className = "text-zinc-500";
+        elRol.textContent = (sujeto.rol || "Sujeto") + ": ";
+
+        var elNombre = document.createElement("span");
+        elNombre.className = "text-zinc-300";
+        elNombre.textContent = sujeto.nombre || "No disponible";
+
+        linea.appendChild(elRol);
+        linea.appendChild(elNombre);
+        contenedor.appendChild(linea);
+      });
+
+      return contenedor;
+    }
+
+    function renderizarListadoProcesos(judicial) {
+      if (!judicial || !judicial.procesos) { elSeccionJudicial.classList.add("hidden"); return; }
+      usarTexto(elNombreBuscado, judicial.nombreBuscado);
+      elListaProcesos.innerHTML = ""; // seccion propia, sin datos del Connector insertados como HTML
+
+      // Seccion 13 (encargo anterior): orden recibido, sin ordenar/
+      // modificar/eliminar ningun proceso, sea cual sea su estado.
+      judicial.procesos.forEach(function (proceso) {
+        var fila = document.createElement("div");
+        fila.className = "border border-zinc-800 rounded-md px-3 py-2";
+
+        var encabezado = document.createElement("div");
+        encabezado.className = "flex items-center justify-between gap-3";
+
+        var elRadicado = document.createElement("span");
+        elRadicado.className = "font-mono text-sm text-zinc-200";
+        elRadicado.textContent = proceso.radicado; // textContent: dato del Connector
+
+        var elAccion;
+        if (proceso.estado === "PROCESO_PRIVADO") {
+          // Solo PROCESO_ABRIBLE puede tener boton SELECCIONAR (seccion 4
+          // del encargo) -- privado y no-identificado nunca lo tienen.
+          elAccion = document.createElement("span");
+          elAccion.className = "badge-neutral";
+          elAccion.textContent = "🔒 PROCESO PRIVADO";
+        } else if (proceso.estado === "PROCESO_ABRIBLE") {
+          elAccion = document.createElement("button");
+          elAccion.type = "button";
+          elAccion.className = "btn-secondary btn-sm nexora-btn-seleccionar";
+          elAccion.textContent = "SELECCIONAR";
+          elAccion.addEventListener("click", function () {
+            seleccionarRadicado(proceso.radicado);
+          });
+        } else {
+          // RESULTADO_NO_IDENTIFICADO (o cualquier otro valor no previsto):
+          // se muestra para diagnostico, nunca seleccionable.
+          elAccion = document.createElement("span");
+          elAccion.className = "badge-neutral";
+          elAccion.textContent = proceso.estado || "DESCONOCIDO";
+        }
+
+        encabezado.appendChild(elRadicado);
+        encabezado.appendChild(elAccion);
+        fila.appendChild(encabezado);
+        fila.appendChild(crearElementoSujetos(proceso.sujetosProcesales));
+
+        elListaProcesos.appendChild(fila);
+      });
+
+      elSeccionJudicial.classList.remove("hidden");
+    }
+
+    function deshabilitarBotonesSeleccionar() {
+      var botones = elListaProcesos.querySelectorAll(".nexora-btn-seleccionar");
+      for (var i = 0; i < botones.length; i++) botones[i].disabled = true;
+    }
+
+    function renderizarDetalleActuaciones(judicial) {
+      if (!judicial || !judicial.procesoSeleccionado) { elSeccionDetalle.classList.add("hidden"); return; }
+      var sel = judicial.procesoSeleccionado;
+      usarTexto(elDetalleRadicado, sel.radicado);
+      usarTexto(elDetalleEstado, sel.estado);
+
+      elCuerpoActuaciones.innerHTML = "";
+      var actuaciones = sel.actuaciones || [];
+      actuaciones.forEach(function (act) {
+        var fila = document.createElement("tr");
+        ["fecha_actuacion", "actuacion", "anotacion", "fecha_inicia_termino", "fecha_finaliza_termino", "fecha_registro"].forEach(function (campo) {
+          var celda = document.createElement("td");
+          celda.className = "table-cell";
+          celda.textContent = (act[campo] === null || act[campo] === undefined || act[campo] === "") ? "No disponible" : act[campo];
+          fila.appendChild(celda);
+        });
+        elCuerpoActuaciones.appendChild(fila);
+      });
+
+      elSeccionDetalle.classList.remove("hidden");
+    }
+
+    // --- Port / eventos del Connector -----------------------------------
+
+    function abrirPuerto(consultaId) {
+      if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.connect) {
+        elEstadoTexto.textContent = "NEXORA-CONNECTOR no está disponible en este navegador.";
+        return;
+      }
+      var puerto;
+      try {
+        puerto = chrome.runtime.connect(EXTENSION_ID_NEXORA_CONNECTOR, { name: consultaId });
+      } catch (e) {
+        elEstadoTexto.textContent = "NEXORA-CONNECTOR no está disponible en este navegador.";
+        return;
+      }
+      puertoActivo = puerto;
+      elBtnReconectar.classList.add("hidden");
+
+      puerto.onMessage.addListener(manejarEventoConnector);
+      puerto.onDisconnect.addListener(function () {
+        puertoActivo = null;
+        // Seccion 11: NUNCA crear una consulta nueva automaticamente.
+        if (ultimoEstadoConocido && ESTADOS_TERMINALES.indexOf(ultimoEstadoConocido) !== -1) return;
+        elEstadoTexto.textContent = "Conexión con NEXORA-CONNECTOR interrumpida.";
+        elBtnReconectar.classList.remove("hidden");
+      });
+    }
+
+    function reconectar() {
+      if (!consultaIdActual) return;
+      abrirPuerto(consultaIdActual);
+    }
+    elBtnReconectar.addEventListener("click", reconectar);
+
+    function manejarEventoConnector(evento) {
+      if (!evento) return;
+      // Seccion 8 (correlacion): si el evento trae consultaId, DEBE
+      // coincidir con la consulta que esta mostrando esta pantalla. Los
+      // errores de conexion inicial (ej. CONSULTA_ID_DESCONOCIDO) no
+      // llevan consultaId -- se aceptan igual porque solo pueden llegar
+      // por ESTE puerto, dedicado exclusivamente a esta consulta.
+      if (evento.consultaId && evento.consultaId !== consultaIdActual) return;
+
+      ultimoEstadoConocido = evento.tipo;
+      elEstadoTipoReal.textContent = "tipo real: " + evento.tipo;
+
+      var consulta = evento.consulta || null;
+      if (consulta) {
+        renderizarRgm(consulta.rgm);
+        renderizarListadoProcesos(consulta.judicial);
+        renderizarDetalleActuaciones(consulta.judicial);
+      }
+
+      switch (evento.tipo) {
+        case "RECIBIDA":
+          elEstadoTexto.textContent = "Consulta recibida por el Connector.";
+          break;
+        case "RGM_EN_PROCESO":
+          elEstadoTexto.textContent = "Consultando RGM...";
+          break;
+        case "RGM_COMPLETADO":
+          elEstadoTexto.textContent = "RGM completado.";
+          break;
+        case "RGM_INCOMPLETO":
+          elEstadoTexto.textContent = "RGM devolvió datos incompletos.";
+          break;
+        case "JUDICIAL_EN_PROCESO":
+          elEstadoTexto.textContent = "Buscando en Consulta Judicial...";
+          break;
+        case "LISTADO_JUDICIAL_ENTREGADO":
+          elEstadoTexto.textContent = "Listado de procesos recibido.";
+          break;
+        case "ESPERANDO_SELECCION":
+          elEstadoTexto.textContent = "Esperando selección de un radicado.";
+          break;
+        case "RADICADO_ABRIENDO":
+          elEstadoTexto.textContent = "Abriendo el radicado seleccionado...";
+          deshabilitarBotonesSeleccionar();
+          break;
+        case "PROCESO_PRIVADO":
+          elEstadoTexto.textContent = "El proceso seleccionado es privado: no se puede abrir su detalle.";
+          break;
+        case "DETALLE_JUDICIAL_ENTREGADO":
+          elEstadoTexto.textContent = "Detalle del proceso recibido.";
+          break;
+        case "ACTUACIONES_ENTREGADAS":
+          elEstadoTexto.textContent = "Actuaciones recibidas.";
+          break;
+        case "CONSULTA_COMPLETADA":
+          elEstadoTexto.textContent = "CONSULTA COMPLETADA.";
+          limpiarConsultaActiva();
+          break;
+        case "CONSULTA_ERROR":
+          elEstadoTexto.textContent = "CONSULTA_ERROR" + (evento.motivo ? (" — " + evento.motivo) : "") +
+            (consulta && consulta.errores && consulta.errores.length ? (" — " + consulta.errores.join(" | ")) : "");
+          limpiarConsultaActiva();
+          break;
+        case "CONSULTA_CANCELADA":
+          elEstadoTexto.textContent = "Consulta cancelada.";
+          limpiarConsultaActiva();
+          break;
+        default:
+          elEstadoTexto.textContent = "Estado: " + evento.tipo;
+      }
+    }
+
+    // --- seleccion de radicado -------------------------------------------
+
+    function seleccionarRadicado(radicado) {
+      if (!puertoActivo) {
+        elEstadoTexto.textContent = "No hay conexión activa con el Connector. Usa RECONECTAR.";
+        return;
+      }
+      deshabilitarBotonesSeleccionar();
+      try {
+        puertoActivo.postMessage({ accion: "SELECCIONAR_RADICADO", radicado: radicado });
+      } catch (e) {
+        elEstadoTexto.textContent = "NEXORA-CONNECTOR no está disponible en este navegador.";
+      }
+    }
+
+    // --- inicio de una consulta nueva ------------------------------------
+
+    function iniciarConsultaNexora() {
+      // Seccion 12: no iniciar dos consultas simultaneas desde esta
+      // interfaz.
+      if (consultaIdActual && ultimoEstadoConocido && ESTADOS_TERMINALES.indexOf(ultimoEstadoConocido) === -1) {
+        elEstadoTexto.textContent = "Ya existe una consulta NEXORA en curso (consultaId: " + consultaIdActual + "). Espera a que termine.";
+        return;
+      }
+
+      var placa = (elInputPlaca.value || "").trim().toUpperCase();
+      if (!placa) {
+        elEstadoTexto.textContent = "Ingresa una placa para consultar.";
+        return;
+      }
+
+      if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.sendMessage) {
+        elEstadoTexto.textContent = "NEXORA-CONNECTOR no está disponible en este navegador.";
+        return;
+      }
+
+      elEstadoTexto.textContent = "Enviando placa a NEXORA-CONNECTOR...";
+
+      chrome.runtime.sendMessage(
+        EXTENSION_ID_NEXORA_CONNECTOR,
+        { accion: "CONSULTAR_PLACA", placa: placa },
+        function (respuesta) {
+          if (chrome.runtime.lastError) {
+            elEstadoTexto.textContent = "NEXORA-CONNECTOR no está disponible en este navegador.";
+            return;
+          }
+          if (!respuesta || !respuesta.ok) {
+            elEstadoTexto.textContent = "El Connector rechazó la solicitud" + (respuesta && respuesta.motivo ? (": " + respuesta.motivo) : ".");
+            return;
+          }
+
+          consultaIdActual = respuesta.consultaId;
+          placaOrigenActual = respuesta.placa;
+          ultimoEstadoConocido = respuesta.estado;
+          guardarConsultaActiva(consultaIdActual, placaOrigenActual);
+          abrirPuerto(consultaIdActual);
+        }
+      );
+    }
+    elBtnConsultar.addEventListener("click", iniciarConsultaNexora);
+
+    // --- reconexion al cargar la pagina (seccion 10) ---------------------
+
+    (function intentarRecuperarConsultaActiva() {
+      var guardada = leerConsultaActiva();
+      if (!guardada || !guardada.consultaId) return;
+
+      consultaIdActual = guardada.consultaId;
+      placaOrigenActual = guardada.placaOrigen;
+      elInputPlaca.value = guardada.placaOrigen || "";
+      elEstadoTexto.textContent = "Consulta existente recuperada (consultaId: " + guardada.consultaId + "). Conectando...";
+      abrirPuerto(guardada.consultaId);
+    })();
+  })();
+</script>
+{% endblock %}

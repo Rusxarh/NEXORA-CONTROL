@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block titulo %}Carga masiva de placas · NEXORA{% endblock %}
+
+{% block contenido %}
+{% set seccion_activa = 'carga' %}
+{% include "_tabs_gestion_masiva.html" %}
+
+<div class="mb-4">
+  <h1 class="text-lg font-semibold text-zinc-100">📦 Gestión Masiva de Placas</h1>
+  <p class="text-xs text-zinc-500 mt-1">📥 Carga masiva de placas</p>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+  <!-- Instrucciones -->
+  <section class="lg:col-span-1 card h-fit space-y-3">
+    <h2 class="text-sm font-semibold text-zinc-100">Formato esperado</h2>
+    <p class="text-xs text-zinc-500">Una placa por línea, con hasta 3 campos separados por coma:</p>
+    <pre class="text-xs font-mono bg-zinc-950 border border-zinc-800 rounded-md p-3 text-zinc-300 whitespace-pre-wrap">PLACA,tipo,observaciones</pre>
+    <ul class="text-xs text-zinc-500 space-y-1.5 list-disc list-inside">
+      <li><span class="text-zinc-300 font-mono">placa</span> es obligatoria.</li>
+      <li><span class="text-zinc-300 font-mono">tipo</span> es opcional: <span class="font-mono">carro</span> o <span class="font-mono">moto</span> (por defecto <span class="font-mono">carro</span>).</li>
+      <li><span class="text-zinc-300 font-mono">observaciones</span> es opcional.</li>
+    </ul>
+    <div class="pt-1">
+      <p class="text-xs text-zinc-500 mb-1">Ejemplo:</p>
+      <pre class="text-xs font-mono bg-zinc-950 border border-zinc-800 rounded-md p-3 text-zinc-400 whitespace-pre-wrap">ABC123,carro,Vehículo de reparto
+XYZ987,moto
+DEF456,carro,Uso temporal</pre>
+    </div>
+    <p class="text-[11px] text-zinc-600">Las placas duplicadas o con tipo inválido se reportan al final sin detener el resto de la carga.</p>
+  </section>
+
+  <!-- Formulario de carga -->
+  <section class="lg:col-span-2 card">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-sm font-semibold text-zinc-100">Pegar placas a registrar</h2>
+      <span id="contador-lineas" class="text-xs text-zinc-500">0 línea(s)</span>
+    </div>
+
+    <form method="post" action="/vehiculos/carga-masiva" class="space-y-3">
+      <p class="text-[11px] text-zinc-500">
+        Se registrará como: <span class="text-zinc-300 font-medium">{{ usuario_actual.nombre }}</span>
+      </p>
+
+      <div>
+        <label class="label-field">Placas (una por línea)</label>
+        <textarea
+          id="textarea-lineas"
+          name="lineas"
+          rows="12"
+          required
+          oninput="actualizarContadorLineas()"
+          placeholder="ABC123,carro,Vehículo de reparto&#10;XYZ987,moto&#10;DEF456,carro"
+          class="input-field font-mono"
+        ></textarea>
+      </div>
+
+      <button type="submit" class="btn-primary w-full">
+        Procesar carga masiva
+      </button>
+    </form>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  function actualizarContadorLineas() {
+    var texto = document.getElementById('textarea-lineas').value;
+    var lineasValidas = texto.split('\n').filter(function (linea) {
+      return linea.trim().length > 0;
+    });
+    document.getElementById('contador-lineas').textContent = lineasValidas.length + ' línea(s)';
+  }
+  document.addEventListener('DOMContentLoaded', actualizarContadorLineas);
+</script>
+{% endblock %}

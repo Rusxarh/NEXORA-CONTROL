@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="es" class="h-full">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block titulo %}NEXORA · Dashboard{% endblock %}</title>
+  {% include "_estilos.html" %}
+  <script>
+    // Aplica el tema guardado ANTES de pintar la pagina, para evitar un
+    // parpadeo claro->oscuro. Si no hay preferencia guardada (o
+    // localStorage no esta disponible), se queda en el tema claro por
+    // defecto (:root), sin fijar el atributo.
+    (function () {
+      try {
+        var guardado = localStorage.getItem("nexora-theme");
+        if (guardado === "light" || guardado === "dark") {
+          document.documentElement.setAttribute("data-theme", guardado);
+        }
+      } catch (e) { /* sin efecto: se queda en claro por defecto */ }
+    })();
+  </script>
+</head>
+<body class="h-full bg-zinc-950 text-zinc-100 antialiased">
+
+  {% macro nav_link(href, label, key, ruta_activa) %}
+  <a href="{{ href }}"
+     class="flex items-center px-3 py-2 rounded-md text-sm transition {{ 'bg-brand-600 text-white' if ruta_activa == key else 'text-zinc-300 hover:bg-zinc-800' }}">
+    {{ label }}
+  </a>
+  {% endmacro %}
+
+  {% macro nav_grupo(items, ruta_activa, usuario_actual) %}
+  {% for href, label, key, solo_admin in items %}
+    {% if not solo_admin or (usuario_actual and usuario_actual.rol == 'Admin') %}
+      {{ nav_link(href, label, key, ruta_activa) }}
+    {% endif %}
+  {% endfor %}
+  {% endmacro %}
+
+  {% set nav_principal = [
+    ('/dashboard', 'Dashboard', 'dashboard', false),
+    ('/', 'Inventario', 'inventario', false),
+    ('/consulta', 'Consulta', 'consulta', false)
+  ] %}
+  {% set nav_secundaria = [
+    ('/usuarios', 'Usuarios', 'usuarios', true),
+    ('/gestion-masiva', 'Gestión masiva de placas', 'gestion_masiva', true),
+    ('/auditoria', 'Auditoría', 'auditoria', true),
+    ('/puente', 'Puente de Prueba', 'puente', true)
+  ] %}
+
+  <div class="min-h-full flex flex-col">
+
+    <header class="sticky top-0 z-30 border-b border-zinc-800 bg-zinc-900/60 backdrop-blur">
+      <div class="flex items-center justify-between gap-3 px-4 sm:px-6 py-3">
+        <div class="flex items-center gap-3">
+          <button
+            id="btn-menu-movil"
+            type="button"
+            onclick="toggleSidebarMovil()"
+            aria-label="Abrir menú"
+            aria-expanded="false"
+            aria-controls="sidebar-movil"
+            class="md:hidden inline-flex items-center justify-center h-9 w-9 rounded-md border border-zinc-700 text-zinc-300 hover:bg-zinc-800 transition"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+
+          <div class="flex items-center gap-2">
+            <span class="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 text-white font-bold text-sm">NX</span>
+            <div>
+              <p class="text-sm font-semibold leading-none">NEXORA</p>
+              <p class="text-xs text-zinc-400 leading-none mt-0.5 hidden sm:block">Dashboard Admin</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-3">
+          <button
+            type="button"
+            onclick="alternarTema()"
+            data-rol="toggle-tema"
+            aria-label="Cambiar tema claro/oscuro"
+            class="btn-secondary btn-sm"
+          >🌙 Oscuro</button>
+
+          {% if usuario_actual %}
+          <div class="text-right leading-tight text-xs min-w-0">
+            <p class="text-zinc-200 font-medium truncate">{{ usuario_actual.nombre }}</p>
+            <p class="text-zinc-500 truncate">{{ usuario_actual.rol }}</p>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+    </header>
+
+    <div class="flex-1 flex min-h-0">
+
+      <!-- Sidebar de escritorio -->
+      <aside class="hidden md:flex md:flex-col md:w-60 lg:w-64 shrink-0 border-r border-zinc-800 bg-zinc-900/40">
+        <nav class="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+          {{ nav_grupo(nav_principal, ruta_activa, usuario_actual) }}
+          <div class="pt-3 mt-3 border-t border-zinc-800 space-y-1">
+            {{ nav_grupo(nav_secundaria, ruta_activa, usuario_actual) }}
+          </div>
+        </nav>
+        {% if usuario_actual %}
+        <div class="p-3 border-t border-zinc-800">
+          <form method="post" action="/logout">
+            <button type="submit" class="btn-secondary w-full">Cerrar sesión</button>
+          </form>
+        </div>
+        {% endif %}
+      </aside>
+
+      <!-- Sidebar móvil (off-canvas) -->
+      <div
+        id="overlay-movil"
+        class="hidden fixed inset-0 z-40 bg-black/60 md:hidden"
+        onclick="cerrarSidebarMovil()"
+      ></div>
+      <aside
+        id="sidebar-movil"
+        class="fixed inset-y-0 left-0 z-50 w-72 max-w-[80vw] -translate-x-full transition-transform duration-200 ease-out bg-zinc-900 border-r border-zinc-800 md:hidden flex flex-col"
+      >
+        <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
+          <div class="flex items-center gap-2">
+            <span class="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 text-white font-bold text-sm">NX</span>
+            <p class="text-sm font-semibold">NEXORA</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button
+              type="button"
+              onclick="alternarTema()"
+              data-rol="toggle-tema"
+              aria-label="Cambiar tema claro/oscuro"
+              class="btn-secondary btn-sm"
+            >🌙 Oscuro</button>
+            <button
+              type="button"
+              onclick="cerrarSidebarMovil()"
+              aria-label="Cerrar menú"
+              class="inline-flex items-center justify-center h-8 w-8 rounded-md text-zinc-400 hover:bg-zinc-800 transition"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        {% if usuario_actual %}
+        <div class="px-4 py-3 border-b border-zinc-800 text-xs leading-tight">
+          <p class="text-zinc-200 font-medium">{{ usuario_actual.nombre }}</p>
+          <p class="text-zinc-500">{{ usuario_actual.rol }}</p>
+        </div>
+        {% endif %}
+
+        <nav class="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+          {{ nav_grupo(nav_principal, ruta_activa, usuario_actual) }}
+          <div class="pt-3 mt-3 border-t border-zinc-800 space-y-1">
+            {{ nav_grupo(nav_secundaria, ruta_activa, usuario_actual) }}
+          </div>
+        </nav>
+
+        {% if usuario_actual %}
+        <div class="p-3 border-t border-zinc-800">
+          <form method="post" action="/logout">
+            <button type="submit" class="btn-secondary w-full">Cerrar sesión</button>
+          </form>
+        </div>
+        {% endif %}
+      </aside>
+
+      <main class="flex-1 min-w-0 overflow-y-auto">
+        <div class="max-w-6xl mx-auto w-full px-4 sm:px-6 py-6">
+          {% if mensaje %}
+          <div class="mb-5 {{ 'alert-success' if tipo_mensaje == 'exito' else ('alert-error' if tipo_mensaje == 'error' else 'alert-info') }}">
+            {{ mensaje }}
+          </div>
+          {% endif %}
+
+          {% block contenido %}{% endblock %}
+        </div>
+
+        <footer class="border-t border-zinc-800 py-4 mt-6">
+          <p class="text-center text-xs text-zinc-500">NEXORA · Uso interno · Dashboard Admin</p>
+        </footer>
+      </main>
+
+    </div>
+  </div>
+
+  <script>
+    function abrirSidebarMovil() {
+      document.getElementById('sidebar-movil').classList.remove('-translate-x-full');
+      document.getElementById('overlay-movil').classList.remove('hidden');
+      document.getElementById('btn-menu-movil').setAttribute('aria-expanded', 'true');
+    }
+    function cerrarSidebarMovil() {
+      document.getElementById('sidebar-movil').classList.add('-translate-x-full');
+      document.getElementById('overlay-movil').classList.add('hidden');
+      document.getElementById('btn-menu-movil').setAttribute('aria-expanded', 'false');
+    }
+    function toggleSidebarMovil() {
+      var sidebar = document.getElementById('sidebar-movil');
+      if (sidebar.classList.contains('-translate-x-full')) {
+        abrirSidebarMovil();
+      } else {
+        cerrarSidebarMovil();
+      }
+    }
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') cerrarSidebarMovil();
+    });
+
+    // Tema claro/oscuro: preferencia guardada en localStorage bajo
+    // "nexora-theme" (valores "light"/"dark"). No crea ninguna base de
+    // datos ni endpoint: es puramente del lado del navegador.
+    function obtenerTemaActual() {
+      return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+    }
+    function actualizarBotonesTema() {
+      var esOscuro = obtenerTemaActual() === 'dark';
+      document.querySelectorAll('[data-rol="toggle-tema"]').forEach(function (btn) {
+        btn.textContent = esOscuro ? '☀️ Claro' : '🌙 Oscuro';
+      });
+    }
+    function aplicarTema(tema) {
+      document.documentElement.setAttribute('data-theme', tema);
+      try { localStorage.setItem('nexora-theme', tema); } catch (e) { /* sin efecto */ }
+      actualizarBotonesTema();
+    }
+    function alternarTema() {
+      aplicarTema(obtenerTemaActual() === 'dark' ? 'light' : 'dark');
+    }
+    actualizarBotonesTema();
+  </script>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

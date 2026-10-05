@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block titulo %}Historial{% if vehiculo %} · {{ vehiculo.placa }}{% endif %} · NEXORA{% endblock %}
+
+{% block contenido %}
+<div class="max-w-2xl mx-auto space-y-6">
+
+  <div class="flex items-center justify-between gap-3">
+    <h2 class="text-sm font-semibold text-zinc-100">
+      Historial{% if vehiculo %} — <span class="font-mono">{{ vehiculo.placa }}</span>{% endif %}
+    </h2>
+    <div class="flex items-center gap-3 text-xs">
+      {% if vehiculo %}
+      <a href="/consulta?q={{ placa_consultada | urlencode }}" class="text-brand-400 hover:text-brand-300 transition">Ver ficha</a>
+      {% endif %}
+      <a href="/consulta" class="text-zinc-500 hover:text-zinc-300 transition">Nueva consulta</a>
+    </div>
+  </div>
+
+  {% if not vehiculo %}
+  <section class="card text-center py-8">
+    <p class="text-sm text-zinc-400">
+      No existe un vehículo registrado con la placa <span class="font-mono text-zinc-200">{{ placa_consultada }}</span>.
+    </p>
+    <a href="/consulta" class="btn-secondary btn-sm inline-flex mt-4">Nueva consulta</a>
+  </section>
+  {% else %}
+
+  <section class="card flex items-center justify-between gap-3">
+    <div>
+      <p class="text-lg font-mono font-bold tracking-widest text-zinc-100">{{ vehiculo.placa }}</p>
+      <p class="text-xs text-zinc-500 capitalize">{{ vehiculo.tipo_vehiculo }}</p>
+    </div>
+    {% if vehiculo.estado == 'activo' %}
+    <span class="badge-success"><span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span> Activo</span>
+    {% else %}
+    <span class="badge-danger"><span class="h-1.5 w-1.5 rounded-full bg-red-400"></span> Baja</span>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    {% if not logs %}
+    <p class="text-sm text-zinc-500 text-center py-6">Este vehículo todavía no tiene eventos registrados.</p>
+    {% else %}
+    <ul class="space-y-4">
+      {% for log in logs %}
+      <li class="pb-4 {% if not loop.last %}border-b border-zinc-800{% endif %}">
+        <div class="flex flex-wrap items-center gap-2 mb-1">
+          {% if log.accion == 'ALTA_PLACA' %}
+          <span class="badge-success">Alta</span>
+          {% elif log.accion == 'BAJA_PLACA' %}
+          <span class="badge-danger">Baja</span>
+          {% else %}
+          <span class="badge-neutral">{{ log.accion }}</span>
+          {% endif %}
+          <span class="text-xs text-zinc-500">{{ log.fecha_hora }}</span>
+        </div>
+        <p class="text-xs text-zinc-400">
+          Usuario: <span class="text-zinc-300">{{ log.usuario_nombre or ('Usuario #' ~ log.usuario_id) }}</span>
+        </p>
+        {% if log.accion == 'ALTA_PLACA' %}
+        <p class="text-xs text-zinc-400">Estado: <span class="text-zinc-300">→ ACTIVO</span></p>
+        {% elif log.accion == 'BAJA_PLACA' %}
+        <p class="text-xs text-zinc-400">Estado: <span class="text-zinc-300">ACTIVO → BAJA</span></p>
+        {% endif %}
+        {% if log.observaciones %}
+        <p class="text-xs text-zinc-400 mt-1">Observación: <span class="text-zinc-300">{{ log.observaciones }}</span></p>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,337 @@
+{% extends "base.html" %}
+{% block titulo %}Gestión Masiva · NEXORA{% endblock %}
+
+{% block contenido %}
+<div class="space-y-6">
+
+  {% set seccion_activa = 'estudio' %}
+  {% include "_tabs_gestion_masiva.html" %}
+
+  <!-- Encabezado -->
+  <div class="flex flex-wrap items-start justify-between gap-3">
+    <div>
+      <h1 class="text-lg font-semibold text-zinc-100">📦 Gestión Masiva de Placas</h1>
+      <p class="text-xs text-zinc-500 mt-1">Selecciona un período para estudiar las placas ingresadas al sistema.</p>
+    </div>
+    <div class="text-right">
+      <p class="text-[11px] text-zinc-500">Última actualización</p>
+      <p class="text-xs text-zinc-300 mb-1">{{ ahora.strftime('%d/%m/%Y %H:%M') }}</p>
+      <a href="/gestion-masiva?periodo={{ periodo_actual }}&q={{ q | urlencode }}&estado={{ estado_filtro }}&pagina={{ pagina }}"
+         class="btn-secondary btn-sm">🔄 Actualizar</a>
+    </div>
+  </div>
+
+  <!-- Estado del estudio masivo -->
+  {% if estudio and estudio.estado in ('EN_PROGRESO', 'PAUSADO') %}
+  <section class="card">
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+      <h2 class="text-sm font-semibold text-zinc-100">Estado del estudio masivo</h2>
+      {% if estudio.estado == 'EN_PROGRESO' %}
+      <span class="badge-success">En progreso</span>
+      {% else %}
+      <span class="badge-warning">⏸ Pausado</span>
+      {% endif %}
+    </div>
+
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3 text-center">
+      <div><p class="text-xl font-semibold text-zinc-100">{{ estudio.procesadas }}</p><p class="text-[11px] text-zinc-500">Procesadas</p></div>
+      <div><p class="text-xl font-semibold text-zinc-100">{{ estudio.pendientes }}</p><p class="text-[11px] text-zinc-500">Pendientes</p></div>
+      <div><p class="text-xl font-semibold text-red-400">{{ estudio.con_error }}</p><p class="text-[11px] text-zinc-500">Con error</p></div>
+      <div><p class="text-xl font-semibold text-brand-400">{{ estudio.progreso_pct }}%</p><p class="text-[11px] text-zinc-500">Progreso</p></div>
+    </div>
+
+    <div class="progress-track mb-4">
+      <div class="progress-fill" style="width: {{ estudio.progreso_pct }}%"></div>
+    </div>
+
+    <div class="flex flex-wrap gap-2">
+      {% if estudio.estado == 'EN_PROGRESO' %}
+      <form id="form-procesar-lote" method="post" action="/gestion-masiva/estudio/{{ estudio.id }}/procesar-lote">
+        <input type="hidden" name="periodo" value="{{ periodo_actual }}">
+        <input type="hidden" name="q" value="{{ q }}">
+        <input type="hidden" name="estado" value="{{ estado_filtro }}">
+      </form>
+      <form method="post" action="/gestion-masiva/estudio/{{ estudio.id }}/pausar">
+        <input type="hidden" name="periodo" value="{{ periodo_actual }}">
+        <input type="hidden" name="q" value="{{ q }}">
+        <input type="hidden" name="estado" value="{{ estado_filtro }}">
+        <button type="submit" class="btn-secondary btn-sm">⏸ Pausar</button>
+      </form>
+      {% else %}
+      <form method="post" action="/gestion-masiva/estudio/{{ estudio.id }}/reanudar">
+        <input type="hidden" name="periodo" value="{{ periodo_actual }}">
+        <input type="hidden" name="q" value="{{ q }}">
+        <input type="hidden" name="estado" value="{{ estado_filtro }}">
+        <button type="submit" class="btn-primary btn-sm">▶ Reanudar</button>
+      </form>
+      {% endif %}
+      <button type="button" onclick="abrirModalCancelarEstudio()" class="btn-danger-soft btn-sm">✕ Cancelar</button>
+    </div>
+  </section>
+
+  <!-- Modal de confirmación de cancelación -->
+  <div id="modal-cancelar-estudio" class="hidden modal-overlay">
+    <div class="modal-backdrop" onclick="cerrarModalCancelarEstudio()"></div>
+    <div class="modal-panel">
+      <h3 class="text-sm font-semibold text-red-300 mb-2">Cancelar estudio masivo</h3>
+      <p class="text-xs text-zinc-400 mb-4">
+        Se detendrán nuevas operaciones. Los resultados y errores ya obtenidos se conservan: no se elimina nada.
+      </p>
+      <form method="post" action="/gestion-masiva/estudio/{{ estudio.id }}/cancelar" class="space-y-3">
+        <input type="hidden" name="confirmar" value="SI">
+        <input type="hidden" name="periodo" value="{{ periodo_actual }}">
+        <input type="hidden" name="q" value="{{ q }}">
+        <input type="hidden" name="estado" value="{{ estado_filtro }}">
+        <div class="flex justify-end gap-2">
+          <button type="button" onclick="cerrarModalCancelarEstudio()" class="btn-secondary btn-sm">Volver</button>
+          <button type="submit" class="btn-danger btn-sm">Confirmar cancelación</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- 1. Selector de período -->
+  <section class="card">
+    <h2 class="text-sm font-semibold text-zinc-100 mb-3">1. Seleccionar período de placas</h2>
+    <div class="flex flex-wrap gap-2">
+      {% for clave, etiqueta in periodos.items() %}
+      <a href="/gestion-masiva?periodo={{ clave }}&q={{ q | urlencode }}&estado={{ estado_filtro }}"
+         class="btn-sm {{ 'btn-primary' if periodo_actual == clave else 'btn-secondary' }}">
+        📅 {{ etiqueta }}
+      </a>
+      {% endfor %}
+    </div>
+  </section>
+
+  <!-- 9. Métricas -->
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+    <div class="card">
+      <p class="text-3xl font-semibold text-zinc-100">{{ total_encontradas }}</p>
+      <p class="text-xs text-zinc-500 mt-1">Placas encontradas</p>
+      <p class="text-[11px] text-zinc-600">{{ periodos[periodo_actual] }}</p>
+    </div>
+    <div class="card">
+      <p class="text-3xl font-semibold text-emerald-400">{{ metricas.actualizadas }}</p>
+      <p class="text-xs text-zinc-500 mt-1">Actualizadas</p>
+      <p class="text-[11px] text-zinc-600">{{ metricas.pct_actualizadas }}%</p>
+    </div>
+    <div class="card">
+      <p class="text-3xl font-semibold text-amber-400" style="color:#fbbf24">{{ metricas.pendientes }}</p>
+      <p class="text-xs text-zinc-500 mt-1">Pendientes</p>
+      <p class="text-[11px] text-zinc-600">{{ metricas.pct_pendientes }}%</p>
+    </div>
+    <div class="card">
+      <p class="text-3xl font-semibold text-red-400">{{ metricas.sin_datos }}</p>
+      <p class="text-xs text-zinc-500 mt-1">Sin datos</p>
+      <p class="text-[11px] text-zinc-600">{{ metricas.pct_sin_datos }}%</p>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+    <!-- Tabla -->
+    <section class="lg:col-span-2 card">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <h2 class="text-sm font-semibold text-zinc-100">Lista de placas ({{ total_encontradas }})</h2>
+        {% if not estudio or estudio.estado in ('CANCELADO', 'COMPLETADO') %}
+        <form method="post" action="/gestion-masiva/estudio/iniciar">
+          <input type="hidden" name="periodo" value="{{ periodo_actual }}">
+          <input type="hidden" name="q" value="{{ q }}">
+          <input type="hidden" name="estado" value="{{ estado_filtro }}">
+          <button type="submit" class="btn-primary btn-sm">▶ Iniciar estudio masivo</button>
+        </form>
+        {% endif %}
+      </div>
+
+      <form method="get" action="/gestion-masiva" class="flex flex-wrap items-center gap-2 mb-4">
+        <input type="hidden" name="periodo" value="{{ periodo_actual }}">
+        <input type="text" name="q" value="{{ q }}" placeholder="🔍 Buscar placa..."
+               oninput="this.value = this.value.toUpperCase()"
+               class="input-field w-36 font-mono text-xs py-1.5">
+        <select name="estado" class="input-field w-40 text-xs py-1.5">
+          <option value="" {% if not estado_filtro %}selected{% endif %}>Todos</option>
+          <option value="ACTUALIZADA" {% if estado_filtro == 'ACTUALIZADA' %}selected{% endif %}>Actualizadas</option>
+          <option value="PENDIENTE" {% if estado_filtro == 'PENDIENTE' %}selected{% endif %}>Pendientes</option>
+          <option value="SIN_DATOS" {% if estado_filtro == 'SIN_DATOS' %}selected{% endif %}>Sin datos</option>
+        </select>
+        <button type="submit" class="btn-secondary btn-sm">Filtrar</button>
+        {% if q or estado_filtro %}
+        <a href="/gestion-masiva?periodo={{ periodo_actual }}" class="text-xs text-zinc-500 hover:text-zinc-300 transition">Limpiar</a>
+        {% endif %}
+      </form>
+
+      <div class="overflow-x-auto -mx-5">
+        <table class="table-shell">
+          <thead>
+            <tr class="table-head-row">
+              <th class="table-head-cell">Placa</th>
+              <th class="table-head-cell">Antigüedad</th>
+              <th class="table-head-cell">Información</th>
+              <th class="table-head-cell">Última consulta</th>
+              <th class="table-head-cell text-right">Acción</th>
+            </tr>
+          </thead>
+          <tbody class="table-body">
+            {% for p in placas %}
+            <tr class="table-row {{ 'table-row-selected' if p.placa == placa_seleccionada }}"
+                onclick="location.href='/gestion-masiva?periodo={{ periodo_actual }}&q={{ q | urlencode }}&estado={{ estado_filtro }}&pagina={{ pagina }}&placa_seleccionada={{ p.placa }}'"
+                style="cursor:pointer">
+              <td class="table-cell font-mono font-semibold tracking-wider text-zinc-100">{{ p.placa }}</td>
+              <td class="table-cell text-zinc-400 whitespace-nowrap">{{ p.antiguedad_dias }} día(s)</td>
+              <td class="table-cell">
+                {% if p.estado_informacion == 'ACTUALIZADA' %}
+                <span class="badge-success"><span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span> Actualizada</span>
+                {% elif p.estado_informacion == 'PENDIENTE' %}
+                <span class="badge-warning"><span class="h-1.5 w-1.5 rounded-full bg-amber-400"></span> Pendiente</span>
+                {% else %}
+                <span class="badge-danger"><span class="h-1.5 w-1.5 rounded-full bg-red-400"></span> Sin datos</span>
+                {% endif %}
+              </td>
+              <td class="table-cell text-zinc-400 whitespace-nowrap">{{ p.ultimo_snapshot or '—' }}</td>
+              <td class="table-cell text-right">
+                <a href="/gestion-masiva?periodo={{ periodo_actual }}&q={{ q | urlencode }}&estado={{ estado_filtro }}&pagina={{ pagina }}&placa_seleccionada={{ p.placa }}"
+                   class="btn-secondary btn-sm" onclick="event.stopPropagation()">👁 Ver</a>
+              </td>
+            </tr>
+            {% else %}
+            <tr>
+              <td colspan="5" class="px-5 py-8 text-center text-zinc-500 text-sm">No se encontraron placas para este período/filtro.</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Paginación -->
+      {% if total_paginas > 1 %}
+      {% set inicio_rango = (pagina - 1) * por_pagina + 1 %}
+      {% set fin_rango = [pagina * por_pagina, total_encontradas] | min %}
+      <div class="flex flex-wrap items-center justify-between gap-3 mt-4 text-xs text-zinc-500">
+        <span>Mostrando {{ inicio_rango }}–{{ fin_rango }} de {{ total_encontradas }} placas</span>
+        <div class="flex flex-wrap gap-1">
+          <a href="/gestion-masiva?periodo={{ periodo_actual }}&q={{ q | urlencode }}&estado={{ estado_filtro }}&pagina={{ [pagina - 1, 1] | max }}"
+             class="btn-secondary btn-sm {{ 'opacity-50 cursor-not-allowed' if pagina == 1 }}">‹</a>
+          {% for p in paginas_numeros %}
+            {% if p is none %}
+            <span class="px-2 py-1 text-zinc-600">…</span>
+            {% else %}
+            <a href="/gestion-masiva?periodo={{ periodo_actual }}&q={{ q | urlencode }}&estado={{ estado_filtro }}&pagina={{ p }}"
+               class="btn-sm {{ 'btn-primary' if p == pagina else 'btn-secondary' }}">{{ p }}</a>
+            {% endif %}
+          {% endfor %}
+          <a href="/gestion-masiva?periodo={{ periodo_actual }}&q={{ q | urlencode }}&estado={{ estado_filtro }}&pagina={{ [pagina + 1, total_paginas] | min }}"
+             class="btn-secondary btn-sm {{ 'opacity-50 cursor-not-allowed' if pagina == total_paginas }}">›</a>
+        </div>
+      </div>
+      {% endif %}
+    </section>
+
+    <!-- Panel de detalle -->
+    <section class="lg:col-span-1 card h-fit">
+      {% if not detalle %}
+      <p class="text-sm text-zinc-500 text-center py-8">Selecciona una placa para ver su ficha.</p>
+      {% else %}
+      <p class="label-field mb-1">Placa vehicular</p>
+      <p class="text-2xl font-mono font-bold tracking-widest text-zinc-100 mb-1">{{ detalle.vehiculo.placa }}</p>
+      <p class="text-[11px] text-zinc-600 mb-4">COLOMBIA</p>
+
+      {% if detalle.estado_informacion == 'ACTUALIZADA' %}
+      <span class="badge-success mb-3"><span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span> Información actualizada</span>
+      <p class="text-[11px] text-zinc-500 mt-1 mb-4">Última consulta: {{ detalle.snapshot.creado_en }}</p>
+      {% elif detalle.estado_informacion == 'PENDIENTE' %}
+      <span class="badge-warning mb-3"><span class="h-1.5 w-1.5 rounded-full bg-amber-400"></span> Información pendiente de actualización</span>
+      <p class="text-[11px] text-zinc-500 mt-1 mb-4">Última consulta: {{ detalle.snapshot.creado_en }}</p>
+      {% else %}
+      <span class="badge-danger mb-3"><span class="h-1.5 w-1.5 rounded-full bg-red-400"></span> Sin datos</span>
+      <p class="text-[11px] text-zinc-500 mt-1 mb-4">Todavía no se ha obtenido información local para esta placa.</p>
+      {% endif %}
+
+      {% if estudio and estudio.estado in ('EN_PROGRESO', 'PAUSADO') %}
+      <form method="post" action="/gestion-masiva/placa/{{ detalle.vehiculo.placa }}/priorizar" class="mb-4">
+        <input type="hidden" name="periodo" value="{{ periodo_actual }}">
+        <input type="hidden" name="q" value="{{ q }}">
+        <input type="hidden" name="estado" value="{{ estado_filtro }}">
+        <input type="hidden" name="pagina" value="{{ pagina }}">
+        <button type="submit" class="btn-primary btn-sm w-full">
+          {% if detalle.estado_informacion == 'ACTUALIZADA' %}⭐ Priorizar en la cola{% else %}🔄 Priorizar para actualización{% endif %}
+        </button>
+      </form>
+      {% else %}
+      <p class="text-[11px] text-zinc-600 mb-4">Inicia un estudio masivo para poder priorizar esta placa sobre la cola.</p>
+      {% endif %}
+
+      {% set afect = detalle.datos.afectacion %}
+      <div class="pt-4 border-t border-zinc-800 mb-4">
+        {% if afect and afect.existe %}
+        <p class="alert-error text-xs">⚠️ AFECTACIÓN REGISTRADA — {{ afect.descripcion or 'Vehículo con afectación/proceso registrado.' }}</p>
+        {% else %}
+        <p class="alert-info text-xs">ℹ️ Sin afectación registrada</p>
+        {% endif %}
+      </div>
+
+      <div class="pt-4 border-t border-zinc-800 space-y-2 text-sm mb-4">
+        <p class="label-field mb-1">Detalles del vehículo</p>
+        {% set veh = detalle.datos.vehiculo or {} %}
+        <div class="flex justify-between gap-3"><dt class="text-zinc-500">Marca</dt><dd class="text-zinc-300">{{ veh.marca or 'No disponible' }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-zinc-500">Línea</dt><dd class="text-zinc-300">{{ veh.linea or 'No disponible' }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-zinc-500">Modelo</dt><dd class="text-zinc-300">{{ veh.modelo or 'No disponible' }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-zinc-500">Chasis</dt><dd class="text-zinc-300 font-mono">{{ veh.chasis or 'No disponible' }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-zinc-500">Motor</dt><dd class="text-zinc-300 font-mono">{{ veh.motor or 'No disponible' }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-zinc-500">Color</dt><dd class="text-zinc-300">{{ veh.color or 'No disponible' }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-zinc-500">Servicio</dt><dd class="text-zinc-300">{{ veh.servicio or 'No disponible' }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-zinc-500">Clase</dt><dd class="text-zinc-300">{{ veh.clase or 'No disponible' }}</dd></div>
+      </div>
+
+      {% set proceso = detalle.datos.proceso %}
+      {% if proceso %}
+      <div class="pt-4 border-t border-zinc-800 space-y-2 text-sm">
+        <p class="label-field mb-1">⚠️ Ejecución de proceso <span class="text-zinc-600">(exclusivo Admin)</span></p>
+        <div class="flex justify-between gap-3"><dt class="text-zinc-500">Acreedor</dt><dd class="text-zinc-300">{{ proceso.acreedor or 'No disponible' }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-zinc-500">Deudor</dt><dd class="text-zinc-300">{{ proceso.deudor or 'No disponible' }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-zinc-500">Tipo de documento</dt><dd class="text-zinc-300">{{ proceso.tipo_documento or 'No disponible' }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-zinc-500">Número de documento</dt><dd class="text-zinc-300 font-mono">{{ proceso.numero_documento or 'No disponible' }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-zinc-500">Ciudad</dt><dd class="text-zinc-300">{{ proceso.ciudad or 'No disponible' }}</dd></div>
+        <div class="flex justify-between gap-3 items-center">
+          <dt class="text-zinc-500">Radicado</dt>
+          <dd class="text-zinc-300 font-mono text-xs flex items-center gap-1">
+            <span id="radicado-valor">{{ proceso.radicado or 'No disponible' }}</span>
+            {% if proceso.radicado %}
+            <button type="button" onclick="copiarRadicado()" class="text-zinc-500 hover:text-zinc-300" title="Copiar radicado">📋</button>
+            {% endif %}
+          </dd>
+        </div>
+      </div>
+      {% endif %}
+      {% endif %}
+    </section>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  function abrirModalCancelarEstudio() {
+    var m = document.getElementById('modal-cancelar-estudio');
+    if (m) m.classList.remove('hidden');
+  }
+  function cerrarModalCancelarEstudio() {
+    var m = document.getElementById('modal-cancelar-estudio');
+    if (m) m.classList.add('hidden');
+  }
+  function copiarRadicado() {
+    var texto = document.getElementById('radicado-valor').textContent;
+    if (navigator.clipboard) { navigator.clipboard.writeText(texto); }
+  }
+
+  // Etapa 5 §25: nunca un loop gigante dentro de una petición HTTP. El
+  // progreso avanza porque el navegador reenvía "procesar-lote" (un lote
+  // acotado por vez) automáticamente mientras el estudio siga EN_PROGRESO.
+  (function () {
+    var formLote = document.getElementById('form-procesar-lote');
+    if (formLote) {
+      setTimeout(function () { formLote.submit(); }, 600);
+    }
+  })();
+</script>
+{% endblock %}
