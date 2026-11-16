@@ -200,6 +200,22 @@ async def detections_upload(request: Request, authorization: Optional[str] = Hea
     _registrar_actividad_camara_throttled(sesion["usuario_id"])
 
     broadcast("detection.hit", det)
+
+    # RGM automático (FASE 6): SOLO coincidencia exacta de una placa que
+    # está en lista en este momento. Una "posible coincidencia" (gemelo
+    # O/Q/D) o una lectura sin coincidencia nunca encolan nada -- evita
+    # cientos de consultas al portal real por lecturas erróneas del OCR.
+    # Va DESPUÉS de "detection.hit" a propósito: el bot de Telegram debe
+    # guardar a qué mensaje responder (_mensajes_por_avistamiento) antes
+    # de que exista la más mínima posibilidad de un rgm.resultado.
+    if det["en_lista"] and det.get("match_type") != "probable":
+        try:
+            import rgm_cola
+
+            rgm_cola.solicitar_consulta(det["placa"], "RGM", "camara", sesion["usuario_id"], avistamiento_id=det["id"])
+        except Exception:
+            pass
+
     return {"ok": True, "id": det["id"], "enLista": bool(det["en_lista"]), "motivo": det["motivo"]}
 
 

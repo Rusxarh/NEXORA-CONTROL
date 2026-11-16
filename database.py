@@ -49,6 +49,16 @@ ESTADOS_INFORMACION_PLACA = ("ACTUALIZADA", "PENDIENTE", "SIN_DATOS")
 ESTADOS_ESTUDIO = ("EN_PROGRESO", "PAUSADO", "CANCELADO", "COMPLETADO")
 ESTADOS_ITEM_COLA = ("PENDIENTE", "PROCESANDO", "COMPLETADO", "ERROR")
 
+# FASE 6 (NEXCAM): cola de consultas RGM/Judicial reales a través del
+# Connector. Ver rgm_cola.py para la lógica (reserva de a una, sin
+# duplicados, reintentos). Estas tuplas solo fijan los valores permitidos,
+# mismo patrón que el resto de este archivo.
+TIPOS_CONSULTA_RGM = ("RGM", "JUDICIAL")
+ORIGENES_CONSULTA_RGM = ("camara", "telegram", "panel")
+ESTADOS_ITEM_RGM = ("PENDIENTE", "EN_CURSO", "OK", "ERROR")
+MAX_INTENTOS_RGM = 2
+VIGENCIA_SNAPSHOT_RGM_HORAS = 24
+
 # Un snapshot se considera "vigente" (ACTUALIZADA) si tiene menos de este
 # número de días; más viejo que esto es PENDIENTE de actualizar. La Etapa
 # 4.6 no definió ningún umbral de vigencia, así que se documenta aquí como
@@ -191,6 +201,26 @@ CREATE TABLE IF NOT EXISTS cola_estudio (
     error_detalle  TEXT,
     FOREIGN KEY (estudio_id) REFERENCES estudios_masivos (id)
 );
+
+-- FASE 6 (NEXCAM): cola de consultas RGM/Judicial reales a través del
+-- Connector (ver rgm_cola.py). avistamiento_id es NULL cuando el origen
+-- es 'telegram'/'panel' (una placa suelta, no ligada a una lectura de
+-- cámara).
+CREATE TABLE IF NOT EXISTS rgm_cola (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    placa          TEXT NOT NULL,
+    tipo           TEXT NOT NULL CHECK (tipo IN ('RGM', 'JUDICIAL')),
+    origen         TEXT NOT NULL CHECK (origen IN ('camara', 'telegram', 'panel')),
+    avistamiento_id INTEGER,
+    solicitado_por INTEGER NOT NULL,
+    estado         TEXT NOT NULL DEFAULT 'PENDIENTE' CHECK (estado IN ('PENDIENTE', 'EN_CURSO', 'OK', 'ERROR')),
+    intentos       INTEGER NOT NULL DEFAULT 0,
+    error          TEXT,
+    creado         TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    terminado      TEXT,
+    FOREIGN KEY (solicitado_por) REFERENCES usuarios (id)
+);
+CREATE INDEX IF NOT EXISTS idx_rgm_cola_estado ON rgm_cola (placa, tipo, estado);
 
 -- Índices para las búsquedas más frecuentes
 CREATE INDEX IF NOT EXISTS idx_vehiculos_placa  ON vehiculos (placa);
@@ -1050,6 +1080,111 @@ def obtener_ultimo_snapshot(placa: str):
             (placa,),
         ).fetchone()
         return dict(fila) if fila else None
+
+
+def obtener_ultimo_snapshot_por_fuente(placa: str, fuente: str):
+    """Igual que obtener_ultimo_snapshot pero filtrado por fuente ('RGM' o
+    'JUDICIAL'): necesario porque ambas conviven en la misma tabla."""
+    placa = placa.strip().upper()
+    with get_connection() as conn:
+        fila = conn.execute(
+            "SELECT * FROM snapshots_placa WHERE placa = ? AND fuente = ? ORDER BY creado_en DESC, id DESC LIMIT 1",
+            (placa, fuente),
+        ).fetchone()
+        return dict(fila) if fila else None
+
+
+# ---------------------------------------------------------------------------
+# Cola RGM/Judicial (FASE 6 NEXCAM) — ver rgm_cola.py para la lógica.
+# ---------------------------------------------------------------------------
+
+def crear_item_rgm_cola(placa: str, tipo: str, origen: str, solicitado_por: int, avistamiento_id: int = None) -> int:
+    if tipo not in TIPOS_CONSULTA_RGM:
+        raise ValorInvalidoError(f"Tipo de consulta RGM inválido: {tipo}")
+    if origen not in ORIGENES_CONSULTA_RGM:
+        raise ValorInvalidoError(f"Origen de consulta RGM inválido: {origen}")
+    with get_connection() as conn:
+        cur = conn.execute(
+            """INSERT INTO rgm_cola (placa, tipo, origen, avistamiento_id, solicitado_por)
+               VALUES (?, ?, ?, ?, ?)""",
+            (placa.strip().upper(), tipo, origen, avistamiento_id, solicitado_por),
+        )
+        return cur.lastrowid
+
+
+def item_rgm_pendiente_o_en_curso(placa: str, tipo: str):
+    with get_connection() as conn:
+        fila = conn.execute(
+            """SELECT * FROM rgm_cola WHERE placa = ? AND tipo = ? AND estado IN ('PENDIENTE', 'EN_CURSO')
+               ORDER BY id DESC LIMIT 1""",
+            (placa.strip().upper(), tipo),
+        ).fetchone()
+        return dict(fila) if fila else None
+
+
+def obtener_item_rgm(item_id: int):
+    with get_connection() as conn:
+        fila = conn.execute("SELECT * FROM rgm_cola WHERE id = ?", (item_id,)).fetchone()
+        return dict(fila) if fila else None
+
+
+def reservar_siguiente_item_rgm():
+    """
+    Toma UNA consulta a la vez: la más vieja en PENDIENTE, la marca
+    EN_CURSO y la devuelve. Usa una sola transacción (UPDATE ... WHERE
+    estado = 'PENDIENTE' seguido del SELECT de esa misma fila) para que
+    dos llamadas simultáneas nunca reserven la misma fila dos veces.
+    """
+    with get_connection() as conn:
+        fila = conn.execute(
+            "SELECT id FROM rgm_cola WHERE estado = 'PENDIENTE' ORDER BY id ASC LIMIT 1"
+        ).fetchone()
+        if fila is None:
+            return None
+        cur = conn.execute(
+            "UPDATE rgm_cola SET estado = 'EN_CURSO', intentos = intentos + 1 WHERE id = ? AND estado = 'PENDIENTE'",
+            (fila["id"],),
+        )
+        if cur.rowcount == 0:
+            return None  # otra llamada la reservó primero
+        return dict(conn.execute("SELECT * FROM rgm_cola WHERE id = ?", (fila["id"],)).fetchone())
+
+
+def marcar_item_rgm_completado(item_id: int):
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE rgm_cola SET estado = 'OK', terminado = datetime('now', 'localtime') WHERE id = ?",
+            (item_id,),
+        )
+
+
+def marcar_item_rgm_error(item_id: int, mensaje: str):
+    """
+    Si ya se intentó MAX_INTENTOS_RGM veces, queda ERROR (final). Si no,
+    vuelve a PENDIENTE para que reservar_siguiente_item_rgm la retome.
+    """
+    with get_connection() as conn:
+        fila = conn.execute("SELECT intentos FROM rgm_cola WHERE id = ?", (item_id,)).fetchone()
+        if fila is None:
+            return
+        if fila["intentos"] >= MAX_INTENTOS_RGM:
+            conn.execute(
+                "UPDATE rgm_cola SET estado = 'ERROR', error = ?, terminado = datetime('now', 'localtime') WHERE id = ?",
+                (mensaje, item_id),
+            )
+        else:
+            conn.execute("UPDATE rgm_cola SET estado = 'PENDIENTE', error = ? WHERE id = ?", (mensaje, item_id))
+
+
+def listar_ultimos_items_rgm(limite: int = 20):
+    with get_connection() as conn:
+        filas = conn.execute(
+            """SELECT c.*, u.nombre AS solicitado_por_nombre FROM rgm_cola c
+               LEFT JOIN usuarios u ON u.id = c.solicitado_por
+               ORDER BY c.id DESC LIMIT ?""",
+            (limite,),
+        ).fetchall()
+        return [dict(f) for f in filas]
 
 
 _EXPR_ESTADO_INFORMACION = f"""

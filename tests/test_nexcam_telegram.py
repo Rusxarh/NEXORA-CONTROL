@@ -169,3 +169,60 @@ def test_asignar_usuario_a_chat(bot):
     assert bot.asignar_usuario_a_chat(999888, admin["id"]) is True
     assert bot._usuario_de_chat(999888)["id"] == admin["id"]
     assert bot.asignar_usuario_a_chat(123123, admin["id"]) is False
+
+
+# --------------------------------------------------------------------- FASE 6: filtro de seguridad RGM/Judicial
+
+def test_rgm_resultado_admin_ve_deudor_operador_no(bot):
+    admin = _crear_usuario("Admin Tele9", "Admin", "admin.tele9", telegram_id=555999)
+    oper = _crear_usuario("Oper Tele2", "Operador", "oper.tele2", telegram_id=556000)
+    bot._vincular(555999, [bot.codigo], "Admin Tele9")
+    bot._vincular(556000, [bot.codigo], "Oper Tele2")
+    bot.llamadas.clear()
+
+    bot.on_evento("rgm.resultado", {
+        "item_id": 1, "placa": "ABC123", "tipo": "RGM", "origen": "panel", "avistamiento_id": None,
+        "resultado": {"estado": "OK", "deudor_garante": {"nombre": "Juan Pérez", "numero_identificacion": "999888777"},
+                      "vehiculo": {"marca": "Mazda"}},
+    })
+
+    por_chat = {c["chat_id"]: c["text"] for metodo, c in bot.llamadas if metodo == "sendMessage"}
+    assert "Juan Pérez" in por_chat[555999]
+    assert "Juan Pérez" not in por_chat[556000]
+    assert "999888777" not in por_chat[556000]
+    assert "Mazda" in por_chat[556000]  # el dato del vehículo SÍ es visible para todos
+    assert "consulta hecha" in por_chat[556000].lower()
+
+
+def test_rgm_resultado_judicial_solo_admin_ve_radicados(bot):
+    admin = _crear_usuario("Admin Tele10", "Admin", "admin.tele10", telegram_id=556111)
+    oper = _crear_usuario("Oper Tele3", "Operador", "oper.tele3", telegram_id=556112)
+    bot._vincular(556111, [bot.codigo], "Admin Tele10")
+    bot._vincular(556112, [bot.codigo], "Oper Tele3")
+    bot.llamadas.clear()
+
+    bot.on_evento("rgm.resultado", {
+        "item_id": 2, "placa": "DEF456", "tipo": "JUDICIAL", "origen": "panel", "avistamiento_id": None,
+        "resultado": {"procesos": [{"radicado": "05001310300120250012300"}]},
+    })
+
+    por_chat = {c["chat_id"]: c["text"] for metodo, c in bot.llamadas if metodo == "sendMessage"}
+    assert "05001310300120250012300" in por_chat[556111]
+    assert "05001310300120250012300" not in por_chat[556112]
+    assert "consulta hecha" in por_chat[556112].lower()
+
+
+def test_rgm_resultado_responde_al_mensaje_del_avistamiento(bot):
+    admin = _crear_usuario("Admin Tele11", "Admin", "admin.tele11", telegram_id=556222)
+    bot._vincular(556222, [bot.codigo], "Admin Tele11")
+    bot._mensajes_por_avistamiento[42] = [{"chat_id": 556222, "message_id": 777}]
+    bot.llamadas.clear()
+
+    bot.on_evento("rgm.resultado", {
+        "item_id": 3, "placa": "GHI789", "tipo": "RGM", "avistamiento_id": 42,
+        "resultado": {"vehiculo": {"marca": "Kia"}},
+    })
+
+    ultimo = [c for metodo, c in bot.llamadas if metodo == "sendMessage"][-1]
+    assert ultimo["reply_to_message_id"] == 777
+    assert 42 not in bot._mensajes_por_avistamiento  # se consume, no queda colgado

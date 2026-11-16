@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, Request
 import database as db
 import nexcam_db
 import nexcam_telegram
+import rgm_cola
 import usuarios
 from templates import templates
 
@@ -54,6 +55,9 @@ def nexcam_panel(
         contexto["vehiculo"] = db.buscar_placa(placa_normalizada) if placa_normalizada else None
         vistas = nexcam_db.vistas_de([placa_normalizada]) if placa_normalizada else {}
         contexto["ficha"] = vistas.get(placa_normalizada)
+        contexto["snapshot_rgm"] = db.obtener_ultimo_snapshot_por_fuente(placa_normalizada, "RGM") if placa_normalizada else None
+        contexto["snapshot_judicial"] = db.obtener_ultimo_snapshot_por_fuente(placa_normalizada, "JUDICIAL") if placa_normalizada else None
+        contexto["trabajador_rgm_conectado"] = rgm_cola.trabajador_conectado()
     elif tab == "ya-vistas":
         contexto["ultimo_cruce"] = nexcam_db.obtener_ultimo_cruce()
     elif tab == "ocr":

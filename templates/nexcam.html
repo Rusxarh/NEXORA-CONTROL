@@ -154,6 +154,46 @@
         <div class="flex justify-between gap-3"><dt class="text-zinc-500">Marca / Línea</dt><dd class="text-zinc-300">{{ vehiculo.marca or '—' }} / {{ vehiculo.linea or '—' }}</dd></div>
         <div class="flex justify-between gap-3"><dt class="text-zinc-500">Color / Modelo</dt><dd class="text-zinc-300">{{ vehiculo.color or '—' }} / {{ vehiculo.modelo or '—' }}</dd></div>
       </div>
+
+      <div class="pt-4 border-t border-zinc-800 mb-5">
+        <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+          <p class="label-field mb-0">RGM (garantías mobiliarias) — en prueba</p>
+          <form method="post" action="/rgm/solicitar">
+            <input type="hidden" name="placa" value="{{ vehiculo.placa }}">
+            <input type="hidden" name="tipo" value="RGM">
+            <button type="submit" class="btn-secondary btn-sm">🔎 Consultar RGM</button>
+          </form>
+        </div>
+        {% if snapshot_rgm %}
+        <p class="text-xs text-zinc-500 mb-1">Última consulta: {{ snapshot_rgm.creado_en }}</p>
+        <pre class="text-xs font-mono text-zinc-400 whitespace-pre-wrap">{{ snapshot_rgm.datos }}</pre>
+        {% else %}
+        <p class="text-xs text-zinc-500">Todavía no se ha consultado RGM para esta placa.</p>
+        {% endif %}
+
+        <div class="flex flex-wrap items-center justify-between gap-2 mt-4 mb-2">
+          <p class="label-field mb-0">Procesos judiciales — en prueba, solo Admin</p>
+          <form method="post" action="/rgm/solicitar">
+            <input type="hidden" name="placa" value="{{ vehiculo.placa }}">
+            <input type="hidden" name="tipo" value="JUDICIAL">
+            <button type="submit" class="btn-secondary btn-sm">⚖️ Procesos judiciales</button>
+          </form>
+        </div>
+        {% if snapshot_judicial %}
+        <p class="text-xs text-zinc-500 mb-1">Última consulta: {{ snapshot_judicial.creado_en }}</p>
+        <pre class="text-xs font-mono text-zinc-400 whitespace-pre-wrap">{{ snapshot_judicial.datos }}</pre>
+        {% else %}
+        <p class="text-xs text-zinc-500">Todavía no se han consultado procesos judiciales para esta placa.</p>
+        {% endif %}
+
+        {% if not trabajador_rgm_conectado %}
+        <p class="alert-info text-xs mt-3">RGM en espera: abre <a href="/rgm/trabajador" class="underline">Trabajador RGM</a> en la PC para poder procesar consultas.</p>
+        {% endif %}
+
+        <p class="text-xs text-zinc-500 mt-4">
+          <a href="/historial/{{ vehiculo.placa }}" class="underline">Ver auditoría completa de esta placa</a>
+        </p>
+      </div>
       {% endif %}
 
       <h3 class="text-xs font-semibold text-zinc-400 uppercase tracking-wide mb-2">Historial de avistamientos de la cámara</h3>

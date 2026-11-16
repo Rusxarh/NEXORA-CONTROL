@@ -26,6 +26,17 @@ para revisar):
   CAMERA_REACTIVATED/USER_DEACTIVATED/USER_REACTIVATED) se avisan SOLO a
   chats vinculados a un usuario Admin activo (nunca a Operador ni a chats
   sin usuario), consumidos por un hilo propio cada 60 s.
+
+FASE 6 (RGM/Judicial reales, vía rgm_cola.py): al llegar `rgm.resultado`
+de un avistamiento de cámara, se responde (reply_to_message_id) a la
+alerta original con los datos de RGM. REGLA DE SEGURIDAD (obligatoria):
+los datos del deudor/garante de RGM y CUALQUIER dato de Judicial
+(radicado, procesos) SOLO se muestran a chats vinculados a un usuario
+Admin activo; a un chat de Operador o sin usuario asignado se le muestra
+únicamente el dato del vehículo (marca/modelo) y "consulta hecha", nunca
+el resto. El botón "🔎 Consultar RGM" (sobre cualquier ficha/alerta) sí
+está disponible para cualquier chat con usuario asignado -- pedir la
+consulta no es sensible, el RESULTADO sí.
 """
 
 import json
@@ -132,6 +143,7 @@ class BotTelegram:
         self.bot_nombre = None
         self.esperando = {}   # chat_id -> {"que": ..., "hasta": datetime}
         self.sesiones = {}    # device_uuid -> sesión de cámara en vivo
+        self._mensajes_por_avistamiento = {}  # avistamiento_id -> [{chat_id, message_id}] (FASE 6)
         self._lock = threading.Lock()
         self._hilo_bucle = None
         self._hilo_eventos = None
@@ -270,7 +282,10 @@ class BotTelegram:
             fila.append({"text": "🔢 Foto de la placa", "callback_data": f"placa:{v['id']}"})
         if _tiene_gps(v):
             fila.append({"text": "🗺️ Mapa", "url": _url_mapa(v["lat"], v["lng"])})
-        return {"inline_keyboard": [fila]}
+        # FASE 6: pedir la consulta nunca es sensible (el resultado sí; se
+        # filtra en _on_evento/rgm.resultado), así que este botón se ofrece
+        # a cualquier chat con usuario asignado.
+        return {"inline_keyboard": [fila, [{"text": "🔎 Consultar RGM", "callback_data": f"rgm:{v['placa']}"}]]}
 
     def _foto_principal(self, v: dict) -> Optional[Path]:
         if not v:
@@ -471,10 +486,28 @@ class BotTelegram:
                 return
             if p.get("en_lista") or p.get("match_type") == "exacta":
                 t = f"🚨 <b>PLACA EN LISTA: {_esc(_fmt_placa(p['placa']))}</b>\n{self._detalle_deteccion(p)}"
-                self._a_todos(t, foto=self._foto_principal(p), extra=extra, ubicacion=ubicacion)
+                enviados = self._a_todos(t, foto=self._foto_principal(p), extra=extra, ubicacion=ubicacion)
+                # Guarda a qué mensajes responder cuando llegue rgm.resultado
+                # de este mismo avistamiento (encolado automático en
+                # nexcam_api.py bajo la misma condición en_lista+no-probable).
+                if p.get("id") is not None and enviados:
+                    self._mensajes_por_avistamiento[p["id"]] = enviados
+                    if len(self._mensajes_por_avistamiento) > 500:
+                        self._mensajes_por_avistamiento.pop(next(iter(self._mensajes_por_avistamiento)))
                 return
             if self.cfg["modo"] == "todo" and not self.cfg["en_vivo"]:
                 self._a_todos(f"▫️ {_esc(_fmt_placa(p['placa']))} leída. No está en la lista.\n{_esc(p.get('operador') or '')}, {_hora(p.get('ts'))}")
+            return
+        if evento == "rgm.resultado":
+            return self._on_rgm_resultado(p)
+        if evento == "rgm.error":
+            placa = p.get("placa")
+            avistamiento_id = p.get("avistamiento_id")
+            destinos = self._mensajes_por_avistamiento.pop(avistamiento_id, None) if avistamiento_id else None
+            if destinos:
+                for d in destinos:
+                    self._texto(d["chat_id"], f"⚠️ No se pudo consultar RGM de <b>{_esc(_fmt_placa(placa or ''))}</b>: {_esc(p.get('error'))}",
+                                 {"reply_to_message_id": d.get("message_id")} if d.get("message_id") else None)
             return
         if evento == "device.new":
             modelo = f"{p.get('brand') or ''} {p.get('model') or ''}".strip() or "Sin modelo"
@@ -488,6 +521,78 @@ class BotTelegram:
             self._cerrar_sesion(p.get("device_uuid"))
             self._a_todos(f"⛔ Se revocó el teléfono <code>{_esc(p['device_uuid'])}</code>. Su sesión se cerró y sus datos locales se borran.")
             return
+
+    def _on_rgm_resultado(self, p: dict):
+        """
+        FASE 6. Responde (reply_to_message_id si hay un avistamiento de
+        cámara detrás) con el resultado de RGM/Judicial. REGLA DE
+        SEGURIDAD: el texto se arma DISTINTO por chat según si está
+        vinculado a un usuario Admin activo (ver docstring del módulo) --
+        nunca el mismo texto para todos como en el resto del bot.
+        """
+        placa = p.get("placa")
+        tipo = p.get("tipo")
+        resultado = p.get("resultado") or {}
+        avistamiento_id = p.get("avistamiento_id")
+        destinos = self._mensajes_por_avistamiento.pop(avistamiento_id, None) if avistamiento_id else None
+        chats_destino = destinos if destinos else [{"chat_id": c["id"]} for c in self.cfg["chats"]]
+
+        if not self.activo or self.cfg["silencio"]:
+            return
+
+        for destino in chats_destino:
+            usuario = self._usuario_de_chat(destino["chat_id"])
+            es_admin = bool(usuario and usuario["rol"] == "Admin" and usuario["estado"] == "activo")
+            if tipo == "RGM":
+                texto = self._texto_resultado_rgm(placa, resultado, es_admin)
+            else:
+                texto = self._texto_resultado_judicial(placa, resultado, es_admin)
+
+            botones = [{"text": "📋 Ficha", "callback_data": f"ficha:{placa}"}]
+            if tipo == "RGM" and es_admin:
+                botones.append({"text": "⚖️ Procesos judiciales (en prueba)", "callback_data": f"rgm_judicial:{placa}"})
+            extra = {"reply_markup": {"inline_keyboard": [botones]}}
+            if destino.get("message_id"):
+                extra["reply_to_message_id"] = destino["message_id"]
+            try:
+                self._texto(destino["chat_id"], texto, extra)
+            except Exception as e:
+                self.log(f"Telegram: no se pudo avisar rgm.resultado a {destino['chat_id']} - {e}")
+
+    def _texto_resultado_rgm(self, placa: str, resultado: dict, es_admin: bool) -> str:
+        vehiculo = resultado.get("vehiculo") or {}
+        veh_txt = ", ".join(x for x in (vehiculo.get("marca"), vehiculo.get("anio_modelo")) if x) or "sin datos"
+        if not es_admin:
+            return f"📄 <b>RGM consultado: {_esc(_fmt_placa(placa))}</b>\nVehículo: {_esc(veh_txt)}\nConsulta hecha."
+        deudor = resultado.get("deudor_garante") or {}
+        lineas = [f"📄 <b>Datos RGM: {_esc(_fmt_placa(placa))}</b>", f"Vehículo: {_esc(veh_txt)}"]
+        if deudor.get("nombre"):
+            lineas.append(f"Deudor/garante: {_esc(deudor.get('nombre'))}")
+        if deudor.get("tipo_identificacion") or deudor.get("numero_identificacion"):
+            lineas.append(f"Documento: {_esc(deudor.get('tipo_identificacion') or '')} {_esc(deudor.get('numero_identificacion') or '')}".strip())
+        if deudor.get("ciudad"):
+            lineas.append(f"Ciudad: {_esc(deudor.get('ciudad'))}")
+        lineas.append("Verifica en el portal antes de actuar (dato en prueba).")
+        return "\n".join(lineas)
+
+    def _texto_resultado_judicial(self, placa: str, resultado: dict, es_admin: bool) -> str:
+        if not es_admin:
+            return f"📄 <b>Procesos judiciales consultados: {_esc(_fmt_placa(placa))}</b>\nConsulta hecha."
+        if resultado.get("estado") == "PROCESO_PRIVADO":
+            return f"⚖️ <b>{_esc(_fmt_placa(placa))}</b>: el proceso es privado, no se puede abrir."
+        procesos = resultado.get("procesos") or []
+        if not procesos:
+            return f"⚖️ <b>{_esc(_fmt_placa(placa))}</b>: no se encontraron procesos judiciales."
+        lineas = [f"⚖️ <b>Procesos judiciales: {_esc(_fmt_placa(placa))}</b> (en prueba: verifica en el portal antes de actuar)"]
+        seleccionado = resultado.get("procesoSeleccionado")
+        if seleccionado and seleccionado.get("radicado"):
+            lineas.append(f"Radicado: <code>{_esc(seleccionado['radicado'])}</code>")
+            for act in (seleccionado.get("actuaciones") or [])[:10]:
+                lineas.append(f"• {_esc(act if isinstance(act, str) else act.get('descripcion', ''))}")
+        else:
+            for proc in procesos[:10]:
+                lineas.append(f"• Radicado <code>{_esc(proc.get('radicado'))}</code>")
+        return "\n".join(lineas)
 
     # ------------------------------------------------------------ acciones del usuario
 
@@ -732,6 +837,24 @@ class BotTelegram:
             responder("" if foto else "Esa foto ya no está disponible")
             if foto:
                 return self._enviar_foto(chat_id, foto, f"🔢 Placa leída: <b>{_esc(_fmt_placa(v.get('leida') or v['placa']))}</b>, {_hora(v['ts'])}")
+        if accion in ("rgm", "rgm_judicial"):
+            usuario = self._usuario_de_chat(chat_id)
+            if usuario is None:
+                responder("Este chat no tiene usuario de NEXORA asignado todavía.")
+                return
+            import rgm_cola
+
+            tipo = "RGM" if accion == "rgm" else "JUDICIAL"
+            placa = nexcam_db.normalizar_placa(valor)
+            resultado = rgm_cola.solicitar_consulta(placa, tipo, "telegram", usuario["id"])
+            if resultado["accion"] == "SNAPSHOT_VIGENTE":
+                responder(f"Ya hay una consulta de {tipo} reciente para esa placa.")
+            elif resultado["accion"] == "YA_EN_COLA":
+                responder(f"Ya hay una consulta de {tipo} en curso para esa placa.")
+            else:
+                conectado = rgm_cola.trabajador_conectado()
+                responder("Consulta encolada." if conectado else "Consulta encolada, pero no hay Trabajador RGM conectado ahora mismo.")
+            return
 
     # ------------------------------------------------------------ bucle de mensajes
 
