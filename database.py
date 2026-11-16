@@ -49,15 +49,23 @@ ESTADOS_INFORMACION_PLACA = ("ACTUALIZADA", "PENDIENTE", "SIN_DATOS")
 ESTADOS_ESTUDIO = ("EN_PROGRESO", "PAUSADO", "CANCELADO", "COMPLETADO")
 ESTADOS_ITEM_COLA = ("PENDIENTE", "PROCESANDO", "COMPLETADO", "ERROR")
 
-# FASE 6 (NEXCAM): cola de consultas RGM/Judicial reales a través del
+# FASE 6/7 (NEXCAM): cola de consultas RGM/Judicial reales a través del
 # Connector. Ver rgm_cola.py para la lógica (reserva de a una, sin
-# duplicados, reintentos). Estas tuplas solo fijan los valores permitidos,
-# mismo patrón que el resto de este archivo.
-TIPOS_CONSULTA_RGM = ("RGM", "JUDICIAL")
+# duplicados, reintentos, encadenar Judicial tras RGM). Estas tuplas solo
+# fijan los valores permitidos, mismo patrón que el resto de este archivo.
+# "alcance" (antes "tipo"): qué parte del flujo real se pide al Connector
+# -- RGM sola, Judicial sola (con el nombre de un snapshot RGM reciente) o
+# COMPLETO (RGM + Judicial encadenado, comportamiento histórico único).
+ALCANCES_CONSULTA_RGM = ("RGM", "JUDICIAL", "COMPLETO")
 ORIGENES_CONSULTA_RGM = ("camara", "telegram", "panel")
 ESTADOS_ITEM_RGM = ("PENDIENTE", "EN_CURSO", "OK", "ERROR")
 MAX_INTENTOS_RGM = 2
 VIGENCIA_SNAPSHOT_RGM_HORAS = 24
+# Si la página Consulta se recarga a mitad de un ítem EN_CURSO, ese ítem
+# queda huérfano (nadie va a completarlo ni a reportar error): se libera
+# solo pasado este tiempo, más holgado que el timeout propio del
+# JavaScript (2 min) para no competir con un reintento que sí sigue vivo.
+MINUTOS_ABANDONO_ITEM_RGM = 4
 
 # Un snapshot se considera "vigente" (ACTUALIZADA) si tiene menos de este
 # número de días; más viejo que esto es PENDIENTE de actualizar. La Etapa
@@ -202,25 +210,32 @@ CREATE TABLE IF NOT EXISTS cola_estudio (
     FOREIGN KEY (estudio_id) REFERENCES estudios_masivos (id)
 );
 
--- FASE 6 (NEXCAM): cola de consultas RGM/Judicial reales a través del
+-- FASE 6/7 (NEXCAM): cola de consultas RGM/Judicial reales a través del
 -- Connector (ver rgm_cola.py). avistamiento_id es NULL cuando el origen
 -- es 'telegram'/'panel' (una placa suelta, no ligada a una lectura de
--- cámara).
+-- cámara). nombre_judicial solo aplica a alcance='JUDICIAL' (lo que se
+-- le manda al Connector en vez de la placa). encadenar_judicial: cuando
+-- un alcance='RGM' terminó con este flag en 1, al completarse se encola
+-- automáticamente un 'JUDICIAL' con el nombre recién obtenido (pedido
+-- "Judicial sola: si no hay snapshot RGM reciente, hace RGM primero").
 CREATE TABLE IF NOT EXISTS rgm_cola (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     placa          TEXT NOT NULL,
-    tipo           TEXT NOT NULL CHECK (tipo IN ('RGM', 'JUDICIAL')),
+    alcance        TEXT NOT NULL CHECK (alcance IN ('RGM', 'JUDICIAL', 'COMPLETO')),
     origen         TEXT NOT NULL CHECK (origen IN ('camara', 'telegram', 'panel')),
     avistamiento_id INTEGER,
     solicitado_por INTEGER NOT NULL,
     estado         TEXT NOT NULL DEFAULT 'PENDIENTE' CHECK (estado IN ('PENDIENTE', 'EN_CURSO', 'OK', 'ERROR')),
     intentos       INTEGER NOT NULL DEFAULT 0,
     error          TEXT,
+    nombre_judicial     TEXT,
+    encadenar_judicial  INTEGER NOT NULL DEFAULT 0,
     creado         TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    reservado_en   TEXT,
     terminado      TEXT,
     FOREIGN KEY (solicitado_por) REFERENCES usuarios (id)
 );
-CREATE INDEX IF NOT EXISTS idx_rgm_cola_estado ON rgm_cola (placa, tipo, estado);
+CREATE INDEX IF NOT EXISTS idx_rgm_cola_estado ON rgm_cola (placa, alcance, estado);
 
 -- Índices para las búsquedas más frecuentes
 CREATE INDEX IF NOT EXISTS idx_vehiculos_placa  ON vehiculos (placa);
@@ -406,10 +421,38 @@ def _migrar_columnas_vehiculo_nexcam(conn):
             conn.execute(f"ALTER TABLE vehiculos ADD COLUMN {columna} TEXT")
 
 
+def _migrar_rgm_cola_alcance(conn):
+    """
+    FASE 6/7: `rgm_cola` nació con la columna `tipo` (solo RGM/JUDICIAL) en
+    un primer intento de esta integración; el plan vigente la renombra a
+    `alcance` y agrega COMPLETO/nombre_judicial/encadenar_judicial. SQLite
+    no permite renombrar una columna con CHECK ni ampliar un CHECK con
+    ALTER TABLE, así que se reconstruye la tabla -- pero SOLO si está
+    vacía (nunca hubo una consulta real completada con el esquema viejo;
+    confirmado antes de escribir esta migración). Si alguna vez tuviera
+    filas, no se toca y se registra en el log para decidir a mano: esta
+    migración jamás descarta datos reales en silencio.
+    """
+    fila = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='rgm_cola'"
+    ).fetchone()
+    if fila is None or "tipo" not in fila["sql"] or "alcance" in fila["sql"]:
+        return  # tabla nueva (ya con el esquema actual) o no existe todavía
+    total = conn.execute("SELECT COUNT(*) AS n FROM rgm_cola").fetchone()["n"]
+    if total > 0:
+        print(
+            f"AVISO: rgm_cola tiene {total} fila(s) con el esquema viejo (columna 'tipo') "
+            "y no se migró automáticamente para no perder datos. Revisar a mano."
+        )
+        return
+    conn.execute("DROP TABLE rgm_cola")
+
+
 def inicializar_db():
     """Crea las tablas e índices si no existen, y aplica migraciones aditivas
     sobre tablas ya existentes. Es seguro llamarla varias veces."""
     with get_connection() as conn:
+        _migrar_rgm_cola_alcance(conn)  # ANTES del executescript: DROP si corresponde
         conn.executescript(SCHEMA_SQL)
         _migrar_columnas_login(conn)
         _migrar_columnas_logs(conn)
@@ -1098,26 +1141,27 @@ def obtener_ultimo_snapshot_por_fuente(placa: str, fuente: str):
 # Cola RGM/Judicial (FASE 6 NEXCAM) — ver rgm_cola.py para la lógica.
 # ---------------------------------------------------------------------------
 
-def crear_item_rgm_cola(placa: str, tipo: str, origen: str, solicitado_por: int, avistamiento_id: int = None) -> int:
-    if tipo not in TIPOS_CONSULTA_RGM:
-        raise ValorInvalidoError(f"Tipo de consulta RGM inválido: {tipo}")
+def crear_item_rgm_cola(placa: str, alcance: str, origen: str, solicitado_por: int, avistamiento_id: int = None,
+                         nombre_judicial: str = None, encadenar_judicial: bool = False) -> int:
+    if alcance not in ALCANCES_CONSULTA_RGM:
+        raise ValorInvalidoError(f"Alcance de consulta RGM inválido: {alcance}")
     if origen not in ORIGENES_CONSULTA_RGM:
         raise ValorInvalidoError(f"Origen de consulta RGM inválido: {origen}")
     with get_connection() as conn:
         cur = conn.execute(
-            """INSERT INTO rgm_cola (placa, tipo, origen, avistamiento_id, solicitado_por)
-               VALUES (?, ?, ?, ?, ?)""",
-            (placa.strip().upper(), tipo, origen, avistamiento_id, solicitado_por),
+            """INSERT INTO rgm_cola (placa, alcance, origen, avistamiento_id, solicitado_por, nombre_judicial, encadenar_judicial)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (placa.strip().upper(), alcance, origen, avistamiento_id, solicitado_por, nombre_judicial, int(encadenar_judicial)),
         )
         return cur.lastrowid
 
 
-def item_rgm_pendiente_o_en_curso(placa: str, tipo: str):
+def item_rgm_pendiente_o_en_curso(placa: str, alcance: str):
     with get_connection() as conn:
         fila = conn.execute(
-            """SELECT * FROM rgm_cola WHERE placa = ? AND tipo = ? AND estado IN ('PENDIENTE', 'EN_CURSO')
+            """SELECT * FROM rgm_cola WHERE placa = ? AND alcance = ? AND estado IN ('PENDIENTE', 'EN_CURSO')
                ORDER BY id DESC LIMIT 1""",
-            (placa.strip().upper(), tipo),
+            (placa.strip().upper(), alcance),
         ).fetchone()
         return dict(fila) if fila else None
 
@@ -1131,18 +1175,36 @@ def obtener_item_rgm(item_id: int):
 def reservar_siguiente_item_rgm():
     """
     Toma UNA consulta a la vez: la más vieja en PENDIENTE, la marca
-    EN_CURSO y la devuelve. Usa una sola transacción (UPDATE ... WHERE
-    estado = 'PENDIENTE' seguido del SELECT de esa misma fila) para que
-    dos llamadas simultáneas nunca reserven la misma fila dos veces.
+    EN_CURSO (con reservado_en) y la devuelve. Usa una sola transacción
+    (UPDATE ... WHERE estado = 'PENDIENTE' seguido del SELECT de esa
+    misma fila) para que dos llamadas simultáneas nunca reserven la
+    misma fila dos veces.
+
+    Antes de reservar, libera los ítems EN_CURSO abandonados (una
+    recarga de la página Consulta a mitad de una consulta real no debe
+    dejarlos colgados para siempre, ver MINUTOS_ABANDONO_ITEM_RGM).
     """
     with get_connection() as conn:
+        limite = (datetime.now() - timedelta(minutes=MINUTOS_ABANDONO_ITEM_RGM)).strftime("%Y-%m-%d %H:%M:%S")
+        for colgado in conn.execute(
+            "SELECT id, intentos FROM rgm_cola WHERE estado = 'EN_CURSO' AND reservado_en < ?", (limite,)
+        ).fetchall():
+            if colgado["intentos"] >= MAX_INTENTOS_RGM:
+                conn.execute(
+                    "UPDATE rgm_cola SET estado = 'ERROR', error = ?, terminado = datetime('now', 'localtime') WHERE id = ?",
+                    ("Abandonada: nadie reportó el resultado (¿se recargó la página Consulta?).", colgado["id"]),
+                )
+            else:
+                conn.execute("UPDATE rgm_cola SET estado = 'PENDIENTE', reservado_en = NULL WHERE id = ?", (colgado["id"],))
+
         fila = conn.execute(
             "SELECT id FROM rgm_cola WHERE estado = 'PENDIENTE' ORDER BY id ASC LIMIT 1"
         ).fetchone()
         if fila is None:
             return None
         cur = conn.execute(
-            "UPDATE rgm_cola SET estado = 'EN_CURSO', intentos = intentos + 1 WHERE id = ? AND estado = 'PENDIENTE'",
+            """UPDATE rgm_cola SET estado = 'EN_CURSO', intentos = intentos + 1, reservado_en = datetime('now', 'localtime')
+               WHERE id = ? AND estado = 'PENDIENTE'""",
             (fila["id"],),
         )
         if cur.rowcount == 0:
@@ -1174,6 +1236,18 @@ def marcar_item_rgm_error(item_id: int, mensaje: str):
             )
         else:
             conn.execute("UPDATE rgm_cola SET estado = 'PENDIENTE', error = ? WHERE id = ?", (mensaje, item_id))
+
+
+def listar_items_rgm_activos():
+    """Pendientes + en curso (para mostrar la cola en vivo en 'Consulta')."""
+    with get_connection() as conn:
+        filas = conn.execute(
+            """SELECT c.*, u.nombre AS solicitado_por_nombre FROM rgm_cola c
+               LEFT JOIN usuarios u ON u.id = c.solicitado_por
+               WHERE c.estado IN ('PENDIENTE', 'EN_CURSO')
+               ORDER BY c.id ASC"""
+        ).fetchall()
+        return [dict(f) for f in filas]
 
 
 def listar_ultimos_items_rgm(limite: int = 20):

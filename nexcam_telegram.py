@@ -459,10 +459,15 @@ class BotTelegram:
             fila.append({"text": "🔢 Foto de la placa", "callback_data": f"placa:{v['id']}"})
         if _tiene_gps(v):
             fila.append({"text": "🗺️ Mapa", "url": _url_mapa(v["lat"], v["lng"])})
+        filas = [fila]
         # FASE 6: pedir la consulta nunca es sensible (el resultado sí; se
-        # filtra en _on_evento/rgm.resultado), así que este botón se ofrece
-        # a cualquier chat con usuario asignado.
-        return {"inline_keyboard": [fila, [{"text": "🔎 Consultar RGM", "callback_data": f"rgm:{v['placa']}"}]]}
+        # filtra en _on_rgm_resultado), pero el botón solo se ofrece
+        # "cuando no hay datos" (pedido explícito): si ya hay un snapshot
+        # RGM para esta placa, no tiene sentido mostrarlo de nuevo aquí
+        # (la ficha y la respuesta de rgm.resultado ya lo cubren).
+        if not db.obtener_ultimo_snapshot_por_fuente(v["placa"], "RGM"):
+            filas.append([{"text": "🔎 Consultar RGM", "callback_data": f"rgm:{v['placa']}"}])
+        return {"inline_keyboard": filas}
 
     def _foto_principal(self, v: dict) -> Optional[Path]:
         if not v:
@@ -709,25 +714,31 @@ class BotTelegram:
         nunca el mismo texto para todos como en el resto del bot.
         """
         placa = p.get("placa")
-        tipo = p.get("tipo")
         resultado = p.get("resultado") or {}
+        rgm_resultado = resultado.get("rgm")
+        judicial_resultado = resultado.get("judicial")
         avistamiento_id = p.get("avistamiento_id")
         destinos = self._mensajes_por_avistamiento.pop(avistamiento_id, None) if avistamiento_id else None
         chats_destino = destinos if destinos else [{"chat_id": c["id"]} for c in self.cfg["chats"]]
 
         if not self.activo or self.cfg["silencio"]:
             return
+        if rgm_resultado is None and judicial_resultado is None:
+            return
 
         for destino in chats_destino:
             usuario = self._usuario_de_chat(destino["chat_id"])
             es_admin = bool(usuario and usuario["rol"] == "Admin" and usuario["estado"] == "activo")
-            if tipo == "RGM":
-                texto = self._texto_resultado_rgm(placa, resultado, es_admin)
-            else:
-                texto = self._texto_resultado_judicial(placa, resultado, es_admin)
+
+            textos = []
+            if rgm_resultado is not None:
+                textos.append(self._texto_resultado_rgm(placa, rgm_resultado, es_admin))
+            if judicial_resultado is not None:
+                textos.append(self._texto_resultado_judicial(placa, judicial_resultado, es_admin))
+            texto = "\n\n".join(textos)
 
             botones = [{"text": "📋 Ficha", "callback_data": f"ficha:{placa}"}]
-            if tipo == "RGM" and es_admin:
+            if rgm_resultado is not None and judicial_resultado is None and es_admin:
                 botones.append({"text": "⚖️ Procesos judiciales (en prueba)", "callback_data": f"rgm_judicial:{placa}"})
             extra = {"reply_markup": {"inline_keyboard": [botones]}}
             if destino.get("message_id"):
@@ -1030,16 +1041,17 @@ class BotTelegram:
                 return
             import rgm_cola
 
-            tipo = "RGM" if accion == "rgm" else "JUDICIAL"
+            alcance = "RGM" if accion == "rgm" else "JUDICIAL"
             placa = nexcam_db.normalizar_placa(valor)
-            resultado = rgm_cola.solicitar_consulta(placa, tipo, "telegram", usuario["id"])
+            resultado = rgm_cola.solicitar_consulta(placa, alcance, "telegram", usuario["id"])
             if resultado["accion"] == "SNAPSHOT_VIGENTE":
-                responder(f"Ya hay una consulta de {tipo} reciente para esa placa.")
+                responder(f"Ya hay una consulta de {alcance} reciente para esa placa.")
             elif resultado["accion"] == "YA_EN_COLA":
-                responder(f"Ya hay una consulta de {tipo} en curso para esa placa.")
+                responder(f"Ya hay una consulta de {alcance} en curso para esa placa.")
             else:
                 conectado = rgm_cola.trabajador_conectado()
-                responder("Consulta encolada." if conectado else "Consulta encolada, pero no hay Trabajador RGM conectado ahora mismo.")
+                extra = f" {resultado['mensaje']}" if resultado.get("mensaje") else ""
+                responder(("Consulta encolada." + extra) if conectado else ("Consulta encolada, pero nadie tiene abierta la página Consulta ahora mismo." + extra))
             return
 
     # ------------------------------------------------------------ bucle de mensajes

@@ -182,9 +182,9 @@ def test_rgm_resultado_admin_ve_deudor_operador_no(bot):
     bot.llamadas.clear()
 
     bot.on_evento("rgm.resultado", {
-        "item_id": 1, "placa": "ABC123", "tipo": "RGM", "origen": "panel", "avistamiento_id": None,
-        "resultado": {"estado": "OK", "deudor_garante": {"nombre": "Juan Pérez", "numero_identificacion": "999888777"},
-                      "vehiculo": {"marca": "Mazda"}},
+        "item_id": 1, "placa": "ABC123", "alcance": "RGM", "origen": "panel", "avistamiento_id": None,
+        "resultado": {"rgm": {"estado": "OK", "deudor_garante": {"nombre": "Juan Pérez", "numero_identificacion": "999888777"},
+                              "vehiculo": {"marca": "Mazda"}}, "judicial": None},
     })
 
     por_chat = {c["chat_id"]: c["text"] for metodo, c in bot.llamadas if metodo == "sendMessage"}
@@ -203,8 +203,8 @@ def test_rgm_resultado_judicial_solo_admin_ve_radicados(bot):
     bot.llamadas.clear()
 
     bot.on_evento("rgm.resultado", {
-        "item_id": 2, "placa": "DEF456", "tipo": "JUDICIAL", "origen": "panel", "avistamiento_id": None,
-        "resultado": {"procesos": [{"radicado": "05001310300120250012300"}]},
+        "item_id": 2, "placa": "DEF456", "alcance": "JUDICIAL", "origen": "panel", "avistamiento_id": None,
+        "resultado": {"rgm": None, "judicial": {"procesos": [{"radicado": "05001310300120250012300"}]}},
     })
 
     por_chat = {c["chat_id"]: c["text"] for metodo, c in bot.llamadas if metodo == "sendMessage"}
@@ -220,8 +220,8 @@ def test_rgm_resultado_responde_al_mensaje_del_avistamiento(bot):
     bot.llamadas.clear()
 
     bot.on_evento("rgm.resultado", {
-        "item_id": 3, "placa": "GHI789", "tipo": "RGM", "avistamiento_id": 42,
-        "resultado": {"vehiculo": {"marca": "Kia"}},
+        "item_id": 3, "placa": "GHI789", "alcance": "RGM", "avistamiento_id": 42,
+        "resultado": {"rgm": {"vehiculo": {"marca": "Kia"}}, "judicial": None},
     })
 
     ultimo = [c for metodo, c in bot.llamadas if metodo == "sendMessage"][-1]

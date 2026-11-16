@@ -1,31 +1,39 @@
 """
 rgm_cola.py
 Cola de consultas RGM/Judicial reales a través de NEXORA-CONNECTOR
-(FASE 6 NEXCAM). database.py guarda la fila (rgm_cola); aquí vive la
-regla de negocio: sin duplicados, un snapshot vigente (24 h) evita una
-consulta innecesaria, y la página "Trabajador RGM" (abierta y atendida en
-Chrome, único lugar que puede hablar con el Connector) es la que reserva
-y completa los ítems -- el servidor nunca consulta el portal por sí mismo.
+(FASE 6/7 NEXCAM, plan docs/PLAN-NEXCAM-FASE6-7.md). database.py guarda la
+fila (rgm_cola); aquí vive la regla de negocio: sin duplicados, un
+snapshot vigente (24 h) evita una consulta innecesaria, "Judicial sola"
+reutiliza el nombre de un snapshot RGM reciente (o encadena RGM primero si
+no hay uno), y la página "Consulta" -- abierta y atendida en Chrome, único
+lugar que puede hablar con el Connector -- es la que reserva y completa
+los ítems. El servidor nunca consulta el portal por sí mismo.
 
 Especificación de referencia leída COMPLETA antes de escribir este
-archivo (y de rgm_web.py): nexora-connector-rgm-v0.1/background.js,
-judicial.js, content.js. No se modificó ninguno de los tres.
+archivo (y de rgm_web.py): nexora-connector-rgm-v0.1/background.js
+(rama alcance-rgm), judicial.js, content.js. No se modificó judicial.js
+ni content.js.
 
-HALLAZGO IMPORTANTE (decisión ya discutida y aprobada por Gabriel):
-- El protocolo externo CONSULTAR_PLACA del Connector NO distingue "solo
-  RGM" de "RGM+Judicial": si RGM entrega un nombre de deudor/garante
-  utilizable, el Connector encadena Judicial automáticamente, SIN
-  esperar confirmación de la Web. Para un ítem de tipo 'RGM', la
-  Trabajador RGM cancela (acción CANCELAR_CONSULTA) apenas recibe
-  RGM_COMPLETADO/RGM_INCOMPLETO -- pero como el Connector sigue de
-  inmediato tras emitir ese evento, existe una condición de carrera real:
-  ocasionalmente Judicial puede alcanzar a arrancar de todas formas antes
-  de que la cancelación llegue. Queda documentado como limitación
-  conocida (no resuelta, no silenciada), no se modificó el Connector.
-- El extractor real de RGM (content.js) solo entrega marca y
-  "Año Correspondiente al Modelo" del vehículo -- NUNCA línea ni color
-  (esos campos no existen en su resultado). _completar_datos_vehiculo
-  por eso solo completa marca/modelo, nunca línea/color.
+Decisiones de esta fase:
+- La rama `alcance-rgm` del Connector agrega `alcance: "RGM"|"JUDICIAL"|
+  "COMPLETO"` a CONSULTAR_PLACA: "RGM" ya NO encadena Judicial (el
+  Connector mismo se detiene tras RGM_COMPLETADO/INCOMPLETO) -- resuelve
+  de raíz la condición de carrera del intento anterior de esta
+  integración (cancelar justo después de RGM_COMPLETADO ya no es
+  necesario, ni existe). "JUDICIAL" arranca Judicial directo con un
+  nombre, sin pasar por RGM.
+- El resultado que la página "Consulta" manda a /rgm/trabajador/resultado
+  es SIEMPRE la forma {"rgm": ... | null, "judicial": ... | null} --
+  exactamente los campos `consulta.rgm`/`consulta.judicial` que ya
+  entrega el Connector (consultaPublica), sin que el cliente tenga que
+  distinguir el alcance. completar_item() guarda cada pieza presente como
+  su propio snapshot (fuente 'RGM' o 'JUDICIAL' en snapshots_placa,
+  NUNCA 'COMPLETO': ese valor no existe como fuente, solo como alcance
+  pedido).
+- El extractor real de RGM (content.js) solo entrega marca y "Año
+  Correspondiente al Modelo" del vehículo -- nunca línea ni color (esos
+  campos no existen en su resultado). _completar_datos_vehiculo por eso
+  solo completa marca/modelo.
 """
 
 import json
@@ -39,7 +47,8 @@ _ultimo_latido: Optional[datetime] = None
 
 
 def registrar_latido_trabajador():
-    """Llamado por la página Trabajador RGM cada ~20 s mientras sigue abierta."""
+    """Llamado por la página Consulta cada ~20 s mientras sigue abierta
+    atendiendo la cola."""
     global _ultimo_latido
     _ultimo_latido = datetime.now()
 
@@ -62,31 +71,67 @@ def _emitir(evento: str, payload: dict):
         pass
 
 
-def solicitar_consulta(placa: str, tipo: str, origen: str, usuario_id: int, avistamiento_id: int = None) -> dict:
+def _nombre_de_snapshot_rgm(snapshot: dict) -> Optional[str]:
+    try:
+        datos = json.loads(snapshot["datos"] or "{}")
+    except Exception:
+        return None
+    nombre = ((datos.get("deudor_garante") or {}).get("nombre") or "").strip()
+    return nombre or None
+
+
+def solicitar_consulta(placa: str, alcance: str, origen: str, usuario_id: int, avistamiento_id: int = None,
+                        _encadenado: bool = False) -> dict:
     """
     Punto de entrada único para pedir una consulta RGM/Judicial real.
     Devuelve {"accion": "SNAPSHOT_VIGENTE" | "YA_EN_COLA" | "ENCOLADA", ...}.
-    Nunca duplica: si ya hay un snapshot de menos de 24 h para esa placa y
-    tipo, lo usa; si ya hay un ítem PENDIENTE/EN_CURSO, no crea otro.
+
+    alcance="JUDICIAL": usa el nombre de un snapshot RGM de menos de 24 h
+    si existe; si no, encola "RGM" con encadenar_judicial=True (al
+    completarse esa RGM, esta misma función se vuelve a llamar sola con
+    "JUDICIAL" -- ver completar_item) y devuelve esa consulta RGM con un
+    "mensaje" explicando que primero consulta RGM.
     """
     placa = placa.strip().upper()
 
-    snapshot = db.obtener_ultimo_snapshot_por_fuente(placa, tipo)
-    if snapshot and _snapshot_vigente(snapshot):
-        return {"accion": "SNAPSHOT_VIGENTE", "snapshot": snapshot}
+    if alcance == "JUDICIAL":
+        snapshot_rgm = db.obtener_ultimo_snapshot_por_fuente(placa, "RGM")
+        nombre = _nombre_de_snapshot_rgm(snapshot_rgm) if snapshot_rgm and _snapshot_vigente(snapshot_rgm) else None
+        if not nombre:
+            resultado = solicitar_consulta(placa, "RGM", origen, usuario_id, avistamiento_id, _encadenado=True)
+            resultado["mensaje"] = "Primero consulto RGM para obtener el nombre."
+            return resultado
 
-    existente = db.item_rgm_pendiente_o_en_curso(placa, tipo)
+        existente = db.item_rgm_pendiente_o_en_curso(placa, "JUDICIAL")
+        if existente:
+            return {"accion": "YA_EN_COLA", "item": existente}
+        item_id = db.crear_item_rgm_cola(placa, "JUDICIAL", origen, usuario_id, avistamiento_id, nombre_judicial=nombre)
+        item = db.obtener_item_rgm(item_id)
+        _emitir("rgm.solicitud", {"id": item_id, "placa": placa, "alcance": "JUDICIAL"})
+        return {"accion": "ENCOLADA", "item": item}
+
+    if alcance == "COMPLETO":
+        snap_rgm = db.obtener_ultimo_snapshot_por_fuente(placa, "RGM")
+        snap_jud = db.obtener_ultimo_snapshot_por_fuente(placa, "JUDICIAL")
+        if snap_rgm and _snapshot_vigente(snap_rgm) and snap_jud and _snapshot_vigente(snap_jud):
+            return {"accion": "SNAPSHOT_VIGENTE", "snapshot": {"rgm": snap_rgm, "judicial": snap_jud}}
+    else:  # "RGM"
+        snapshot = db.obtener_ultimo_snapshot_por_fuente(placa, "RGM")
+        if snapshot and _snapshot_vigente(snapshot) and not _encadenado:
+            return {"accion": "SNAPSHOT_VIGENTE", "snapshot": snapshot}
+
+    existente = db.item_rgm_pendiente_o_en_curso(placa, alcance)
     if existente:
         return {"accion": "YA_EN_COLA", "item": existente}
 
-    item_id = db.crear_item_rgm_cola(placa, tipo, origen, usuario_id, avistamiento_id)
+    item_id = db.crear_item_rgm_cola(placa, alcance, origen, usuario_id, avistamiento_id, encadenar_judicial=_encadenado)
     item = db.obtener_item_rgm(item_id)
-    _emitir("rgm.solicitud", {"id": item_id, "placa": placa, "tipo": tipo})
+    _emitir("rgm.solicitud", {"id": item_id, "placa": placa, "alcance": alcance})
     return {"accion": "ENCOLADA", "item": item}
 
 
 def reservar_siguiente() -> Optional[dict]:
-    """Llamado SOLO por la Trabajador RGM: toma una consulta a la vez."""
+    """Llamado SOLO por la página 'Consulta' mientras atiende la cola."""
     return db.reservar_siguiente_item_rgm()
 
 
@@ -126,32 +171,46 @@ def _completar_datos_vehiculo_desde_rgm(placa: str, vehiculo_rgm: dict) -> dict:
 
 def completar_item(item_id: int, resultado: dict) -> dict:
     """
-    Guarda `resultado` (el objeto crudo que entregó el Connector) como
-    snapshot permanente, marca el ítem OK, completa marca/modelo si
-    corresponde (solo RGM) y avisa por SSE/Telegram.
+    `resultado` es SIEMPRE {"rgm": ...|null, "judicial": ...|null} (ver
+    docstring del módulo). Guarda cada pieza presente como su propio
+    snapshot, marca el ítem OK, completa marca/modelo si corresponde
+    (solo si vino `rgm`), encadena Judicial si esta RGM lo tenía pendiente,
+    y avisa por SSE/Telegram.
     """
     item = db.obtener_item_rgm(item_id)
     if item is None:
         raise db.RegistroNoEncontradoError(f"Ítem de cola RGM id={item_id} no existe")
 
-    db.crear_snapshot(item["placa"], item["tipo"], json.dumps(resultado or {}, ensure_ascii=False))
-    db.marcar_item_rgm_completado(item_id)
+    resultado = resultado or {}
+    rgm_resultado = resultado.get("rgm")
+    judicial_resultado = resultado.get("judicial")
 
     diferencias = {}
-    if item["tipo"] == "RGM":
-        diferencias = _completar_datos_vehiculo_desde_rgm(item["placa"], (resultado or {}).get("vehiculo") or {})
+    if rgm_resultado is not None:
+        db.crear_snapshot(item["placa"], "RGM", json.dumps(rgm_resultado, ensure_ascii=False))
+        diferencias = _completar_datos_vehiculo_desde_rgm(item["placa"], rgm_resultado.get("vehiculo") or {})
+    if judicial_resultado is not None:
+        db.crear_snapshot(item["placa"], "JUDICIAL", json.dumps(judicial_resultado, ensure_ascii=False))
+
+    db.marcar_item_rgm_completado(item_id)
+
+    encadenado = None
+    if item["alcance"] == "RGM" and item["encadenar_judicial"] and rgm_resultado is not None:
+        nombre = ((rgm_resultado.get("deudor_garante") or {}).get("nombre") or "").strip()
+        if nombre:
+            encadenado = solicitar_consulta(item["placa"], "JUDICIAL", item["origen"], item["solicitado_por"], item["avistamiento_id"])
 
     item_final = db.obtener_item_rgm(item_id)
     _emitir("rgm.resultado", {
-        "item_id": item_id, "placa": item["placa"], "tipo": item["tipo"], "origen": item["origen"],
+        "item_id": item_id, "placa": item["placa"], "alcance": item["alcance"], "origen": item["origen"],
         "avistamiento_id": item["avistamiento_id"], "solicitado_por": item["solicitado_por"],
         "resultado": resultado, "diferencias": diferencias,
     })
-    return {"item": item_final, "diferencias": diferencias}
+    return {"item": item_final, "diferencias": diferencias, "encadenado": encadenado}
 
 
 def marcar_error(item_id: int, mensaje: str):
     db.marcar_item_rgm_error(item_id, mensaje)
     item = db.obtener_item_rgm(item_id)
     if item and item["estado"] == "ERROR":
-        _emitir("rgm.error", {"item_id": item_id, "placa": item["placa"], "tipo": item["tipo"], "error": mensaje})
+        _emitir("rgm.error", {"item_id": item_id, "placa": item["placa"], "alcance": item["alcance"], "error": mensaje})

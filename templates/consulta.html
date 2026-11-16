@@ -82,40 +82,133 @@
   {% endif %}
 
   <!-- ============================================================
-       CONSULTA NEXORA — sección INDEPENDIENTE de la ficha local de
-       arriba. No toca el formulario/ficha existente (GET /consulta?q=),
-       que sigue funcionando exactamente igual. Habla directamente con
-       NEXORA-CONNECTOR vía chrome.runtime (sendMessage + connect/Port),
-       usando EXACTAMENTE el contrato ya validado en /puente, sin
-       inventar ningún estado ni campo nuevo del Connector.
+       CONSULTA NEXORA (FASE 6) — habla directamente con NEXORA-CONNECTOR
+       vía chrome.runtime (sendMessage + connect/Port), usando el mismo
+       contrato validado en /puente, MÁS el campo "alcance" (rama
+       alcance-rgm del Connector). Mientras esta pestaña siga abierta,
+       también atiende sola la cola (rgm_cola) de consultas automáticas
+       de la cámara/Telegram/panel -- una a la vez, 5 s de pausa entre
+       cada una, con los mismos componentes de render que la consulta
+       manual (abrirPuerto/manejarEventoConnector).
   ============================================================ -->
   <section class="card">
-    <h2 class="text-sm font-semibold text-zinc-100 mb-1">CONSULTA NEXORA</h2>
-    <p class="text-xs text-zinc-500 mb-4">Consulta en vivo contra NEXORA-CONNECTOR (RGM + Judicial). Independiente de la ficha local de arriba.</p>
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-1">
+      <h2 class="text-sm font-semibold text-zinc-100">Consulta RGM / Judicial (real)</h2>
+      <span id="nexoraBadgeTrabajador" class="badge-neutral">Verificando…</span>
+    </div>
+    <p class="text-xs text-zinc-500 mb-4">
+      Deja esta pestaña abierta: atiende sola las consultas que pidas aquí y las que
+      lleguen de la cámara o de Telegram. Los resultados se guardan siempre
+      (visibles luego en la ficha de Vehículos).
+    </p>
 
-    <div class="space-y-3">
+    <form method="post" action="/rgm/solicitar" class="space-y-3 mb-4">
       <div>
         <label class="label-field">Placa</label>
         <input
-          type="text" id="nexoraInputPlaca"
-          maxlength="6" autocomplete="off"
-          placeholder="GCT953"
+          type="text" name="placa" id="nexoraInputPlaca" maxlength="6" autocomplete="off"
+          placeholder="GCT953" value="{{ q if buscado else '' }}"
           class="input-field font-mono tracking-widest"
         >
       </div>
-
-      <div class="flex flex-wrap gap-2">
-        <button type="button" id="nexoraBtnConsultar" class="btn-primary">CONSULTAR RGM + JUDICIAL</button>
-        <button type="button" id="nexoraBtnReconectar" class="btn-secondary hidden">RECONECTAR</button>
-      </div>
-
       <div>
-        <p class="label-field mb-1">Estado</p>
-        <p id="nexoraEstadoTexto" class="text-sm text-zinc-300">Sin consulta activa.</p>
-        <p id="nexoraEstadoTipoReal" class="text-[11px] text-zinc-600 font-mono mt-0.5"></p>
+        <p class="label-field mb-1">Qué consultar</p>
+        <div class="flex flex-wrap gap-2" id="nexoraSelectorAlcance">
+          <button type="button" class="btn-sm btn-primary" data-alcance="RGM">RGM</button>
+          <button type="button" class="btn-sm btn-secondary" data-alcance="JUDICIAL">Judicial</button>
+          <button type="button" class="btn-sm btn-secondary" data-alcance="COMPLETO">RGM + Judicial</button>
+        </div>
+        <input type="hidden" name="alcance" id="nexoraAlcanceElegido" value="RGM">
+        <p class="text-[11px] text-zinc-600 mt-1">Judicial se busca por el nombre que haya dejado RGM (consulta RGM primero si no hay uno reciente).</p>
       </div>
+      <button type="submit" class="btn-primary">Consultar</button>
+    </form>
+
+    <div>
+      <p class="label-field mb-1">Estado</p>
+      <p id="nexoraEstadoTexto" class="text-sm text-zinc-300">Esperando trabajo (propio o de la cola)…</p>
+      <p id="nexoraEstadoTipoReal" class="text-[11px] text-zinc-600 font-mono mt-0.5"></p>
     </div>
   </section>
+
+  <section class="card">
+    <p class="label-field mb-2">Cola (pendientes y en curso)</p>
+    {% if not cola_activa %}
+    <p class="text-sm text-zinc-500">Vacía.</p>
+    {% else %}
+    <div class="overflow-x-auto -mx-5">
+      <table class="table-shell">
+        <thead>
+          <tr class="table-head-row">
+            <th class="table-head-cell">Placa</th><th class="table-head-cell">Alcance</th>
+            <th class="table-head-cell">Origen</th><th class="table-head-cell">Estado</th>
+            <th class="table-head-cell">Pedido por</th><th class="table-head-cell">Creado</th>
+          </tr>
+        </thead>
+        <tbody class="table-body">
+          {% for it in cola_activa %}
+          <tr class="table-row">
+            <td class="table-cell font-mono text-zinc-100">{{ it.placa }}</td>
+            <td class="table-cell text-zinc-300">{{ it.alcance }}</td>
+            <td class="table-cell text-zinc-400">{{ it.origen }}</td>
+            <td class="table-cell">{% if it.estado == 'EN_CURSO' %}<span class="badge-warning">En curso</span>{% else %}<span class="badge-neutral">Pendiente</span>{% endif %}</td>
+            <td class="table-cell text-zinc-400">{{ it.solicitado_por_nombre or '—' }}</td>
+            <td class="table-cell text-zinc-400 whitespace-nowrap">{{ it.creado }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <div class="flex items-center justify-between gap-2 mb-2">
+      <p class="label-field mb-0">Últimas 20</p>
+      <a href="/consulta{{ '?q=' + q if buscado else '' }}" class="btn-secondary btn-sm">🔄 Actualizar</a>
+    </div>
+    <div class="overflow-x-auto -mx-5">
+      <table class="table-shell">
+        <thead>
+          <tr class="table-head-row">
+            <th class="table-head-cell">Placa</th><th class="table-head-cell">Alcance</th>
+            <th class="table-head-cell">Estado</th><th class="table-head-cell">Terminado</th>
+          </tr>
+        </thead>
+        <tbody class="table-body">
+          {% for it in ultimos_items_rgm %}
+          <tr class="table-row">
+            <td class="table-cell font-mono text-zinc-100">{{ it.placa }}</td>
+            <td class="table-cell text-zinc-300">{{ it.alcance }}</td>
+            <td class="table-cell">
+              {% if it.estado == 'OK' %}<span class="badge-success">OK</span>
+              {% elif it.estado == 'ERROR' %}<span class="badge-danger" title="{{ it.error or '' }}">Error</span>
+              {% elif it.estado == 'EN_CURSO' %}<span class="badge-warning">En curso</span>
+              {% else %}<span class="badge-neutral">Pendiente</span>{% endif %}
+            </td>
+            <td class="table-cell text-zinc-400 whitespace-nowrap">{{ it.terminado or '—' }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" class="px-5 py-8 text-center text-zinc-500 text-sm">Todavía no se completó ninguna consulta real.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  {% if buscado and (snapshot_rgm or snapshot_judicial) %}
+  <section class="card">
+    <p class="label-field mb-2">Último resultado guardado para {{ q | trim | upper }}</p>
+    {% if snapshot_rgm %}
+    <p class="text-xs text-zinc-500 mb-1">RGM — {{ snapshot_rgm.creado_en }}</p>
+    <pre class="text-xs font-mono text-zinc-400 whitespace-pre-wrap mb-3">{{ snapshot_rgm.datos }}</pre>
+    {% endif %}
+    {% if snapshot_judicial %}
+    <p class="text-xs text-zinc-500 mb-1">Judicial — {{ snapshot_judicial.creado_en }}</p>
+    <pre class="text-xs font-mono text-zinc-400 whitespace-pre-wrap">{{ snapshot_judicial.datos }}</pre>
+    {% endif %}
+  </section>
+  {% endif %}
 
   <section class="card hidden" id="nexoraSeccionRgm">
     <h2 class="text-sm font-semibold text-zinc-100 mb-3">DATOS RGM</h2>
@@ -249,24 +342,34 @@
 </script>
 
 <script>
-  // CONSULTA NEXORA — habla con NEXORA-CONNECTOR vía chrome.runtime.
-  // Seccion COMPLETAMENTE INDEPENDIENTE del script de arriba (ficha
-  // local / autocompletado): no comparte variables, no toca el <form>
-  // ni el input "q" de la ficha local. Mismo contrato ya validado en
-  // /puente: sendMessage (inicio) + connect/Port (eventos posteriores).
+  // CONSULTA NEXORA (FASE 6) — habla con NEXORA-CONNECTOR vía
+  // chrome.runtime. Seccion COMPLETAMENTE INDEPENDIENTE del script de
+  // arriba (ficha local / autocompletado): no comparte variables, no
+  // toca el <form> ni el input "q" de la ficha local. Mismo contrato ya
+  // validado en /puente (sendMessage + connect/Port) MÁS "alcance"
+  // (rama alcance-rgm) y la cola de rgm_cola.py: mientras esta pestaña
+  // siga abierta, además de la consulta manual que se pida aquí, atiende
+  // sola -- una a la vez -- lo que vaya llegando de la cámara/Telegram/
+  // panel, y siempre guarda el resultado (POST /rgm/trabajador/resultado
+  // o /error) para que quede en la ficha de Vehículos.
   (function () {
     // ID de la extension, constante claramente identificada (seccion 3
-    // del encargo). Si la extension se vuelve a cargar desde otra ruta
-    // en el futuro, este es el UNICO lugar que habria que actualizar.
+    // del encargo original). Si la extension se vuelve a cargar desde
+    // otra ruta en el futuro, este es el UNICO lugar que habria que
+    // actualizar.
     var EXTENSION_ID_NEXORA_CONNECTOR = "ffmpfdlipjjodljhkheemiajmfjogefb";
-    var CLAVE_CONSULTA_ACTIVA = "nexora-consulta-activa";
     var ESTADOS_TERMINALES = ["CONSULTA_COMPLETADA", "CONSULTA_ERROR", "CONSULTA_CANCELADA"];
+    var PAUSA_ENTRE_CONSULTAS_MS = 5000;
+    var TIMEOUT_ITEM_MS = 2 * 60 * 1000;
+    var LATIDO_MS = 20000;
+    var POLL_COLA_MS = 4000;
 
     var elInputPlaca = document.getElementById("nexoraInputPlaca");
-    var elBtnConsultar = document.getElementById("nexoraBtnConsultar");
-    var elBtnReconectar = document.getElementById("nexoraBtnReconectar");
+    var elSelectorAlcance = document.getElementById("nexoraSelectorAlcance");
+    var elAlcanceElegido = document.getElementById("nexoraAlcanceElegido");
     var elEstadoTexto = document.getElementById("nexoraEstadoTexto");
     var elEstadoTipoReal = document.getElementById("nexoraEstadoTipoReal");
+    var elBadgeTrabajador = document.getElementById("nexoraBadgeTrabajador");
     var elSeccionRgm = document.getElementById("nexoraSeccionRgm");
     var elSeccionJudicial = document.getElementById("nexoraSeccionJudicial");
     var elSeccionDetalle = document.getElementById("nexoraSeccionDetalle");
@@ -276,10 +379,29 @@
     var elDetalleEstado = document.getElementById("nexoraDetalleEstado");
     var elCuerpoActuaciones = document.getElementById("nexoraCuerpoActuaciones");
 
+    // Selector de alcance: solo clases ya definidas en app.css
+    // (btn-primary/btn-secondary), nada de CSS nuevo.
+    if (elSelectorAlcance) {
+      Array.prototype.forEach.call(elSelectorAlcance.querySelectorAll("[data-alcance]"), function (boton) {
+        boton.addEventListener("click", function () {
+          Array.prototype.forEach.call(elSelectorAlcance.querySelectorAll("[data-alcance]"), function (otro) {
+            otro.classList.remove("btn-primary");
+            otro.classList.add("btn-secondary");
+          });
+          boton.classList.remove("btn-secondary");
+          boton.classList.add("btn-primary");
+          elAlcanceElegido.value = boton.getAttribute("data-alcance");
+        });
+      });
+    }
+
     var consultaIdActual = null;
-    var placaOrigenActual = null;
     var ultimoEstadoConocido = null;
     var puertoActivo = null;
+    var ultimaConsultaConocida = null;
+    var itemActualId = null;   // null = la consulta en curso fue manual (ajena a la cola)
+    var ocupado = false;
+    var timeoutItemActual = null;
 
     // --- utilidades --------------------------------------------------
 
@@ -290,23 +412,16 @@
       el.textContent = (valor === null || valor === undefined || valor === "") ? "No disponible" : String(valor);
     }
 
-    function guardarConsultaActiva(consultaId, placaOrigen) {
-      try {
-        localStorage.setItem(CLAVE_CONSULTA_ACTIVA, JSON.stringify({ consultaId: consultaId, placaOrigen: placaOrigen }));
-      } catch (e) { /* sin efecto: la consulta sigue viva en el Connector, solo no se podra recuperar tras recargar */ }
+    function latido() {
+      fetch("/rgm/trabajador/latido", { method: "POST" })
+        .then(function () { elBadgeTrabajador.textContent = "Atendiendo la cola"; elBadgeTrabajador.className = "badge-success"; })
+        .catch(function () { elBadgeTrabajador.textContent = "Sin conexión con el servidor"; elBadgeTrabajador.className = "badge-danger"; });
     }
+    setInterval(latido, LATIDO_MS);
+    latido();
 
-    function leerConsultaActiva() {
-      try {
-        var crudo = localStorage.getItem(CLAVE_CONSULTA_ACTIVA);
-        return crudo ? JSON.parse(crudo) : null;
-      } catch (e) {
-        return null;
-      }
-    }
-
-    function limpiarConsultaActiva() {
-      try { localStorage.removeItem(CLAVE_CONSULTA_ACTIVA); } catch (e) {}
+    function limpiarTimeoutItem() {
+      if (timeoutItemActual) { clearTimeout(timeoutItemActual); timeoutItemActual = null; }
     }
 
     // Enmascarado LLLDDD en vivo: mismo patron ya probado en /puente
@@ -470,34 +585,25 @@
 
     function abrirPuerto(consultaId) {
       if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.connect) {
-        elEstadoTexto.textContent = "NEXORA-CONNECTOR no está disponible en este navegador.";
+        terminarConError("NEXORA-CONNECTOR no está disponible en este navegador.");
         return;
       }
       var puerto;
       try {
         puerto = chrome.runtime.connect(EXTENSION_ID_NEXORA_CONNECTOR, { name: consultaId });
       } catch (e) {
-        elEstadoTexto.textContent = "NEXORA-CONNECTOR no está disponible en este navegador.";
+        terminarConError("NEXORA-CONNECTOR no está disponible en este navegador.");
         return;
       }
       puertoActivo = puerto;
-      elBtnReconectar.classList.add("hidden");
 
       puerto.onMessage.addListener(manejarEventoConnector);
       puerto.onDisconnect.addListener(function () {
         puertoActivo = null;
-        // Seccion 11: NUNCA crear una consulta nueva automaticamente.
         if (ultimoEstadoConocido && ESTADOS_TERMINALES.indexOf(ultimoEstadoConocido) !== -1) return;
-        elEstadoTexto.textContent = "Conexión con NEXORA-CONNECTOR interrumpida.";
-        elBtnReconectar.classList.remove("hidden");
+        terminarConError("NEXORA-CONNECTOR cerró la conexión antes de terminar.");
       });
     }
-
-    function reconectar() {
-      if (!consultaIdActual) return;
-      abrirPuerto(consultaIdActual);
-    }
-    elBtnReconectar.addEventListener("click", reconectar);
 
     function manejarEventoConnector(evento) {
       if (!evento) return;
@@ -513,6 +619,7 @@
 
       var consulta = evento.consulta || null;
       if (consulta) {
+        ultimaConsultaConocida = consulta;
         renderizarRgm(consulta.rgm);
         renderizarListadoProcesos(consulta.judicial);
         renderizarDetalleActuaciones(consulta.judicial);
@@ -545,7 +652,13 @@
           deshabilitarBotonesSeleccionar();
           break;
         case "PROCESO_PRIVADO":
+          // El Connector NO finaliza la consulta aquí (puede quedar
+          // esperando otra selección del mismo listado) -- pero para
+          // este trabajador, ya no hay nada más que retirar
+          // automáticamente: se guarda lo que haya (judicial.procesoSeleccionado
+          // queda marcado PROCESO_PRIVADO) y se pasa al siguiente ítem.
           elEstadoTexto.textContent = "El proceso seleccionado es privado: no se puede abrir su detalle.";
+          terminarConExito(null);
           break;
         case "DETALLE_JUDICIAL_ENTREGADO":
           elEstadoTexto.textContent = "Detalle del proceso recibido.";
@@ -554,17 +667,18 @@
           elEstadoTexto.textContent = "Actuaciones recibidas.";
           break;
         case "CONSULTA_COMPLETADA":
-          elEstadoTexto.textContent = "CONSULTA COMPLETADA.";
-          limpiarConsultaActiva();
+          elEstadoTexto.textContent = "Consulta completada. Guardando resultado...";
+          terminarConExito(null);
           break;
         case "CONSULTA_ERROR":
-          elEstadoTexto.textContent = "CONSULTA_ERROR" + (evento.motivo ? (" — " + evento.motivo) : "") +
-            (consulta && consulta.errores && consulta.errores.length ? (" — " + consulta.errores.join(" | ")) : "");
-          limpiarConsultaActiva();
+          var motivoError = (evento.motivo ? evento.motivo : "") +
+            (consulta && consulta.errores && consulta.errores.length ? (" — " + consulta.errores.join(" | ")) : "") || "CONSULTA_ERROR";
+          elEstadoTexto.textContent = "CONSULTA_ERROR — " + motivoError;
+          terminarConError(motivoError);
           break;
         case "CONSULTA_CANCELADA":
           elEstadoTexto.textContent = "Consulta cancelada.";
-          limpiarConsultaActiva();
+          terminarConError("Consulta cancelada.");
           break;
         default:
           elEstadoTexto.textContent = "Estado: " + evento.tipo;
@@ -575,75 +689,126 @@
 
     function seleccionarRadicado(radicado) {
       if (!puertoActivo) {
-        elEstadoTexto.textContent = "No hay conexión activa con el Connector. Usa RECONECTAR.";
+        elEstadoTexto.textContent = "No hay conexión activa con el Connector.";
         return;
       }
       deshabilitarBotonesSeleccionar();
       try {
         puertoActivo.postMessage({ accion: "SELECCIONAR_RADICADO", radicado: radicado });
       } catch (e) {
-        elEstadoTexto.textContent = "NEXORA-CONNECTOR no está disponible en este navegador.";
+        terminarConError("NEXORA-CONNECTOR no está disponible en este navegador.");
       }
     }
 
-    // --- inicio de una consulta nueva ------------------------------------
+    // --- fin de una consulta (reporta a la cola si vino de ahí) ---------
 
-    function iniciarConsultaNexora() {
-      // Seccion 12: no iniciar dos consultas simultaneas desde esta
-      // interfaz.
-      if (consultaIdActual && ultimoEstadoConocido && ESTADOS_TERMINALES.indexOf(ultimoEstadoConocido) === -1) {
-        elEstadoTexto.textContent = "Ya existe una consulta NEXORA en curso (consultaId: " + consultaIdActual + "). Espera a que termine.";
-        return;
-      }
+    function desconectarPuerto() {
+      if (puertoActivo) { try { puertoActivo.disconnect(); } catch (e) {} puertoActivo = null; }
+    }
 
-      var placa = (elInputPlaca.value || "").trim().toUpperCase();
-      if (!placa) {
-        elEstadoTexto.textContent = "Ingresa una placa para consultar.";
-        return;
+    function limpiarRenderizado() {
+      elSeccionRgm.classList.add("hidden");
+      elSeccionJudicial.classList.add("hidden");
+      elSeccionDetalle.classList.add("hidden");
+    }
+
+    function terminarConExito(resultadoForzado) {
+      limpiarTimeoutItem();
+      var item = itemActualId;
+      var consultaFinal = ultimaConsultaConocida;
+      itemActualId = null; consultaIdActual = null; ultimoEstadoConocido = null; ultimaConsultaConocida = null;
+      ocupado = false;
+      desconectarPuerto();
+      if (item) {
+        var resultado = resultadoForzado || { rgm: (consultaFinal && consultaFinal.rgm) || null, judicial: (consultaFinal && consultaFinal.judicial) || null };
+        fetch("/rgm/trabajador/resultado", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ item_id: item, resultado: resultado }),
+        }).catch(function () {});
       }
+      setTimeout(function () { limpiarRenderizado(); elEstadoTexto.textContent = "Esperando trabajo (propio o de la cola)…"; }, 4000);
+      setTimeout(ciclo, PAUSA_ENTRE_CONSULTAS_MS);
+    }
+
+    function terminarConError(mensaje) {
+      limpiarTimeoutItem();
+      var item = itemActualId;
+      itemActualId = null; consultaIdActual = null; ultimoEstadoConocido = null; ultimaConsultaConocida = null;
+      ocupado = false;
+      desconectarPuerto();
+      elEstadoTexto.textContent = mensaje;
+      if (item) {
+        fetch("/rgm/trabajador/error", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ item_id: item, mensaje: mensaje }),
+        }).catch(function () {});
+      }
+      setTimeout(ciclo, PAUSA_ENTRE_CONSULTAS_MS);
+    }
+
+    // --- arranque de una consulta (manual o tomada de la cola) ----------
+
+    function arrancarConsulta(mensajeConnector, item) {
+      ocupado = true;
+      itemActualId = item ? item.id : null;
+      limpiarRenderizado();
+      elEstadoTexto.textContent = "Enviando a NEXORA-CONNECTOR...";
 
       if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.sendMessage) {
-        elEstadoTexto.textContent = "NEXORA-CONNECTOR no está disponible en este navegador.";
+        terminarConError("NEXORA-CONNECTOR no está disponible en este navegador.");
         return;
       }
 
-      elEstadoTexto.textContent = "Enviando placa a NEXORA-CONNECTOR...";
+      timeoutItemActual = setTimeout(function () {
+        terminarConError("Tiempo agotado (2 min) sin respuesta final del Connector.");
+      }, TIMEOUT_ITEM_MS);
 
-      chrome.runtime.sendMessage(
-        EXTENSION_ID_NEXORA_CONNECTOR,
-        { accion: "CONSULTAR_PLACA", placa: placa },
-        function (respuesta) {
-          if (chrome.runtime.lastError) {
-            elEstadoTexto.textContent = "NEXORA-CONNECTOR no está disponible en este navegador.";
-            return;
-          }
-          if (!respuesta || !respuesta.ok) {
-            elEstadoTexto.textContent = "El Connector rechazó la solicitud" + (respuesta && respuesta.motivo ? (": " + respuesta.motivo) : ".");
-            return;
-          }
-
-          consultaIdActual = respuesta.consultaId;
-          placaOrigenActual = respuesta.placa;
-          ultimoEstadoConocido = respuesta.estado;
-          guardarConsultaActiva(consultaIdActual, placaOrigenActual);
-          abrirPuerto(consultaIdActual);
+      chrome.runtime.sendMessage(EXTENSION_ID_NEXORA_CONNECTOR, mensajeConnector, function (respuesta) {
+        if (chrome.runtime.lastError) {
+          terminarConError("NEXORA-CONNECTOR no está disponible en este navegador.");
+          return;
         }
-      );
+        if (!respuesta || !respuesta.ok) {
+          var motivo = respuesta && respuesta.motivo;
+          if (motivo === "NOMBRE_REQUERIDO_PARA_JUDICIAL" || motivo === "PLACA_REQUERIDA" || motivo === "FORMATO_PLACA_INVALIDO") {
+            terminarConError("El Connector rechazó la solicitud: " + motivo + ". Actualiza el Connector (rama alcance-rgm) si el error persiste.");
+          } else {
+            terminarConError("El Connector rechazó la solicitud" + (motivo ? (": " + motivo) : "."));
+          }
+          return;
+        }
+        consultaIdActual = respuesta.consultaId;
+        ultimoEstadoConocido = respuesta.estado;
+        abrirPuerto(consultaIdActual);
+      });
     }
-    elBtnConsultar.addEventListener("click", iniciarConsultaNexora);
 
-    // --- reconexion al cargar la pagina (seccion 10) ---------------------
+    // --- consulta manual (botón "Consultar" -> ya la encoló /rgm/solicitar) --
+    // El <form> hace un POST normal a /rgm/solicitar (placa + alcance) y
+    // redirige de vuelta aquí con un mensaje; la propia cola (ciclo())
+    // la recoge y la procesa igual que una de cámara/Telegram. No hace
+    // falta JavaScript para "iniciar": solo para el input de placa y el
+    // selector de alcance (ya conectados arriba).
 
-    (function intentarRecuperarConsultaActiva() {
-      var guardada = leerConsultaActiva();
-      if (!guardada || !guardada.consultaId) return;
+    // --- atiende la cola (cámara/Telegram/panel) sola, una a la vez -----
 
-      consultaIdActual = guardada.consultaId;
-      placaOrigenActual = guardada.placaOrigen;
-      elInputPlaca.value = guardada.placaOrigen || "";
-      elEstadoTexto.textContent = "Consulta existente recuperada (consultaId: " + guardada.consultaId + "). Conectando...";
-      abrirPuerto(guardada.consultaId);
-    })();
+    function ciclo() {
+      if (ocupado) return;
+      fetch("/rgm/trabajador/siguiente", { method: "POST" })
+        .then(function (r) { return r.json(); })
+        .then(function (datos) {
+          if (!datos || !datos.item) { setTimeout(ciclo, POLL_COLA_MS); return; }
+          var item = datos.item;
+          var mensaje = item.alcance === "JUDICIAL"
+            ? { accion: "CONSULTAR_PLACA", alcance: "JUDICIAL", nombre: item.nombre_judicial }
+            : { accion: "CONSULTAR_PLACA", alcance: item.alcance, placa: item.placa };
+          elInputPlaca.value = item.placa || "";
+          arrancarConsulta(mensaje, item);
+        })
+        .catch(function () { setTimeout(ciclo, POLL_COLA_MS); });
+    }
+
+    ciclo();
   })();
 </script>
 {% endblock %}

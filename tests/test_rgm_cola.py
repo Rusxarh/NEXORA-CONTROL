@@ -45,9 +45,12 @@ def test_solicitar_consulta_no_duplica(cliente):
     assert r2["accion"] == "YA_EN_COLA"
     assert r2["item"]["id"] == r1["item"]["id"]
 
-    # Un tipo distinto para la misma placa SÍ puede encolarse aparte.
+    # "JUDICIAL" sin snapshot RGM reciente encadena: como ya hay un ítem
+    # RGM pendiente para esa placa, reutiliza ESE mismo (no crea otro).
     r3 = rgm_cola.solicitar_consulta("ABC123", "JUDICIAL", "panel", admin["id"])
-    assert r3["accion"] == "ENCOLADA"
+    assert r3["accion"] == "YA_EN_COLA"
+    assert r3["item"]["id"] == r1["item"]["id"]
+    assert r3["item"]["alcance"] == "RGM"
 
 
 def test_solicitar_consulta_usa_snapshot_vigente(cliente):
@@ -117,8 +120,10 @@ def test_completar_item_rgm_completa_marca_y_modelo_vacios(cliente):
     _crear_placa("STU901", admin["id"])
     item = rgm_cola.solicitar_consulta("STU901", "RGM", "panel", admin["id"])["item"]
 
-    resultado = {"estado": "OK", "deudor_garante": {"nombre": "Juan Pérez"},
-                 "vehiculo": {"marca": "Mazda", "anio_modelo": "2019"}}
+    # El resultado que manda la página Consulta es SIEMPRE {"rgm":..., "judicial":...}
+    # (igual forma que consulta.rgm/consulta.judicial del Connector).
+    resultado = {"rgm": {"estado": "OK", "deudor_garante": {"nombre": "Juan Pérez"},
+                          "vehiculo": {"marca": "Mazda", "anio_modelo": "2019"}}, "judicial": None}
     salida = rgm_cola.completar_item(item["id"], resultado)
 
     assert salida["diferencias"] == {}
@@ -135,7 +140,7 @@ def test_completar_item_rgm_no_sobrescribe_y_marca_diferencia(cliente):
     _crear_placa("VWX234", admin["id"], marca="Chevrolet")
     item = rgm_cola.solicitar_consulta("VWX234", "RGM", "panel", admin["id"])["item"]
 
-    resultado = {"estado": "OK", "vehiculo": {"marca": "Renault"}}
+    resultado = {"rgm": {"estado": "OK", "vehiculo": {"marca": "Renault"}}, "judicial": None}
     salida = rgm_cola.completar_item(item["id"], resultado)
 
     assert db.buscar_placa("VWX234")["marca"] == "Chevrolet"  # nunca se sobrescribe
@@ -145,12 +150,37 @@ def test_completar_item_rgm_no_sobrescribe_y_marca_diferencia(cliente):
 def test_completar_item_judicial_no_toca_vehiculo(cliente):
     admin = _crear_admin("Admin RGM Ocho", "admin.rgm8")
     _crear_placa("YZA567", admin["id"])
-    item = rgm_cola.solicitar_consulta("YZA567", "JUDICIAL", "panel", admin["id"])["item"]
+    # Se crea directo por database.py (no por solicitar_consulta) para
+    # probar completar_item de forma aislada, sin que la cadena
+    # "Judicial sin snapshot RGM" interfiera con este caso.
+    item_id = db.crear_item_rgm_cola("YZA567", "JUDICIAL", "panel", admin["id"], nombre_judicial="Juan Pérez")
 
-    salida = rgm_cola.completar_item(item["id"], {"procesos": [{"radicado": "12345678901234567890"}]})
+    resultado = {"rgm": None, "judicial": {"procesos": [{"radicado": "12345678901234567890"}]}}
+    salida = rgm_cola.completar_item(item_id, resultado)
     assert salida["diferencias"] == {}
+    assert db.buscar_placa("YZA567")["marca"] is None  # nunca se tocó por un resultado judicial
     snapshot = db.obtener_ultimo_snapshot_por_fuente("YZA567", "JUDICIAL")
     assert json.loads(snapshot["datos"])["procesos"][0]["radicado"] == "12345678901234567890"
+
+
+def test_judicial_sin_snapshot_rgm_encadena_y_luego_resuelve(cliente):
+    """Pedido 'Judicial sola' sin snapshot RGM reciente: encola RGM primero
+    (encadenar_judicial=True); al completarse esa RGM con un nombre
+    utilizable, se encola sola una 'JUDICIAL' con ese nombre."""
+    admin = _crear_admin("Admin RGM Nueve", "admin.rgm9")
+    _crear_placa("BCD123", admin["id"])
+
+    r = rgm_cola.solicitar_consulta("BCD123", "JUDICIAL", "panel", admin["id"])
+    assert r["accion"] == "ENCOLADA"
+    assert r["item"]["alcance"] == "RGM"
+    assert r["item"]["encadenar_judicial"] == 1
+    assert "Primero consulto RGM" in r["mensaje"]
+
+    salida = rgm_cola.completar_item(r["item"]["id"], {"rgm": {"deudor_garante": {"nombre": "María Gómez"}}, "judicial": None})
+    assert salida["encadenado"] is not None
+    assert salida["encadenado"]["accion"] == "ENCOLADA"
+    assert salida["encadenado"]["item"]["alcance"] == "JUDICIAL"
+    assert salida["encadenado"]["item"]["nombre_judicial"] == "María Gómez"
 
 
 # --------------------------------------------------------------------- encolado automático (nexcam_api)
@@ -211,7 +241,7 @@ def test_trabajador_rgm_reserva_completa_y_registra_error(cliente):
     _crear_placa("KLM789", admin["id"])
     _login_web(cliente, "admin.rgmpanel")
 
-    cliente.post("/rgm/solicitar", data={"placa": "KLM789", "tipo": "RGM"})
+    cliente.post("/rgm/solicitar", data={"placa": "KLM789", "alcance": "RGM"})
     assert db.item_rgm_pendiente_o_en_curso("KLM789", "RGM") is not None
 
     r_latido = cliente.post("/rgm/trabajador/latido")
@@ -222,13 +252,20 @@ def test_trabajador_rgm_reserva_completa_y_registra_error(cliente):
     item = r_sig.json()["item"]
     assert item["placa"] == "KLM789"
 
-    r_res = cliente.post("/rgm/trabajador/resultado", json={"item_id": item["id"], "resultado": {"estado": "OK"}})
+    r_res = cliente.post("/rgm/trabajador/resultado", json={
+        "item_id": item["id"],
+        "resultado": {"rgm": {"estado": "OK", "deudor_garante": {"nombre": "Pedro Ramírez"}}, "judicial": None},
+    })
     assert r_res.json()["ok"] is True
     assert db.obtener_item_rgm(item["id"])["estado"] == "OK"
 
-    # Un segundo ítem para probar la ruta de error.
-    rgm_cola.solicitar_consulta("KLM789", "JUDICIAL", "panel", admin["id"])
+    # Un segundo ítem: ahora SÍ hay snapshot RGM con nombre -> "JUDICIAL" se
+    # encola directo (sin encadenar otra RGM), para probar la ruta de error.
+    resultado_judicial = rgm_cola.solicitar_consulta("KLM789", "JUDICIAL", "panel", admin["id"])
+    assert resultado_judicial["accion"] == "ENCOLADA"
+    assert resultado_judicial["item"]["alcance"] == "JUDICIAL"
     item2 = cliente.post("/rgm/trabajador/siguiente").json()["item"]
+    assert item2["alcance"] == "JUDICIAL"
     r_err = cliente.post("/rgm/trabajador/error", json={"item_id": item2["id"], "mensaje": "timeout de prueba"})
     assert r_err.json() == {"ok": True}
 
@@ -239,6 +276,6 @@ def test_rgm_solicitar_usa_snapshot_vigente_sin_encolar_de_nuevo(cliente):
     db.crear_snapshot("NOP012", "RGM", json.dumps({"estado": "OK"}))
     _login_web(cliente, "admin.rgmpanel2")
 
-    r = cliente.post("/rgm/solicitar", data={"placa": "NOP012", "tipo": "RGM"}, follow_redirects=False)
+    r = cliente.post("/rgm/solicitar", data={"placa": "NOP012", "alcance": "RGM"}, follow_redirects=False)
     assert r.status_code == 303
     assert db.item_rgm_pendiente_o_en_curso("NOP012", "RGM") is None

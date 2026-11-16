@@ -100,9 +100,17 @@ def consulta_vista(
     request: Request,
     usuario_actual: dict = Depends(usuarios.requerir_autenticacion),
     q: str = "",
+    mensaje: Optional[str] = None,
+    tipo: str = "info",
 ):
     buscado = bool(q.strip())
+    placa_normalizada = q.strip().upper() if buscado else ""
     vehiculo = db.obtener_ficha_vehiculo(q) if buscado else None
+
+    # FASE 6 (RGM/Judicial reales vía NEXORA-CONNECTOR): import perezoso
+    # para no crear un ciclo de imports con rgm_cola/nexcam_api al cargar
+    # el módulo.
+    import rgm_cola
 
     return templates.TemplateResponse(
         request,
@@ -114,6 +122,13 @@ def consulta_vista(
             "buscado": buscado,
             "vehiculo": vehiculo,
             "ruta_activa": "consulta",
+            "mensaje": mensaje,
+            "tipo_mensaje": tipo,
+            "snapshot_rgm": db.obtener_ultimo_snapshot_por_fuente(placa_normalizada, "RGM") if buscado else None,
+            "snapshot_judicial": db.obtener_ultimo_snapshot_por_fuente(placa_normalizada, "JUDICIAL") if buscado else None,
+            "cola_activa": db.listar_items_rgm_activos(),
+            "ultimos_items_rgm": db.listar_ultimos_items_rgm(20),
+            "trabajador_rgm_conectado": rgm_cola.trabajador_conectado(),
         },
     )
 
