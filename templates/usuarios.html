@@ -2,50 +2,17 @@
 {% block titulo %}Usuarios · NEXORA{% endblock %}
 
 {% block contenido %}
-<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+<div class="flex flex-wrap items-center justify-between gap-3 mb-5">
+  <div>
+    <h1 class="text-xl font-semibold text-zinc-100">Usuarios</h1>
+    <p class="text-xs text-zinc-500 mt-1">Quién puede entrar a NEXORA y con qué rol.</p>
+  </div>
+  <button type="button" class="btn-primary" onclick="abrirModalUsuario()">+ Crear usuario</button>
+</div>
 
-  <!-- Alta de usuario -->
-  <section class="lg:col-span-1 card h-fit">
-    <h2 class="text-sm font-semibold text-zinc-100 mb-1">Registrar usuario</h2>
-    <p class="text-xs text-zinc-500 mb-4">Autoriza un nuevo usuario del bot/dashboard.</p>
-
-    <form method="post" action="/usuarios/alta" class="space-y-3">
-      <div>
-        <label class="label-field">Telegram ID</label>
-        <input
-          name="telegram_id" type="number" required
-          placeholder="p.ej. 123456789"
-          class="input-field"
-        >
-        <p class="text-[11px] text-zinc-500 mt-1">Debe ser único: identifica al usuario en Telegram.</p>
-      </div>
-
-      <div>
-        <label class="label-field">Nombre</label>
-        <input
-          name="nombre" type="text" required maxlength="100"
-          placeholder="Nombre completo"
-          class="input-field"
-        >
-      </div>
-
-      <div>
-        <label class="label-field">Rol</label>
-        <select name="rol" required class="input-field">
-          {% for r in roles_usuario %}
-          <option value="{{ r }}">{{ r }}</option>
-          {% endfor %}
-        </select>
-      </div>
-
-      <button type="submit" class="btn-primary w-full">
-        Registrar usuario
-      </button>
-    </form>
-  </section>
-
+<div>
   <!-- Listado de usuarios -->
-  <section class="lg:col-span-2 card">
+  <section class="card">
     <h2 class="text-sm font-semibold text-zinc-100 mb-4">Usuarios registrados</h2>
 
     <div class="overflow-x-auto -mx-5">
@@ -54,6 +21,7 @@
           <tr class="table-head-row">
             <th class="table-head-cell">Código</th>
             <th class="table-head-cell">Nombre</th>
+            <th class="table-head-cell">Usuario</th>
             <th class="table-head-cell">Rol</th>
             <th class="table-head-cell">Grado</th>
             <th class="table-head-cell">Estado</th>
@@ -67,7 +35,10 @@
           <tr class="table-row">
             <td class="table-cell font-mono text-zinc-400">{{ u.codigo_operativo or '—' }}</td>
             <td class="table-cell text-zinc-100">{{ u.nombre }}</td>
-            <td class="table-cell text-zinc-300">{{ u.rol }}</td>
+            <td class="table-cell font-mono text-zinc-400">{{ u.username or '—' }}</td>
+            <td class="table-cell">
+              <span class="{{ 'rol-chip rol-chip-admin' if u.rol == 'Admin' else 'rol-chip' }}">{{ u.rol }}</span>
+            </td>
             <td class="table-cell text-zinc-400">{{ u.grado_operativo or '—' }}</td>
             <td class="table-cell">
               {% if u.estado == 'activo' %}
@@ -100,7 +71,7 @@
           </tr>
           {% else %}
           <tr>
-            <td colspan="8" class="px-5 py-8 text-center text-zinc-500 text-sm">No hay usuarios registrados todavía.</td>
+            <td colspan="9" class="px-5 py-8 text-center text-zinc-500 text-sm">No hay usuarios registrados todavía.</td>
           </tr>
           {% endfor %}
         </tbody>
@@ -108,4 +79,113 @@
     </div>
   </section>
 </div>
+<!-- Modal: crear usuario -->
+<div id="modal-usuario" class="{{ '' if form_nuevo.abierto else 'hidden ' }}modal-overlay" role="dialog" aria-modal="true" aria-labelledby="titulo-modal-usuario">
+  <div class="modal-backdrop" onclick="cerrarModalUsuario()"></div>
+
+  <div class="modal-panel modal-usuario">
+    <div class="flex items-start justify-between gap-3 mb-1">
+      <h3 id="titulo-modal-usuario" class="text-base font-semibold text-zinc-100">Crear usuario</h3>
+      <button type="button" onclick="cerrarModalUsuario()" aria-label="Cerrar"
+              class="inline-flex items-center justify-center h-6 w-6 rounded-md text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 transition shrink-0">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      </button>
+    </div>
+    <p class="text-xs text-zinc-500 mb-4">La persona entrará con el usuario y la contraseña que pongas aquí.</p>
+
+    <form method="post" action="/usuarios/alta" class="space-y-3" id="form-usuario">
+      <fieldset>
+        <legend class="label-field">Rol</legend>
+        <div class="grid grid-cols-2 gap-2">
+          {% for r in roles_usuario %}
+          <label class="rol-opcion">
+            <input type="radio" name="rol" value="{{ r }}" required {{ 'checked' if form_nuevo.rol == r else '' }}>
+            <span class="rol-opcion-caja">
+              <span class="text-sm font-semibold text-zinc-100 block">{{ r }}</span>
+              <span class="text-[11px] text-zinc-500 block mt-1">
+                {% if r == 'Admin' %}Entra a este panel: placas, usuarios y auditoría.{% else %}Operará con la app NEXCAM y Telegram. No entra a este panel.{% endif %}
+              </span>
+            </span>
+          </label>
+          {% endfor %}
+        </div>
+      </fieldset>
+
+      <div>
+        <label class="label-field" for="nu-nombre">Nombre completo</label>
+        <input id="nu-nombre" name="nombre" type="text" required maxlength="100" autocomplete="off"
+               value="{{ form_nuevo.nombre }}" placeholder="Ej.: Daniel Pérez" class="input-field">
+      </div>
+
+      <div>
+        <label class="label-field" for="nu-usuario">Usuario para entrar</label>
+        <input id="nu-usuario" name="username" type="text" required minlength="3" maxlength="30"
+               pattern="[A-Za-z0-9._\-]{3,30}" autocomplete="off" autocapitalize="none" spellcheck="false"
+               value="{{ form_nuevo.username }}" placeholder="Ej.: dperez" class="input-field font-mono">
+        <p class="text-[11px] text-zinc-500 mt-1">Sin espacios ni tildes. Se guarda en minúsculas.</p>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label class="label-field" for="nu-pass">Contraseña</label>
+          <input id="nu-pass" name="password" type="password" required minlength="8" autocomplete="new-password" class="input-field">
+        </div>
+        <div>
+          <label class="label-field" for="nu-pass2">Repite la contraseña</label>
+          <input id="nu-pass2" name="password_confirmacion" type="password" required minlength="8" autocomplete="new-password" class="input-field">
+        </div>
+      </div>
+      <p class="text-[11px] text-zinc-500">Mínimo 8 caracteres.</p>
+
+      <div>
+        <label class="label-field" for="nu-tg">Telegram ID <span class="text-zinc-600">(opcional)</span></label>
+        <input id="nu-tg" name="telegram_id" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
+               value="{{ form_nuevo.telegram_id }}" placeholder="Déjalo vacío si no lo sabes" class="input-field font-mono">
+      </div>
+
+      <div class="flex justify-end gap-2 pt-2">
+        <button type="button" onclick="cerrarModalUsuario()" class="btn-secondary btn-sm">Cancelar</button>
+        <button type="submit" class="btn-primary btn-sm">Crear usuario</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<style>
+  .modal-usuario fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+  .modal-usuario { max-width: 32rem; max-height: calc(100vh - 2rem); overflow-y: auto; }
+  .rol-opcion { display: block; cursor: pointer; }
+  .rol-opcion input { position: absolute; opacity: 0; pointer-events: none; }
+  .rol-opcion-caja {
+    display: block; height: 100%; padding: .75rem; border-radius: .5rem;
+    border: 1px solid var(--nx-border); transition: border-color .15s, background-color .15s;
+  }
+  .rol-opcion:hover .rol-opcion-caja { border-color: var(--nx-text-muted); }
+  .rol-opcion input:checked + .rol-opcion-caja { border-color: var(--nx-primary); background-color: var(--nx-primary-soft); box-shadow: inset 0 0 0 1px var(--nx-primary); }
+  .rol-opcion input:focus-visible + .rol-opcion-caja { outline: 2px solid var(--nx-primary); outline-offset: 2px; }
+  .rol-chip { display: inline-block; padding: .125rem .5rem; border-radius: 9999px; font-size: .75rem; border: 1px solid var(--nx-border); color: var(--nx-text-muted); }
+  .rol-chip-admin { border-color: var(--nx-primary); color: var(--nx-primary); }
+</style>
+
+<script>
+  function abrirModalUsuario() {
+    document.getElementById('modal-usuario').classList.remove('hidden');
+    setTimeout(function () { document.getElementById('nu-nombre').focus(); }, 0);
+  }
+  function cerrarModalUsuario() {
+    document.getElementById('modal-usuario').classList.add('hidden');
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') cerrarModalUsuario();
+  });
+  // Aviso inmediato si las contraseñas no coinciden (el servidor también lo revisa).
+  (function () {
+    var p1 = document.getElementById('nu-pass'), p2 = document.getElementById('nu-pass2');
+    function revisar() { p2.setCustomValidity(p2.value && p1.value !== p2.value ? 'Las contraseñas no coinciden' : ''); }
+    p1.addEventListener('input', revisar); p2.addEventListener('input', revisar);
+  })();
+  {% if form_nuevo.abierto %}document.getElementById('nu-pass').focus();{% endif %}
+</script>
 {% endblock %}

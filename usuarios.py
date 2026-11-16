@@ -22,6 +22,7 @@ pedir un "Usuario ID": quien actúa es quien está autenticado.
 import hashlib
 import hmac
 import secrets
+import re
 import sqlite3
 from datetime import datetime
 from typing import Optional
@@ -97,7 +98,8 @@ def _es_ruta_segura(ruta: Optional[str]) -> bool:
 def redirigir_con_mensaje(destino: str, mensaje: str, tipo: str):
     """Redirige a `destino` mostrando un mensaje flash vía querystring.
     Reutilizada por usuarios.py, vehiculos.py y auditoria.py."""
-    url = f"{destino}?mensaje={quote(mensaje)}&tipo={quote(tipo)}"
+    separador = "&" if "?" in destino else "?"
+    url = f"{destino}{separador}mensaje={quote(mensaje)}&tipo={quote(tipo)}"
     return RedirectResponse(url=url, status_code=HTTP_303_SEE_OTHER)
 
 
@@ -337,6 +339,14 @@ def usuarios_vista(
             "usuarios": lista_usuarios,
             "roles_usuario": db.ROLES_USUARIO,
             "usuario_actual": usuario_actual,
+            # Reabrir el formulario de "Crear usuario" tras un error, con lo ya escrito.
+            "form_nuevo": {
+                "abierto": request.query_params.get("nuevo") == "1",
+                "nombre": request.query_params.get("n", ""),
+                "username": request.query_params.get("u", ""),
+                "rol": request.query_params.get("r", "Operador"),
+                "telegram_id": request.query_params.get("t", ""),
+            },
             "mensaje": mensaje,
             "tipo_mensaje": tipo,
             "ruta_activa": "usuarios",
@@ -373,26 +383,69 @@ def usuario_ficha(
     )
 
 
+RE_USERNAME = re.compile(r"^[a-z0-9._-]{3,30}$")
+
+
 @router.post("/usuarios/alta")
 def alta_usuario(
-    telegram_id: int = Form(...),
     nombre: str = Form(...),
+    username: str = Form(...),
+    password: str = Form(...),
+    password_confirmacion: str = Form(...),
     rol: str = Form(...),
+    telegram_id: str = Form(""),
     usuario_actual: dict = Depends(requerir_admin),
 ):
+    """
+    Crea un usuario con acceso propio: nombre, usuario, contraseña y rol.
+
+    - Admin: entra al dashboard web.
+    - Operador: no entra a la web (Etapa 4.6); usa estas credenciales en la
+      app NEXCAM del teléfono (cuando NEXCAM se conecte a NEXORA) y Telegram.
+    El Telegram ID es opcional; sin él se guarda un número provisional
+    negativo (ver db.telegram_id_provisional).
+    """
     nombre = nombre.strip()
+    username = username.strip().lower()
+    telegram_txt = telegram_id.strip()
 
+    error = None
+    if not nombre:
+        error = "Escribe el nombre de la persona."
+    elif not RE_USERNAME.match(username):
+        error = "El usuario debe tener de 3 a 30 caracteres: letras sin tildes, números, punto, guion o guion bajo."
+    elif len(password) < 8:
+        error = "La contraseña debe tener al menos 8 caracteres."
+    elif password != password_confirmacion:
+        error = "Las dos contraseñas no coinciden."
+    elif rol not in db.ROLES_USUARIO:
+        error = f"Elige un rol: {' u '.join(db.ROLES_USUARIO)}."
+    elif telegram_txt and not telegram_txt.isdigit():
+        error = "El Telegram ID solo lleva números (déjalo vacío si no lo sabes)."
+    elif db.obtener_usuario_por_username(username) is not None:
+        error = f"El usuario '{username}' ya existe. Elige otro."
+    elif telegram_txt and db.obtener_usuario_por_telegram_id(int(telegram_txt)) is not None:
+        error = f"El Telegram ID {telegram_txt} ya está registrado en otro usuario."
+    # Si algo falla, el formulario se vuelve a abrir con lo que ya se había escrito
+    # (nunca la contraseña).
+    volver = f"/usuarios?nuevo=1&n={quote(nombre)}&u={quote(username)}&r={quote(rol)}&t={quote(telegram_txt)}"
+    if error:
+        return redirigir_con_mensaje(volver, error, "error")
+
+    tid = int(telegram_txt) if telegram_txt else db.telegram_id_provisional()
     try:
-        db.crear_usuario(telegram_id, nombre, rol)
-        mensaje = f"Usuario '{nombre}' registrado correctamente."
-        tipo = "exito"
+        nuevo_id = db.crear_usuario(tid, nombre, rol, username=username, password_hash=hash_password(password))
     except db.ValorInvalidoError as e:
-        mensaje, tipo = str(e), "error"
+        return redirigir_con_mensaje(volver, str(e), "error")
     except sqlite3.IntegrityError:
-        mensaje = f"El telegram_id {telegram_id} ya está registrado en otro usuario."
-        tipo = "error"
+        return redirigir_con_mensaje(volver, "El usuario o el Telegram ID ya están en uso.", "error")
 
-    return redirigir_con_mensaje("/usuarios", mensaje, tipo)
+    db.registrar_log(
+        usuario_actual["id"], "ALTA_USUARIO",
+        observaciones=f"Usuario creado: {nombre} (id={nuevo_id}, usuario={username}, rol={rol}).",
+    )
+    acceso = "Ya puede entrar al dashboard." if rol == "Admin" else "No entra a este panel; usará la app NEXCAM cuando la conectemos a NEXORA."
+    return redirigir_con_mensaje("/usuarios", f"Usuario '{nombre}' creado como {rol}. {acceso}", "exito")
 
 
 @router.post("/usuarios/estado")

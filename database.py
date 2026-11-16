@@ -452,6 +452,19 @@ def crear_usuario(
         return cur.lastrowid
 
 
+def telegram_id_provisional() -> int:
+    """
+    Número provisional para `telegram_id` cuando el usuario se crea sin
+    Telegram. La columna es NOT NULL UNIQUE, así que se usan números
+    negativos (-1, -2, ...): Telegram nunca asigna IDs negativos a personas,
+    así que no chocan con uno real. Se reemplaza cuando se vincule su Telegram.
+    """
+    with get_connection() as conn:
+        fila = conn.execute("SELECT MIN(telegram_id) AS minimo FROM usuarios").fetchone()
+    minimo = fila["minimo"] if fila and fila["minimo"] is not None else 0
+    return min(minimo, 0) - 1
+
+
 def obtener_usuario_por_telegram_id(telegram_id: int):
     with get_connection() as conn:
         row = conn.execute(

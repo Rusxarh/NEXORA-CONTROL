@@ -381,7 +381,9 @@ body {
   box-shadow: var(--nx-shadow);
 }
 
-.btn {
+/* Los botones .btn-primary/.btn-secondary/... se usan solos en las plantillas,
+   así que también reciben la base de .btn (antes quedaban sin relleno ni bordes). */
+.btn, .btn-primary, .btn-secondary, .btn-danger, .btn-danger-soft, .btn-success-soft, .btn-warning-soft {
   display: inline-flex;
   align-items: center;
   justify-content: center;
