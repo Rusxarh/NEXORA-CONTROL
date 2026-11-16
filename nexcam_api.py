@@ -320,3 +320,21 @@ def servir_foto(fecha: str, archivo: str, usuario_actual: dict = Depends(usuario
     if ruta is None:
         raise HTTPException(status_code=404, detail={"message": "La foto ya no existe (se borran pasados los días configurados)."})
     return FileResponse(ruta, media_type="image/jpeg")
+
+
+# ---------------------------------------------------------------------------
+# Descarga de la app (enlace temporal de 24 h cuando el APK pesa más de lo
+# que Telegram deja enviar). Token-gated, sin Bearer ni cookie: el teléfono
+# lo abre directo desde el navegador, antes incluso de tener la app.
+# ---------------------------------------------------------------------------
+
+@router.get("/app/nexcam.apk")
+def descargar_apk(k: str = ""):
+    import nexcam_telegram
+
+    if not nexcam_telegram.enlace_apk_temporal_vigente(k):
+        raise HTTPException(status_code=403, detail={"message": "Enlace vencido. Pide la app otra vez al bot de Telegram."})
+    ruta = nexcam_telegram.ruta_apk()
+    if not ruta.is_file():
+        raise HTTPException(status_code=404, detail={"message": "No hay app compilada en la PC."})
+    return FileResponse(ruta, media_type="application/vnd.android.package-archive", filename="NEXCAM.apk")

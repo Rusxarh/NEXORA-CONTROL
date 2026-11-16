@@ -44,6 +44,7 @@ import mimetypes
 import os
 import re
 import secrets
+import sys
 import threading
 import time
 import urllib.error
@@ -54,6 +55,16 @@ from typing import Optional
 
 import database as db
 import nexcam_db
+
+
+def _pruebas_activas() -> bool:
+    """True si estamos en la suite de pruebas o se pidió explícitamente no
+    arrancar el bot real (NEXORA_PRUEBAS=1). Ver docstring de arrancar()."""
+    return (
+        os.environ.get("NEXORA_PRUEBAS") == "1"
+        or "PYTEST_CURRENT_TEST" in os.environ
+        or "pytest" in sys.modules
+    )
 
 CONFIG_PATH = Path(__file__).parent / "telegram.json"
 EDIT_SEGUNDOS = 3
@@ -66,6 +77,7 @@ B = {
     "estado": "📊 Estado", "ultimas": "🕒 Últimas", "buscar": "🔍 Buscar placa",
     "cargar": "📥 Cargar lista", "agregar": "➕ Agregar placa", "quitar": "➖ Quitar placa",
     "vivo": "📷 En vivo", "avisos": "🔔 Avisos", "silencio": "🔕 Silencio", "ayuda": "❓ Ayuda",
+    "app": "📲 Instalar app",
 }
 
 COMANDOS = [
@@ -74,7 +86,43 @@ COMANDOS = [
     ("cargar", "Cargar la lista del día"), ("agregar", "Agregar una placa a la lista"),
     ("quitar", "Quitar una placa de la lista"), ("envivo", "Ver o no las cámaras en vivo"),
     ("modo", "Avisar solo alertas o todo"), ("silencio", "Pausar o reanudar los avisos"),
+    ("app", "Recibir la app NEXCAM para instalar"),
 ]
+
+# Porte del APK (ver mock-api/telegram.js, releído para esta sección):
+# enlace fijo en telegram.json/"apkUrl" (re-leído del archivo en cada pedido,
+# nunca requiere reiniciar) > NEXCAM_APK_URL > archivo local de la PC si pesa
+# <= TELEGRAM_LIMITE_MB (50 por defecto, Telegram no deja enviar más) > enlace
+# temporal de 24 h servido por NEXORA-CONTROL mismo (/app/nexcam.apk?k=...).
+RUTA_APK_PREDETERMINADA = Path(r"C:\Users\Rus\Documents\NEXORA\NEXCAM\app\android\app\build\outputs\apk\release\app-release.apk")
+LIMITE_TELEGRAM_BYTES = int(os.environ.get("TELEGRAM_LIMITE_MB", "50")) * 1024 * 1024
+RUTA_PACKAGE_JSON_APP = Path(r"C:\Users\Rus\Documents\NEXORA\NEXCAM\app\package.json")
+
+# token -> expira (epoch segundos); mismo mecanismo que enlacesApk en server.js.
+_enlaces_apk_temporales: dict = {}
+
+
+def ruta_apk() -> Path:
+    return Path(os.environ.get("NEXCAM_APK", str(RUTA_APK_PREDETERMINADA)))
+
+
+def crear_enlace_apk_temporal(base_url: str) -> str:
+    token = secrets.token_hex(16)
+    _enlaces_apk_temporales[token] = time.time() + 24 * 3600
+    return f"{base_url.rstrip('/')}/app/nexcam.apk?k={token}"
+
+
+def enlace_apk_temporal_vigente(token: str) -> bool:
+    vence = _enlaces_apk_temporales.get(token)
+    return bool(vence) and vence >= time.time()
+
+
+def version_app() -> Optional[str]:
+    try:
+        with open(RUTA_PACKAGE_JSON_APP, "r", encoding="utf-8") as f:
+            return json.load(f).get("version")
+    except Exception:
+        return None
 
 
 def _esc(t) -> str:
@@ -152,10 +200,31 @@ class BotTelegram:
 
     def _guardar(self):
         try:
+            # No perder un "apkUrl" que alguien agregó a mano al archivo
+            # mientras el bot seguía corriendo (igual que guardar() en
+            # mock-api/telegram.js).
+            url_actual = self._url_apk_fija()
+            if url_actual:
+                self.cfg["apkUrl"] = url_actual
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(self.cfg, f, ensure_ascii=False, indent=2)
         except Exception as e:
             self.log(f"Telegram: no se pudo guardar telegram.json: {e}")
+
+    def _url_apk_fija(self) -> Optional[str]:
+        """
+        Enlace fijo (siempre la última versión publicada) para instalar la
+        app, re-leído del archivo en cada pedido -- cambiarlo no exige
+        reiniciar el servidor. Solo enlaces https (igual que el mock).
+        """
+        en_archivo = None
+        try:
+            with open(self.config_path, "r", encoding="utf-8-sig") as f:
+                en_archivo = json.load(f).get("apkUrl")
+        except Exception:
+            pass
+        url = os.environ.get("NEXCAM_APK_URL") or en_archivo or self.cfg.get("apkUrl")
+        return url if url and str(url).startswith("https://") else None
 
     def _chat(self, chat_id) -> Optional[dict]:
         return next((c for c in self.cfg["chats"] if c["id"] == chat_id), None)
@@ -226,6 +295,113 @@ class BotTelegram:
             raise RuntimeError(f"sendPhoto: {j.get('description', 'error')}")
         return j.get("result")
 
+    def _enviar_documento(self, chat_id, ruta_archivo: Path, caption: str, nombre_archivo: str,
+                           tipo_mime: str = "application/octet-stream", timeout: int = 180):
+        """Igual mecanismo que _enviar_foto pero para sendDocument (usado
+        para la app NEXCAM, que puede pesar decenas de MB)."""
+        boundary = f"----nexora{secrets.token_hex(8)}"
+        partes = []
+
+        def campo(nombre, valor):
+            partes.append(
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"{nombre}\"\r\n\r\n{valor}\r\n".encode("utf-8")
+            )
+
+        campo("chat_id", chat_id)
+        campo("caption", caption[:1024])
+        campo("parse_mode", "HTML")
+        partes.append(
+            (f"--{boundary}\r\nContent-Disposition: form-data; name=\"document\"; filename=\"{nombre_archivo}\"\r\n"
+             f"Content-Type: {tipo_mime}\r\n\r\n").encode("utf-8")
+        )
+        partes.append(ruta_archivo.read_bytes())
+        partes.append(f"\r\n--{boundary}--\r\n".encode("utf-8"))
+        cuerpo = b"".join(partes)
+
+        peticion = urllib.request.Request(
+            f"{self.api}/bot{self.cfg['token']}/sendDocument", data=cuerpo,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"}, method="POST",
+        )
+        with urllib.request.urlopen(peticion, timeout=timeout) as r:
+            j = json.loads(r.read().decode("utf-8"))
+        if not j.get("ok"):
+            raise RuntimeError(f"sendDocument: {j.get('description', 'error')}")
+        return j.get("result")
+
+    def enviar_apk(self, chat_id):
+        """
+        Envía la forma de instalar NEXCAM: enlace fijo (apkUrl) si existe,
+        si no el archivo local (<= LIMITE_TELEGRAM_BYTES) o, si pesa más,
+        un enlace temporal de 24 h servido por este mismo NEXORA-CONTROL
+        (ver /app/nexcam.apk en nexcam_api.py). Puerto de enviarApk() en
+        mock-api/telegram.js, releído para esta sección.
+        """
+        fija = self._url_apk_fija()
+        if fija:
+            return self._texto(
+                chat_id,
+                "\n".join([
+                    "📲 <b>App NEXCAM</b>: este enlace siempre descarga la última versión.", "",
+                    "Para instalarla: toca el botón, abre el archivo descargado y, si Android lo pide, "
+                    "permite instalar apps de esta fuente.",
+                    "Si ya tienes NEXCAM, elige <b>Actualizar</b> (no la desinstales: tendrías que "
+                    "autorizar el teléfono otra vez).",
+                    "La primera vez, el administrador debe autorizar el teléfono.",
+                ]),
+                {"reply_markup": {"inline_keyboard": [[{"text": "📲 Descargar NEXCAM", "url": fija}]]}},
+            )
+
+        ruta = ruta_apk()
+        if not ruta.is_file():
+            return self._texto(
+                chat_id,
+                "Todavía no hay una app compilada en la PC. Compílala (gradlew assembleRelease) y "
+                "vuelve a pedirla con el botón 📲 Instalar app.",
+                self._con_menu(),
+            )
+        tamano = ruta.stat().st_size
+        mb = tamano / 1024 / 1024
+        if tamano > LIMITE_TELEGRAM_BYTES:
+            self.log(f"Telegram: el APK pesa {mb:.1f} MB y Telegram solo deja enviar 50 MB.")
+            try:
+                import main
+
+                base_url = f"http://{main._detectar_ip_red_local()}:8000"
+            except Exception:
+                base_url = "http://127.0.0.1:8000"
+            url = crear_enlace_apk_temporal(base_url)
+            return self._texto(
+                chat_id,
+                "\n".join([
+                    f"📲 La app pesa {mb:.1f} MB, más de lo que Telegram deja enviar (50 MB).",
+                    "Descárgala desde este enlace con el teléfono <b>conectado a la misma Wi-Fi que la PC</b> "
+                    "(sirve 24 horas):",
+                    f'<a href="{url}">Descargar NEXCAM</a>', "",
+                    "Al abrir el archivo: si Android lo pide, permite instalar apps de esta fuente. "
+                    "Si ya tienes NEXCAM, elige <b>Actualizar</b>.",
+                ]),
+                self._con_menu(),
+            )
+
+        self._texto(chat_id, f"📲 Te envío la app NEXCAM ({mb:.1f} MB). Puede tardar un poco…")
+        v = version_app()
+        hora_compilado = _hora(int(ruta.stat().st_mtime * 1000))
+        caption = "\n".join([
+            f"<b>NEXCAM{f' v{v}' if v else ''}</b>, compilada el {hora_compilado}.", "",
+            "Para instalarla en el teléfono:",
+            "1. Toca el archivo para descargarlo y ábrelo.",
+            "2. Si Android lo pide, permite \"instalar apps de esta fuente\" para Telegram.",
+            "3. Si ya tienes NEXCAM, elige <b>Actualizar</b> (no la desinstales: tendrías que autorizar "
+            "el teléfono otra vez).",
+            "4. La primera vez, el administrador debe autorizar el teléfono.",
+        ])
+        try:
+            self._enviar_documento(chat_id, ruta, caption, f"NEXCAM{f'-v{v}' if v else ''}.apk",
+                                    "application/vnd.android.package-archive")
+        except Exception as e:
+            self.log(f"Telegram: no se pudo enviar la app - {e}")
+            self._texto(chat_id, "No pude enviar la app ahora. Inténtalo otra vez en un rato con 📲 Instalar app.", self._con_menu())
+
     def _texto(self, chat_id, text, extra: dict = None):
         cuerpo = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
         cuerpo.update(extra or {})
@@ -267,7 +443,8 @@ class BotTelegram:
                 [{"text": B["agregar"]}, {"text": B["quitar"]}],
                 [{"text": f"{B['vivo']}: {'sí' if self.cfg['en_vivo'] else 'no'}"},
                  {"text": f"{B['avisos']}: {'todo' if self.cfg['modo'] == 'todo' else 'alertas'}"}],
-                [{"text": "🔔 Reanudar avisos" if self.cfg["silencio"] else B["silencio"]}, {"text": B["ayuda"]}],
+                [{"text": "🔔 Reanudar avisos" if self.cfg["silencio"] else B["silencio"]}, {"text": B["app"]}],
+                [{"text": B["ayuda"]}],
             ],
             "resize_keyboard": True, "is_persistent": True,
             "input_field_placeholder": "Elige una opción o escribe una placa",
@@ -305,6 +482,7 @@ class BotTelegram:
             f"<b>{B['vivo']}</b>: ver lo que lee cada cámara mientras está encendida",
             f"<b>{B['avisos']}</b>: solo alertas, o también cada placa leída",
             f"<b>{B['silencio']}</b>: pausa o reanuda todos los avisos",
+            f"<b>{B['app']}</b>: te envío la última versión de la app para el teléfono",
         ])
 
     # ------------------------------------------------------------ textos
@@ -703,7 +881,13 @@ class BotTelegram:
             self.codigo = str(secrets.randbelow(900000) + 100000)
             self.log(f"Telegram: chat vinculado ({nombre}). Nuevo código: {self.codigo}")
             pendiente = "" if usuario else "\n\nTodavía no tienes un usuario de NEXORA asignado a este chat: pídele a un Admin que te lo asigne desde el panel (NEXCAM → Telegram) para poder cargar o agregar placas."
-            return self._texto(chat_id, f"Listo, {_esc(nombre)}. Este chat recibirá los avisos de NEXCAM.{pendiente}\n\n{self._ayuda()}", self._con_menu())
+            self._texto(chat_id, f"Listo, {_esc(nombre)}. Este chat recibirá los avisos de NEXCAM.{pendiente}\n\n{self._ayuda()}", self._con_menu())
+            # Primera vez: le llega la app para instalarla en el teléfono.
+            try:
+                self.enviar_apk(chat_id)
+            except Exception as e:
+                self.log(f"Telegram: error enviando la app - {e}")
+            return None
         return self._texto(chat_id, "Este chat no está vinculado a NEXCAM. Escribe <code>/vincular</code> seguido del código que muestra el servidor al arrancar (o en el panel).")
 
     def _mensaje(self, chat_id, raw: str, nombre: str):
@@ -772,6 +956,8 @@ class BotTelegram:
             self.cfg["silencio"] = not self.cfg["silencio"]
             self._guardar()
             return self._texto(chat_id, "🔕 Avisos en pausa." if self.cfg["silencio"] else "🔔 Avisos reanudados.", self._con_menu())
+        if txt == B["app"] or cmd == "/app":
+            return self.enviar_apk(chat_id)
         if txt == B["ayuda"] or cmd in ("/start", "/menu", "/ayuda", "/help"):
             return self._texto(chat_id, self._ayuda(), self._con_menu())
         if cmd == "/vincular":
@@ -937,6 +1123,13 @@ class BotTelegram:
         return True
 
     def arrancar(self):
+        if _pruebas_activas():
+            # Salvaguarda explícita (incidente FASE 5): nunca un bot real
+            # mientras corren pruebas, sin depender solo de que
+            # tests/conftest.py redirija CONFIG_PATH -- esto cubre
+            # cualquier otro punto de entrada (script suelto, notebook, etc.).
+            self.log("  Telegram: NEXORA_PRUEBAS=1 o ejecución bajo pytest detectada -- el bot NO arranca.")
+            return
         if not self.activo:
             motivo = "el token de telegram.json no tiene el formato de @BotFather (123456789:ABC...)." if self.cfg.get("token") else "desactivado (crea telegram.json con tu token, o la variable TELEGRAM_TOKEN, para activarlo)."
             self.log(f"  Telegram: {motivo}")

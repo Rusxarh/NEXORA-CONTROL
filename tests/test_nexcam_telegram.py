@@ -42,6 +42,7 @@ def bot(tmp_path, monkeypatch, cliente):
 
     monkeypatch.setattr(b, "_llamar", _llamar_falso)
     monkeypatch.setattr(b, "_enviar_foto", lambda *a, **k: b.llamadas.append(("sendPhoto", a)) or {"message_id": 1})
+    monkeypatch.setattr(b, "_enviar_documento", lambda *a, **k: b.llamadas.append(("sendDocument", a)) or {"message_id": 1})
     return b
 
 
@@ -226,3 +227,55 @@ def test_rgm_resultado_responde_al_mensaje_del_avistamiento(bot):
     ultimo = [c for metodo, c in bot.llamadas if metodo == "sendMessage"][-1]
     assert ultimo["reply_to_message_id"] == 777
     assert 42 not in bot._mensajes_por_avistamiento  # se consume, no queda colgado
+
+
+# --------------------------------------------------------------------- "0. Pendientes rápidos": instalar app
+
+def test_bot_no_arranca_bajo_pytest(bot, monkeypatch):
+    # _pruebas_activas() debe ser True aquí mismo (estamos corriendo con pytest).
+    assert nexcam_telegram._pruebas_activas() is True
+    bot.arrancar()
+    assert bot.llamadas == []  # ni getMe ni setMyCommands: no llamó a nada
+
+
+def test_url_apk_fija_se_relee_del_archivo(bot):
+    assert bot._url_apk_fija() is None
+    bot.config_path.write_text(bot.config_path.read_text().replace("}", ', "apkUrl": "https://example.com/NEXCAM.apk"}'))
+    assert bot._url_apk_fija() == "https://example.com/NEXCAM.apk"
+
+
+def test_enviar_apk_usa_enlace_fijo_cuando_existe(bot):
+    bot.cfg["apkUrl"] = "https://example.com/NEXCAM.apk"
+    bot.enviar_apk(999)
+    ultimo = [c for metodo, c in bot.llamadas if metodo == "sendMessage"][-1]
+    assert ultimo["reply_markup"]["inline_keyboard"][0][0]["url"] == "https://example.com/NEXCAM.apk"
+
+
+def test_comando_app_llama_a_enviar_apk(bot, monkeypatch):
+    llamado = {}
+    monkeypatch.setattr(bot, "enviar_apk", lambda chat_id: llamado.setdefault("chat_id", chat_id))
+    bot._vincular(321, [bot.codigo], "Nuevo")
+    assert llamado.get("chat_id") == 321  # se manda sola al vincular por primera vez
+
+    llamado.clear()
+    bot._mensaje(321, "/app", "Nuevo")
+    assert llamado.get("chat_id") == 321
+
+
+def test_enviar_apk_sin_enlace_ni_archivo_avisa(bot, monkeypatch):
+    monkeypatch.setattr(nexcam_telegram, "ruta_apk", lambda: nexcam_telegram.Path("Z:/no-existe/app.apk"))
+    bot.enviar_apk(555)
+    ultimo = [c for metodo, c in bot.llamadas if metodo == "sendMessage"][-1]
+    assert "Todavía no hay una app compilada" in ultimo["text"]
+
+
+def test_descargar_apk_token_invalido_403(cliente):
+    r = cliente.get("/app/nexcam.apk", params={"k": "token-que-no-existe"})
+    assert r.status_code == 403
+
+
+def test_crear_enlace_apk_temporal_queda_vigente():
+    url = nexcam_telegram.crear_enlace_apk_temporal("http://192.168.1.9:8000")
+    token = url.split("k=")[1]
+    assert nexcam_telegram.enlace_apk_temporal_vigente(token) is True
+    assert nexcam_telegram.enlace_apk_temporal_vigente("otro-token") is False
