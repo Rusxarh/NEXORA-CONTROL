@@ -24,6 +24,11 @@
    archivos ignorados por git (telegram.json, .env). La llave de NEXDOC
    (Documents\NEXDOC llave) nunca se toca.
 4. Gastar dinero o crear cuentas/servicios externos.
+5. Las pruebas automáticas NUNCA mandan mensajes reales (Telegram u otro medio) ni
+   hacen consultas reales a un portal externo (RGM, Rama Judicial): siempre contra
+   datos/servidores simulados o funciones con las llamadas de red reemplazadas.
+   Si hace falta probar contra el servicio real, se hace a mano y se avisa en el
+   reporte, nunca dentro de la suite automática.
 
 ## Proyecto
 
