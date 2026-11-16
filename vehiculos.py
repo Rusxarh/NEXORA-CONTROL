@@ -248,11 +248,14 @@ def carga_masiva_vista(
     )
 
 
-@router.post("/vehiculos/carga-masiva")
-def carga_masiva_procesar(
-    lineas: str = Form(...),
-    usuario_actual: dict = Depends(usuarios.requerir_admin),
-):
+def procesar_carga_masiva_texto(lineas: str, usuario_id: int) -> dict:
+    """
+    Lógica pura de la carga masiva (sin HTTP): usada por la ruta web de
+    abajo y por el comando /cargar del bot de Telegram (nexcam_telegram.py,
+    FASE 3), para no duplicar el parseo ni el cruce con NEXCAM en dos
+    lugares. Devuelve {"insertadas", "duplicadas", "invalidas"} igual que
+    antes de esta extracción (mismo formato, mismo comportamiento).
+    """
     placas_a_insertar = []
     formato_invalido = []
 
@@ -283,32 +286,53 @@ def carga_masiva_procesar(
             }
         )
 
-    if not placas_a_insertar and not formato_invalido:
+    if placas_a_insertar:
+        resumen = db.insertar_placas_masivo(placas_a_insertar, usuario_id)
+    else:
+        resumen = {"insertadas": [], "duplicadas": [], "invalidas": []}
+
+    resumen["invalidas"] = resumen["invalidas"] + formato_invalido
+
+    # Integración NEXCAM (FASE 2/3): cruza esta carga con el historial de
+    # avistamientos de la cámara ("¿ya la vimos?"), lo guarda para la
+    # pestaña "Ya vistas" del panel y avisa por SSE/Telegram. Nunca debe
+    # romper la carga masiva en sí.
+    try:
+        import nexcam_api
+        import nexcam_db
+
+        placas_de_esta_carga = [item["placa"] for item in placas_a_insertar]
+        if placas_de_esta_carga:
+            cruce = nexcam_db.guardar_cruce_lista_dia(placas_de_esta_carga)
+            resumen["ya_vistas"] = cruce["ya_vistas"]
+            if cruce["ya_vistas"]:
+                nexcam_api.broadcast("retro.hits", {"origen": "panel", "hits": list(cruce["ya_vistas"].values())})
+    except Exception:
+        resumen["ya_vistas"] = {}
+
+    return resumen
+
+
+@router.post("/vehiculos/carga-masiva")
+def carga_masiva_procesar(
+    lineas: str = Form(...),
+    usuario_actual: dict = Depends(usuarios.requerir_admin),
+):
+    if not lineas.strip():
         return usuarios.redirigir_con_mensaje(
             "/vehiculos/carga-masiva",
             "No se encontró ninguna placa válida para procesar.",
             "error",
         )
 
-    if placas_a_insertar:
-        resumen = db.insertar_placas_masivo(placas_a_insertar, usuario_actual["id"])
-    else:
-        resumen = {"insertadas": [], "duplicadas": [], "invalidas": []}
+    resumen = procesar_carga_masiva_texto(lineas, usuario_actual["id"])
 
-    resumen["invalidas"] = resumen["invalidas"] + formato_invalido
-
-    # Integración NEXCAM (FASE 2): cruza esta carga con el historial de
-    # avistamientos de la cámara ("¿ya la vimos?") y guarda el resultado
-    # para la pestaña "Ya vistas" del panel. Nunca debe romper la carga
-    # masiva en sí: si nexcam_db falla por lo que sea, se ignora aquí.
-    try:
-        import nexcam_db
-
-        placas_de_esta_carga = [item["placa"] for item in placas_a_insertar]
-        if placas_de_esta_carga:
-            nexcam_db.guardar_cruce_lista_dia(placas_de_esta_carga)
-    except Exception:
-        pass
+    if not resumen["insertadas"] and not resumen["invalidas"] and not resumen["duplicadas"]:
+        return usuarios.redirigir_con_mensaje(
+            "/vehiculos/carga-masiva",
+            "No se encontró ninguna placa válida para procesar.",
+            "error",
+        )
 
     partes_mensaje = [f"{len(resumen['insertadas'])} insertada(s)"]
     if resumen["duplicadas"]:

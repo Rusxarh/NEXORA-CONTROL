@@ -25,6 +25,7 @@ import database as db
 import gestion_masiva
 import nexcam_api
 import nexcam_db
+import nexcam_telegram
 import nexcam_web
 import puente
 import usuarios
@@ -49,6 +50,11 @@ app.include_router(gestion_masiva.router)
 app.include_router(puente.router)
 app.include_router(nexcam_api.router)
 app.include_router(nexcam_web.router)
+
+# Bot de Telegram (FASE 3): arranca en hilos propios (daemon), nunca bloquea
+# el arranque del servidor. Si no hay token válido, queda desactivado y
+# todo lo demás sigue funcionando exactamente igual (ver nexcam_telegram.py).
+nexcam_telegram.iniciar()
 
 
 # ---------------------------------------------------------------------------

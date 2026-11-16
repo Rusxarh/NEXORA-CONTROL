@@ -269,11 +269,67 @@
   {% if tab == 'telegram' %}
   <section class="card">
     <h2 class="text-sm font-semibold text-zinc-100 mb-3">Bot de Telegram</h2>
-    <span class="badge-neutral mb-3">No configurado todavía</span>
+    {% if not bot_info or not bot_info.activo %}
+    <span class="badge-neutral mb-3">Desactivado</span>
     <p class="text-sm text-zinc-500 mt-3">
-      El bot de Telegram (alertas con foto, botones de Ficha/Procesos judiciales/Mapa, vinculación por código)
-      todavía no se ha construido. Esta pestaña se activará cuando se implemente esa fase.
+      No hay un token válido configurado. Crea <code class="text-xs">telegram.json</code> junto a
+      <code class="text-xs">main.py</code> con <code class="text-xs">{"token": "123456:ABC..."}</code>
+      (o la variable de entorno <code class="text-xs">TELEGRAM_TOKEN</code>) y reinicia el servidor.
+      Ese archivo nunca se sube al repositorio.
     </p>
+    {% else %}
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5 text-center">
+      <div><p class="text-lg font-semibold text-zinc-100">@{{ bot_info.bot or '—' }}</p><p class="text-[11px] text-zinc-500">Bot</p></div>
+      <div><p class="text-lg font-semibold text-zinc-100">{{ bot_info.chats | length }}</p><p class="text-[11px] text-zinc-500">Chats vinculados</p></div>
+      <div><p class="text-lg font-semibold text-zinc-100">{{ bot_info.camaras }}</p><p class="text-[11px] text-zinc-500">Cámaras en vivo</p></div>
+      <div><p class="text-lg font-semibold text-zinc-100">{{ 'Todo' if bot_info.modo == 'todo' else 'Alertas' }}</p><p class="text-[11px] text-zinc-500">Modo de avisos</p></div>
+    </div>
+    <p class="text-xs text-zinc-500 mb-5">
+      Código para vincular un chat nuevo: escríbele al bot <code class="font-mono">/vincular {{ bot_info.codigo }}</code>
+      (el código cambia cada vez que alguien se vincula).
+    </p>
+
+    <h3 class="text-xs font-semibold text-zinc-400 uppercase tracking-wide mb-2">Chats vinculados</h3>
+    <div class="overflow-x-auto -mx-5">
+      <table class="table-shell">
+        <thead>
+          <tr class="table-head-row">
+            <th class="table-head-cell">Chat</th>
+            <th class="table-head-cell">Usuario de NEXORA</th>
+            <th class="table-head-cell text-right">Asignar</th>
+          </tr>
+        </thead>
+        <tbody class="table-body">
+          {% for c in bot_info.chats %}
+          <tr class="table-row">
+            <td class="table-cell text-zinc-300">{{ c.nombre }}</td>
+            <td class="table-cell">
+              {% if c.usuario_nombre %}
+              <span class="text-zinc-200">{{ c.usuario_nombre }}</span>
+              <span class="badge-neutral ml-1">{{ c.usuario_rol }}</span>
+              {% else %}
+              <span class="badge-warning">Sin usuario asignado</span>
+              {% endif %}
+            </td>
+            <td class="table-cell text-right">
+              <form method="post" action="/nexcam/telegram/{{ c.id }}/asignar-usuario" class="flex gap-2 justify-end">
+                <select name="usuario_id" class="input-field text-xs py-1 w-40">
+                  <option value="">— Sin usuario —</option>
+                  {% for u in usuarios_disponibles %}
+                  <option value="{{ u.id }}" {% if u.id == c.usuario_id %}selected{% endif %}>{{ u.nombre }} ({{ u.rol }})</option>
+                  {% endfor %}
+                </select>
+                <button type="submit" class="btn-secondary btn-sm">Guardar</button>
+              </form>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="3" class="px-5 py-8 text-center text-zinc-500 text-sm">Ningún chat se ha vinculado todavía.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
   </section>
   {% endif %}
 

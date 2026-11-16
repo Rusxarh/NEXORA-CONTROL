@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, Request
 
 import database as db
 import nexcam_db
+import nexcam_telegram
 import usuarios
 from templates import templates
 
@@ -57,8 +58,29 @@ def nexcam_panel(
         contexto["ultimo_cruce"] = nexcam_db.obtener_ultimo_cruce()
     elif tab == "ocr":
         contexto["confusiones"] = nexcam_db.listar_confusiones()
+    elif tab == "telegram":
+        bot = nexcam_telegram.instancia()
+        contexto["bot_info"] = bot.info() if bot else None
+        contexto["usuarios_disponibles"] = [u for u in db.listar_usuarios() if u["estado"] == "activo"]
 
     return templates.TemplateResponse(request, "nexcam.html", contexto)
+
+
+@router.post("/nexcam/telegram/{chat_id}/asignar-usuario")
+def nexcam_asignar_usuario_telegram(chat_id: int, usuario_id: str = "", usuario_actual: dict = Depends(usuarios.requerir_admin)):
+    bot = nexcam_telegram.instancia()
+    if bot is None or not bot.activo:
+        return usuarios.redirigir_con_mensaje("/nexcam?tab=telegram", "El bot de Telegram no está activo.", "error")
+
+    nuevo_id = int(usuario_id) if usuario_id.strip().isdigit() else None
+    if not bot.asignar_usuario_a_chat(chat_id, nuevo_id):
+        return usuarios.redirigir_con_mensaje("/nexcam?tab=telegram", "Ese chat no existe.", "error")
+
+    db.registrar_log(
+        usuario_actual["id"], "NEXCAM_TELEGRAM_USUARIO_ASIGNADO",
+        observaciones=f"chat_id={chat_id} -> usuario_id={nuevo_id}.",
+    )
+    return usuarios.redirigir_con_mensaje("/nexcam?tab=telegram", "Chat de Telegram actualizado.", "exito")
 
 
 @router.post("/nexcam/telefonos/{device_uuid}/autorizar")

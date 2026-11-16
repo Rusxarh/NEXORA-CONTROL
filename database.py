@@ -1004,14 +1004,19 @@ def crear_evento_notificacion(usuario_id: int, tipo_evento: str, datos: str = No
 
 
 def listar_eventos_pendientes(limite: int = 100):
-    """Eventos aún no entregados, para cuando exista un consumidor de
-    Telegram. No hay ningún consumidor implementado en esta etapa."""
+    """Eventos aún no entregados. Consumidos por el bot de Telegram
+    (nexcam_telegram.py, FASE 3)."""
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT * FROM eventos_notificacion WHERE entregado = 0 ORDER BY creado_en ASC LIMIT ?",
             (limite,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def marcar_evento_entregado(evento_id: int):
+    with get_connection() as conn:
+        conn.execute("UPDATE eventos_notificacion SET entregado = 1 WHERE id = ?", (evento_id,))
 
 
 # ---------------------------------------------------------------------------

@@ -35,6 +35,16 @@ router = APIRouter()
 
 _suscriptores_sse: list = []
 
+# Otros suscriptores de eventos, además de SSE (el bot de Telegram, FASE 3):
+# funciones síncronas fn(evento, payload). Igual patrón que `oyentes` en
+# mock-api/server.js. Una excepción de un oyente nunca debe romper la
+# petición HTTP que disparó el evento.
+_oyentes: list = []
+
+
+def suscribir(fn):
+    _oyentes.append(fn)
+
 
 def broadcast(evento: str, payload: dict):
     mensaje = f"event: {evento}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
@@ -42,6 +52,11 @@ def broadcast(evento: str, payload: dict):
         try:
             cola.put_nowait(mensaje)
         except asyncio.QueueFull:
+            pass
+    for fn in list(_oyentes):
+        try:
+            fn(evento, payload)
+        except Exception:
             pass
 
 
