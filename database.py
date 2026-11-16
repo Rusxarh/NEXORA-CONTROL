@@ -362,6 +362,20 @@ def _migrar_codigo_operativo(conn):
             )
 
 
+def _migrar_columnas_vehiculo_nexcam(conn):
+    """
+    Migración aditiva (integración NEXCAM, FASE 1): agrega marca/línea/
+    color/modelo a `vehiculos`, TEXT NULL. La app NEXCAM nunca escribe
+    estos campos (solo los lee); llegan por la lista del día o por el alta
+    manual (FASE 2). Los vehículos existentes quedan con estos 4 campos en
+    NULL hasta que alguna de esas dos vías los complete.
+    """
+    columnas = {fila["name"] for fila in conn.execute("PRAGMA table_info(vehiculos)")}
+    for columna in ("marca", "linea", "color", "modelo"):
+        if columna not in columnas:
+            conn.execute(f"ALTER TABLE vehiculos ADD COLUMN {columna} TEXT")
+
+
 def inicializar_db():
     """Crea las tablas e índices si no existen, y aplica migraciones aditivas
     sobre tablas ya existentes. Es seguro llamarla varias veces."""
@@ -383,6 +397,7 @@ def inicializar_db():
     with get_connection() as conn:
         _migrar_columnas_operativas(conn)
         _migrar_codigo_operativo(conn)
+        _migrar_columnas_vehiculo_nexcam(conn)
     print(f"Base de datos inicializada en: {DB_PATH}")
 
 

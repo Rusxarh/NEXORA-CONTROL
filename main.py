@@ -23,6 +23,8 @@ from starlette.status import HTTP_303_SEE_OTHER
 import auditoria
 import database as db
 import gestion_masiva
+import nexcam_api
+import nexcam_db
 import puente
 import usuarios
 import vehiculos
@@ -37,12 +39,14 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # Garantiza que la base de datos, las tablas y las columnas de login
 # existan al arrancar (migración aditiva, no destructiva).
 db.inicializar_db()
+nexcam_db.inicializar_nexcam_db()
 
 app.include_router(usuarios.router)
 app.include_router(vehiculos.router)
 app.include_router(auditoria.router)
 app.include_router(gestion_masiva.router)
 app.include_router(puente.router)
+app.include_router(nexcam_api.router)
 
 
 # ---------------------------------------------------------------------------

@@ -16,3 +16,10 @@ __pycache__/
 # regla preventiva para si se introduce uno en el futuro)
 .env
 .env.*
+
+# NEXCAM: fotos reales de placas/vehículos y config del bot de Telegram
+# (token real) -- nunca deben versionarse. Las pruebas usan su propia
+# carpeta temporal, nunca esta.
+datos_nexcam/
+telegram.json
+.pytest_cache/
