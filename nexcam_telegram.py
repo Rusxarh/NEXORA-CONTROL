@@ -110,12 +110,12 @@ PATRON_PLACA_SOLA = re.compile(r"^[A-Za-z]{3}[\s-]?\d{3}$")
 
 
 class BotTelegram:
-    def __init__(self, config_path: Path = CONFIG_PATH, log=print):
-        self.config_path = config_path
+    def __init__(self, config_path: Optional[Path] = None, log=print):
+        self.config_path = config_path or CONFIG_PATH
         self.log = log
         self.cfg = {"token": None, "chats": [], "modo": "alertas", "silencio": False, "en_vivo": True}
         try:
-            with open(config_path, "r", encoding="utf-8-sig") as f:
+            with open(self.config_path, "r", encoding="utf-8-sig") as f:
                 self.cfg.update(json.load(f))
         except Exception:
             pass
@@ -850,9 +850,14 @@ class BotTelegram:
 _instancia: Optional[BotTelegram] = None
 
 
-def iniciar(config_path: Path = CONFIG_PATH, log=print) -> BotTelegram:
+def iniciar(config_path: Optional[Path] = None, log=print) -> BotTelegram:
+    # `config_path` se resuelve aquí (no como valor por defecto del
+    # parámetro) para que main.py recoja en cada llamada el valor ACTUAL
+    # de CONFIG_PATH, no el que tenía cuando este módulo se importó por
+    # primera vez -- necesario para que las pruebas puedan redirigirlo
+    # (ver tests/conftest.py) y para pruebas unitarias reales en general.
     global _instancia
-    _instancia = BotTelegram(config_path, log)
+    _instancia = BotTelegram(config_path or CONFIG_PATH, log)
     _instancia.arrancar()
     return _instancia
 
