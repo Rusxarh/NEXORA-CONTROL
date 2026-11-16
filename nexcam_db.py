@@ -27,6 +27,7 @@ Decisiones de diseño registradas aquí (no silenciosas):
 
 import base64
 import hashlib
+import json
 import re
 import secrets
 from datetime import datetime, timedelta
@@ -157,6 +158,15 @@ CREATE TABLE IF NOT EXISTS nexcam_feedback (
     device_uuid TEXT,
     creado_en   TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
+
+-- Fila única (id=1): resultado del último cruce "lista del día vs.
+-- historial" (ver vehiculos.carga_masiva_procesar). No es historial -- solo
+-- el más reciente, para la pestaña "Ya vistas" del panel (FASE 2).
+CREATE TABLE IF NOT EXISTS nexcam_ultimo_cruce (
+    id        INTEGER PRIMARY KEY CHECK (id = 1),
+    datos     TEXT NOT NULL,
+    creado_en TEXT NOT NULL
+);
 """
 
 
@@ -174,6 +184,8 @@ def _fila_dispositivo(row) -> Optional[dict]:
     if row is None:
         return None
     d = dict(row)
+    d["authorized"] = bool(d["authorized"])
+    d["revoked"] = bool(d["revoked"])
     ultimo = d.get("last_seen")
     d["online"] = bool(ultimo and (datetime.now() - datetime.strptime(ultimo, FORMATO_FECHA)) < timedelta(seconds=90))
     return d
@@ -719,3 +731,38 @@ def vistas_de(placas: list) -> dict:
                 "vistas": vistas,
             }
     return resultado
+
+
+# ---------------------------------------------------------------------------
+# Último cruce "lista del día" (usado por vehiculos.carga_masiva_procesar)
+# ---------------------------------------------------------------------------
+
+def guardar_cruce_lista_dia(placas: list) -> dict:
+    """Cruza `placas` (las de la carga masiva que se acaba de procesar) con
+    el historial de avistamientos y guarda el resultado como "el último
+    cruce" (fila única) para la pestaña 'Ya vistas' del panel."""
+    vistas = vistas_de(placas)
+    resultado = {
+        "total_cargadas": len(placas),
+        "total_ya_vistas": len(vistas),
+        "ya_vistas": vistas,
+    }
+    ahora = datetime.now().strftime(FORMATO_FECHA)
+    with db.get_connection() as conn:
+        conn.execute(
+            """INSERT INTO nexcam_ultimo_cruce (id, datos, creado_en) VALUES (1, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET datos = excluded.datos, creado_en = excluded.creado_en""",
+            (json.dumps(resultado, ensure_ascii=False), ahora),
+        )
+    resultado["creado_en"] = ahora
+    return resultado
+
+
+def obtener_ultimo_cruce() -> Optional[dict]:
+    with db.get_connection() as conn:
+        fila = conn.execute("SELECT datos, creado_en FROM nexcam_ultimo_cruce WHERE id = 1").fetchone()
+    if fila is None:
+        return None
+    datos = json.loads(fila["datos"])
+    datos["creado_en"] = fila["creado_en"]
+    return datos

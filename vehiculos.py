@@ -297,6 +297,19 @@ def carga_masiva_procesar(
 
     resumen["invalidas"] = resumen["invalidas"] + formato_invalido
 
+    # Integración NEXCAM (FASE 2): cruza esta carga con el historial de
+    # avistamientos de la cámara ("¿ya la vimos?") y guarda el resultado
+    # para la pestaña "Ya vistas" del panel. Nunca debe romper la carga
+    # masiva en sí: si nexcam_db falla por lo que sea, se ignora aquí.
+    try:
+        import nexcam_db
+
+        placas_de_esta_carga = [item["placa"] for item in placas_a_insertar]
+        if placas_de_esta_carga:
+            nexcam_db.guardar_cruce_lista_dia(placas_de_esta_carga)
+    except Exception:
+        pass
+
     partes_mensaje = [f"{len(resumen['insertadas'])} insertada(s)"]
     if resumen["duplicadas"]:
         partes_mensaje.append(

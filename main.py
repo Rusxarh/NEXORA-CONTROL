@@ -25,6 +25,7 @@ import database as db
 import gestion_masiva
 import nexcam_api
 import nexcam_db
+import nexcam_web
 import puente
 import usuarios
 import vehiculos
@@ -47,6 +48,7 @@ app.include_router(auditoria.router)
 app.include_router(gestion_masiva.router)
 app.include_router(puente.router)
 app.include_router(nexcam_api.router)
+app.include_router(nexcam_web.router)
 
 
 # ---------------------------------------------------------------------------

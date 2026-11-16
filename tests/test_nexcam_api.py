@@ -9,31 +9,13 @@ nexcam_db.inicializar_nexcam_db()) corra contra esa base nueva.
 """
 
 import base64
-import importlib
 from datetime import datetime, timedelta
 
-import pytest
-from fastapi.testclient import TestClient
-
-import camara
 import database as db
 import nexcam_db
 import usuarios
 
 CLAVE = "clave-de-prueba-123"
-
-
-@pytest.fixture()
-def cliente(tmp_path, monkeypatch):
-    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test_nexcam.db")
-    monkeypatch.setattr(nexcam_db, "NEXCAM_FOTOS_DIR", tmp_path / "fotos")
-    db.inicializar_db()
-    nexcam_db.inicializar_nexcam_db()
-
-    import main
-
-    importlib.reload(main)  # fuerza su inicialización a correr contra el DB_PATH de esta prueba
-    return TestClient(main.app)
 
 
 # --------------------------------------------------------------------- helpers
