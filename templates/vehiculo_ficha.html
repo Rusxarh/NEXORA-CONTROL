@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% from "_macros.html" import placa as placa_macro %}
+{% block titulo %}{{ placa }} · Vehículos · NEXORA{% endblock %}
+
+{% block contenido %}
+<div class="space-y-6">
+
+  <p class="text-xs text-zinc-500">
+    <a href="/" class="hover:text-zinc-300 transition">Vehículos</a> / <span class="text-zinc-300">{{ placa }}</span>
+  </p>
+
+  {% if not vehiculo %}
+  <section class="card text-center py-10">
+    <p class="text-sm text-zinc-400">No se encontró ningún vehículo con la placa <span class="font-mono text-zinc-200">{{ placa }}</span>.</p>
+    <a href="/" class="btn-secondary btn-sm inline-flex mt-4">Volver a Vehículos</a>
+  </section>
+  {% else %}
+
+  <div class="flex flex-wrap items-start gap-4">
+    {{ placa_macro(vehiculo.placa, "cabecera") }}
+    <div class="flex flex-wrap gap-2 pt-2">
+      {% if vehiculo.estado == 'activo' %}<span class="badge-en-lista">En lista{% if vehiculo.observaciones %} · {{ vehiculo.observaciones }}{% endif %}</span>
+      {% else %}<span class="badge-neutral">Dada de baja</span>{% endif %}
+      <span class="badge-neutral">Vista {{ avistamientos | length }} vez(ces)</span>
+      {% if grado_placa %}<span class="badge-neutral">Grado {{ grado_placa }}</span>{% endif %}
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm card">
+    <div class="flex justify-between gap-3"><dt class="text-zinc-500">Tipo</dt><dd class="text-zinc-300 capitalize">{{ vehiculo.tipo_vehiculo }}</dd></div>
+    <div class="flex justify-between gap-3"><dt class="text-zinc-500">Marca / Línea</dt><dd class="text-zinc-300">{{ vehiculo.marca or '—' }} / {{ vehiculo.linea or '—' }}</dd></div>
+    <div class="flex justify-between gap-3"><dt class="text-zinc-500">Color / Modelo</dt><dd class="text-zinc-300">{{ vehiculo.color or '—' }} / {{ vehiculo.modelo or '—' }}</dd></div>
+    <div class="flex justify-between gap-3"><dt class="text-zinc-500">En la lista desde</dt><dd class="text-zinc-300">{{ vehiculo.fecha_ingreso }}</dd></div>
+    <div class="flex justify-between gap-3"><dt class="text-zinc-500">Fecha de baja</dt><dd class="text-zinc-300">{{ vehiculo.fecha_baja or '—' }}</dd></div>
+    <div class="flex justify-between gap-3"><dt class="text-zinc-500">Registrado por</dt><dd class="text-zinc-300">{{ vehiculo.registrado_por or '—' }}</dd></div>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+    <!-- Izquierda: dónde se ha visto -->
+    <section class="lg:col-span-2 card">
+      <h2 class="text-sm font-semibold text-zinc-100 mb-4">Dónde se ha visto</h2>
+      {% if not avistamientos %}
+      <p class="text-sm text-zinc-500 py-6 text-center">La cámara nunca ha visto esta placa.</p>
+      {% else %}
+      <div class="space-y-3">
+        {% for a in avistamientos %}
+        <div class="border border-zinc-800 rounded-lg p-3 flex flex-wrap gap-3 items-start">
+          <div class="flex gap-1 shrink-0">
+            {% if a.vehiculo %}<a href="{{ a.vehiculo }}" target="_blank"><img src="{{ a.vehiculo }}" class="h-14 w-20 object-cover rounded border border-zinc-700"></a>{% else %}<div class="foto-vacia h-14 w-20">Foto del vehículo</div>{% endif %}
+            {% if a.snapshot %}<a href="{{ a.snapshot }}" target="_blank"><img src="{{ a.snapshot }}" class="h-14 w-20 object-cover rounded border border-zinc-700"></a>{% else %}<div class="foto-vacia h-14 w-20">Foto de la placa</div>{% endif %}
+          </div>
+          <div class="flex-1 min-w-0 text-sm">
+            <div class="flex items-center gap-2 mb-1">
+              {% if a.coincidencia == 'exacta' %}<span class="badge-en-lista">Exacta</span>{% else %}<span class="badge-posible">Posible: leyó {{ a.leida }}</span>{% endif %}
+              <span class="text-zinc-500 text-xs">confianza {{ (a.confidence * 100) | round | int if a.confidence else '—' }}%</span>
+            </div>
+            <p class="text-zinc-400 text-xs">{{ a.recibido_en }} · {{ a.operador or '—' }}</p>
+          </div>
+          {% if a.lat and a.lng %}<a href="https://maps.google.com/?q={{ a.lat }},{{ a.lng }}" target="_blank" class="btn-secondary btn-sm shrink-0">Abrir en el mapa</a>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <h3 class="text-xs font-semibold text-zinc-400 uppercase tracking-wide mt-6 mb-2">Auditoría de esta placa</h3>
+      <div class="overflow-x-auto -mx-5">
+        <table class="table-shell">
+          <thead><tr class="table-head-row"><th class="table-head-cell">Fecha</th><th class="table-head-cell">Acción</th><th class="table-head-cell">Usuario</th></tr></thead>
+          <tbody class="table-body">
+            {% for log in logs %}
+            <tr class="table-row">
+              <td class="table-cell text-zinc-400 whitespace-nowrap">{{ log.fecha_hora }}</td>
+              <td class="table-cell">{{ log.accion }}</td>
+              <td class="table-cell text-zinc-300">{{ log.usuario_nombre or '—' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="3" class="px-5 py-6 text-center text-zinc-500 text-sm">Sin registros de auditoría.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Derecha: RGM + Judicial -->
+    <div class="lg:col-span-1 space-y-6">
+      <section class="card">
+        <div class="flex items-center justify-between gap-2 mb-2">
+          <h2 class="text-sm font-semibold text-zinc-100">Datos RGM</h2>
+          <form method="post" action="/rgm/solicitar">
+            <input type="hidden" name="placa" value="{{ vehiculo.placa }}">
+            <input type="hidden" name="alcance" value="RGM">
+            <input type="hidden" name="volver" value="/vehiculos/{{ vehiculo.placa }}">
+            <button type="submit" class="btn-secondary btn-sm">Actualizar</button>
+          </form>
+        </div>
+        {% if snapshot_rgm %}
+        <p class="text-xs text-zinc-500 mb-1">Consultado: {{ snapshot_rgm.creado_en }}</p>
+        <pre class="text-xs font-mono text-zinc-400 whitespace-pre-wrap">{{ snapshot_rgm.datos }}</pre>
+        {% else %}
+        <p class="text-sm text-zinc-500">Todavía no se ha consultado RGM para esta placa.</p>
+        {% endif %}
+      </section>
+
+      <section class="card">
+        <div class="flex items-center justify-between gap-2 mb-2">
+          <h2 class="text-sm font-semibold text-zinc-100">Procesos judiciales <span class="badge-en-prueba ml-1">En prueba</span></h2>
+        </div>
+        {% if usuario_actual.rol == 'Admin' %}
+        <form method="post" action="/rgm/solicitar" class="mb-3">
+          <input type="hidden" name="placa" value="{{ vehiculo.placa }}">
+          <input type="hidden" name="alcance" value="JUDICIAL">
+          <input type="hidden" name="volver" value="/vehiculos/{{ vehiculo.placa }}">
+          <button type="submit" class="btn-primary w-full justify-center">Consultar procesos</button>
+        </form>
+        {% endif %}
+        {% if snapshot_judicial %}
+        <p class="text-xs text-zinc-500 mb-1">Consultado: {{ snapshot_judicial.creado_en }}</p>
+        <pre class="text-xs font-mono text-zinc-400 whitespace-pre-wrap">{{ snapshot_judicial.datos }}</pre>
+        {% else %}
+        <p class="text-sm text-zinc-500">Todavía no se han consultado procesos judiciales para esta placa.</p>
+        {% endif %}
+        <p class="text-xs text-zinc-500 mt-3">Verifica en el portal antes de actuar: dato en prueba.</p>
+      </section>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

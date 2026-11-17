@@ -616,6 +616,31 @@ def obtener_avistamiento(avistamiento_id: int) -> Optional[dict]:
         return _fila_avistamiento(row)
 
 
+def resumen_avistamientos_hoy() -> dict:
+    """FASE 7 ('Hoy'): leídas hoy y cuántas coincidieron con la lista,
+    usando la fecha local de Colombia (recibido_en ya se guarda en hora
+    local, igual que el resto de la base)."""
+    hoy = datetime.now().strftime("%Y-%m-%d")
+    with db.get_connection() as conn:
+        fila = conn.execute(
+            """SELECT COUNT(*) AS leidas, SUM(en_lista) AS coincidencias
+               FROM nexcam_avistamientos WHERE recibido_en LIKE ?""",
+            (f"{hoy}%",),
+        ).fetchone()
+        return {"leidas": fila["leidas"] or 0, "coincidencias": fila["coincidencias"] or 0}
+
+
+def avistamientos_en_lista_hoy(limite: int = 20) -> list:
+    hoy = datetime.now().strftime("%Y-%m-%d")
+    with db.get_connection() as conn:
+        filas = conn.execute(
+            """SELECT * FROM nexcam_avistamientos WHERE en_lista = 1 AND recibido_en LIKE ?
+               ORDER BY id DESC LIMIT ?""",
+            (f"{hoy}%", limite),
+        ).fetchall()
+        return [_fila_avistamiento(f) for f in filas]
+
+
 def avistamientos_recientes(n: int = 200) -> list:
     with db.get_connection() as conn:
         rows = conn.execute(

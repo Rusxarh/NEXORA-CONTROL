@@ -67,10 +67,12 @@ async def rgm_error(request: Request, usuario_actual: dict = Depends(usuarios.re
 # ---------------------------------------------------------------------------
 
 @router.post("/rgm/solicitar")
-def rgm_solicitar(placa: str = Form(...), alcance: str = Form("RGM"), usuario_actual: dict = Depends(usuarios.requerir_admin)):
+def rgm_solicitar(placa: str = Form(...), alcance: str = Form("RGM"), volver: str = Form(""),
+                   usuario_actual: dict = Depends(usuarios.requerir_admin)):
     placa_normalizada = placa.strip().upper()
+    destino = volver if usuarios._es_ruta_segura(volver) else f"/consulta?q={placa_normalizada}"
     if alcance not in db.ALCANCES_CONSULTA_RGM:
-        return usuarios.redirigir_con_mensaje("/consulta", "Alcance de consulta inválido.", "error")
+        return usuarios.redirigir_con_mensaje(destino, "Alcance de consulta inválido.", "error")
 
     resultado = rgm_cola.solicitar_consulta(placa_normalizada, alcance, "panel", usuario_actual["id"])
     etiqueta = {"RGM": "RGM", "JUDICIAL": "procesos judiciales", "COMPLETO": "RGM + procesos judiciales"}[alcance]
@@ -84,4 +86,4 @@ def rgm_solicitar(placa: str = Form(...), alcance: str = Form("RGM"), usuario_ac
         extra = f" {resultado['mensaje']}" if resultado.get("mensaje") else ""
         mensaje = f"Consulta de {etiqueta} encolada para {placa_normalizada}.{extra} ¿Hay alguien atendiendo la cola? {conectado}."
 
-    return usuarios.redirigir_con_mensaje(f"/consulta?q={placa_normalizada}", mensaje, "info")
+    return usuarios.redirigir_con_mensaje(destino, mensaje, "info")

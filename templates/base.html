@@ -37,20 +37,22 @@
   {% endfor %}
   {% endmacro %}
 
+  {# FASE 7: un solo menú, en este orden exacto. "Dashboard" -> "Hoy";
+     "Inventario" + el historial se integran en "Vehículos" (misma ruta
+     "/", solo cambia el nombre que se muestra y qué hace la página).
+     "Trabajador RGM" se retiró (la cumple /consulta) y "Puente de
+     Prueba" salió del menú (sigue viva la ruta /puente para diagnóstico,
+     solo que ya no se anuncia). #}
   {% set nav_principal = [
-    ('/dashboard', 'Dashboard', 'dashboard', false),
-    ('/', 'Inventario', 'inventario', false),
-    ('/consulta', 'Consulta', 'consulta', false)
-  ] %}
-  {% set nav_secundaria = [
-    ('/usuarios', 'Usuarios', 'usuarios', true),
-    ('/gestion-masiva', 'Gestión masiva de placas', 'gestion_masiva', true),
+    ('/hoy', 'Hoy', 'hoy', false),
+    ('/', 'Vehículos', 'vehiculos', false),
+    ('/consulta', 'Consulta', 'consulta', false),
     ('/nexcam', 'NEXCAM', 'nexcam', true),
+    ('/gestion-masiva', 'Gestión masiva de placas', 'gestion_masiva', true),
+    ('/usuarios', 'Usuarios', 'usuarios', true),
     ('/auditoria', 'Auditoría', 'auditoria', true)
   ] %}
-  {# FASE 6: "Trabajador RGM" se retiró (su función la cumple ahora la
-     página Consulta) y "Puente de Prueba" salió del menú (sigue viva la
-     ruta /puente para diagnóstico, solo que ya no se anuncia). #}
+  {% set nav_secundaria = [] %}
 
   <div class="min-h-full flex flex-col">
 
@@ -223,7 +225,9 @@
     // "nexora-theme" (valores "light"/"dark"). No crea ninguna base de
     // datos ni endpoint: es puramente del lado del navegador.
     function obtenerTemaActual() {
-      return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+      // FASE 7: oscuro es el tema principal (por defecto, sin atributo).
+      // Solo data-theme="light" activa el claro.
+      return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
     }
     function actualizarBotonesTema() {
       var esOscuro = obtenerTemaActual() === 'dark';

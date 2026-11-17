@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% from "_macros.html" import placa %}
+{% block titulo %}Hoy · NEXORA{% endblock %}
+
+{% block contenido %}
+<div class="space-y-6">
+
+  {% set dias = ['lunes','martes','miércoles','jueves','viernes','sábado','domingo'] %}
+  {% set meses = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'] %}
+  <div class="flex flex-wrap items-start justify-between gap-4">
+    <div>
+      <h1 class="titulo-pagina">Hoy, {{ dias[ahora.weekday()] }} {{ ahora.day }} de {{ meses[ahora.month - 1] }}</h1>
+      <p class="text-sm text-zinc-400 mt-1">
+        {% if coincidencias_hoy %}
+        <span class="text-zinc-100 font-semibold">{{ coincidencias_hoy }}</span> placa(s) de la lista aparecieron hoy.
+        {% else %}
+        Ninguna placa de la lista ha aparecido todavía hoy.
+        {% endif %}
+      </p>
+    </div>
+    <div class="flex flex-wrap gap-2">
+      <a href="/consulta" class="btn-secondary">Buscar placa</a>
+      <a href="/vehiculos/carga-masiva" class="btn-primary">Cargar lista del día</a>
+    </div>
+  </div>
+
+  <!-- Franja de 4 cifras -->
+  <div class="card grid grid-cols-2 sm:grid-cols-4 divide-y sm:divide-y-0" style="padding:0;">
+    <div class="p-5 text-center sm:border-r border-zinc-800">
+      <p class="text-3xl font-semibold text-zinc-100">{{ total_activos }}</p>
+      <p class="text-xs text-zinc-500 mt-1">Placas en la lista</p>
+    </div>
+    <div class="p-5 text-center sm:border-r border-zinc-800">
+      <p class="text-3xl font-semibold text-zinc-100">{{ leidas_hoy }}</p>
+      <p class="text-xs text-zinc-500 mt-1">Leídas hoy</p>
+    </div>
+    <div class="p-5 text-center sm:border-r border-zinc-800">
+      <p class="text-3xl font-semibold text-red-400">{{ coincidencias_hoy }}</p>
+      <p class="text-xs text-zinc-500 mt-1">Coincidencias</p>
+    </div>
+    <div class="p-5 text-center">
+      <p class="text-3xl font-semibold text-zinc-100">{{ telefonos_en_linea | length }} <span class="text-base text-zinc-500">/ {{ telefonos | selectattr('authorized') | list | length }}</span></p>
+      <p class="text-xs text-zinc-500 mt-1">Teléfonos en línea</p>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+    <!-- Izquierda: coincidencias de hoy -->
+    <section class="lg:col-span-2 card">
+      <h2 class="text-sm font-semibold text-zinc-100 mb-4">Coincidencias de hoy</h2>
+      {% if not coincidencias_detalle %}
+      <p class="text-sm text-zinc-500 py-6 text-center">Todavía no hay coincidencias hoy.</p>
+      {% else %}
+      <div class="space-y-3">
+        {% for c in coincidencias_detalle %}
+        <div class="border border-zinc-800 rounded-lg p-3 flex flex-wrap gap-3 items-start">
+          <div class="flex gap-1 shrink-0">
+            {% if c.vehiculo %}<img src="{{ c.vehiculo }}" class="h-14 w-20 object-cover rounded border border-zinc-700" onerror="this.outerHTML='<div class=&quot;foto-vacia h-14 w-20&quot;>Foto del vehículo</div>'">
+            {% else %}<div class="foto-vacia h-14 w-20">Foto del vehículo</div>{% endif %}
+          </div>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 mb-1">
+              {{ placa(c.placa, "chip") }}
+              <span class="badge-en-lista">En lista</span>
+            </div>
+            <p class="text-xs text-zinc-400">{{ c.motivo or 'Sin motivo registrado' }}</p>
+            <p class="text-[11px] text-zinc-600 mt-1">{{ c.recibido_en }} · {{ c.operador or '—' }}{% if c.lat and c.lng %} · <a href="https://maps.google.com/?q={{ c.lat }},{{ c.lng }}" target="_blank" class="underline">mapa</a>{% endif %}</p>
+          </div>
+          <div class="flex flex-col gap-1 shrink-0">
+            <a href="/vehiculos/{{ c.placa }}" class="btn-secondary btn-sm">Ver ficha</a>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </section>
+
+    <!-- Derecha: cámaras + servicio CAMARA + lista del día -->
+    <div class="lg:col-span-1 space-y-6">
+      <section class="card">
+        <h2 class="text-sm font-semibold text-zinc-100 mb-3">Teléfonos</h2>
+        {% if not telefonos %}
+        <p class="text-sm text-zinc-500">Ningún teléfono registrado todavía.</p>
+        {% else %}
+        <div class="space-y-2">
+          {% for t in telefonos %}
+          <div class="flex items-center justify-between gap-2 text-sm">
+            <span class="text-zinc-300">{{ t.brand or '—' }} {{ t.model or '' }}</span>
+            {% if t.online %}<span class="badge-activa"><span class="punto h-1.5 w-1.5 rounded-full"></span> En línea</span>
+            {% elif not t.authorized %}<span class="badge-posible">Pendiente</span>
+            {% else %}<span class="badge-neutral">Sin conexión</span>{% endif %}
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </section>
+
+      <section class="card">
+        <h2 class="text-sm font-semibold text-zinc-100 mb-3">Servicio CAMARA</h2>
+        <div class="flex flex-wrap gap-2 mb-2">
+          <span class="badge-activa">{{ resumen_camara.activa }} activa(s)</span>
+          <span class="badge-en-alerta">{{ resumen_camara.en_alerta }} en alerta</span>
+          <span class="badge-suspendida">{{ resumen_camara.suspendida }} suspendida(s)</span>
+        </div>
+        {% if resumen_camara.en_alerta > 0 %}
+        <p class="text-xs text-zinc-500">Hay Operador(es) cerca del corte de este período; revisa su ficha en Usuarios.</p>
+        {% endif %}
+      </section>
+
+      <section class="card">
+        <h2 class="text-sm font-semibold text-zinc-100 mb-2">Lista del día</h2>
+        <p class="text-xs text-zinc-500 mb-3">Pega aquí las placas de hoy (o ábrela directamente en Carga masiva).</p>
+        <a href="/vehiculos/carga-masiva" class="btn-primary w-full justify-center">Cargar lista del día</a>
+      </section>
+    </div>
+  </div>
+
+  <!-- Actividad reciente -->
+  <section class="card">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-sm font-semibold text-zinc-100">Actividad reciente</h2>
+      {% if usuario_actual.rol == 'Admin' %}
+      <a href="/auditoria" class="text-xs text-brand-400 hover:text-brand-300 transition">Ver todo el historial →</a>
+      {% endif %}
+    </div>
+    <div class="overflow-x-auto -mx-5">
+      <table class="table-shell">
+        <thead>
+          <tr class="table-head-row">
+            <th class="table-head-cell">Fecha y hora</th>
+            <th class="table-head-cell">Usuario ID</th>
+            <th class="table-head-cell">Acción</th>
+            <th class="table-head-cell">Placa afectada</th>
+          </tr>
+        </thead>
+        <tbody class="table-body">
+          {% for log in logs_recientes %}
+          <tr class="table-row">
+            <td class="table-cell text-zinc-400 whitespace-nowrap">{{ log.fecha_hora }}</td>
+            <td class="table-cell">{{ log.usuario_id }}</td>
+            <td class="table-cell">
+              {% if log.accion == 'ALTA_PLACA' %}<span class="badge-success">Alta</span>
+              {% elif log.accion == 'BAJA_PLACA' %}<span class="badge-danger">Baja</span>
+              {% else %}<span class="badge-neutral">{{ log.accion }}</span>{% endif %}
+            </td>
+            <td class="table-cell font-mono tracking-wider text-zinc-300">{{ log.placa_afectada or '—' }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" class="px-5 py-8 text-center text-zinc-500 text-sm">Todavía no hay actividad registrada.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+</div>
+{% endblock %}

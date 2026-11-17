@@ -13,6 +13,7 @@ datos de los tres módulos a la vez (vehículos, usuarios y logs) y no
 pertenece exclusivamente a ninguno de ellos.
 """
 
+from datetime import datetime
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Request
@@ -89,22 +90,35 @@ def _redirigir_por_permiso(request: Request, exc: usuarios.PermisoDenegadoError)
 
 
 @app.get("/dashboard")
-def dashboard(
+def dashboard_redirect():
+    # FASE 7: "Dashboard" se renombró a "Hoy". Se conserva este alias por
+    # si algún enlace/marcador viejo todavía apunta a /dashboard.
+    return RedirectResponse(url="/hoy", status_code=HTTP_303_SEE_OTHER)
+
+
+@app.get("/hoy")
+def hoy(
     request: Request,
     usuario_actual: dict = Depends(usuarios.requerir_autenticacion),
 ):
     # Conteos agregados en SQL (una consulta por tabla) en vez de traer
     # todas las filas y contarlas en Python: más rápido y evita repetir
-    # la misma consulta grande cada vez que se recarga el Dashboard.
+    # la misma consulta grande cada vez que se recarga la página.
     resumen_vehiculos = db.obtener_resumen_vehiculos()
     resumen_usuarios = db.obtener_resumen_usuarios()
     logs_recientes = auditoria.listar_logs_filtrados(limite=8)
+    resumen_hoy = nexcam_db.resumen_avistamientos_hoy()
+    coincidencias_hoy = nexcam_db.avistamientos_en_lista_hoy(20)
+    dispositivos = nexcam_db.listar_dispositivos()
+    telefonos_en_linea = [d for d in dispositivos if d["authorized"] and d["online"]]
+    resumen_camara = db.resumen_camara_operadores()
 
     return templates.TemplateResponse(
         request,
-        "dashboard.html",
+        "hoy.html",
         {
             "request": request,
+            "ahora": datetime.now(),
             "total_vehiculos": resumen_vehiculos["total"],
             "total_activos": resumen_vehiculos["activos"],
             "total_bajas": resumen_vehiculos["bajas"],
@@ -113,8 +127,14 @@ def dashboard(
             "total_usuarios": resumen_usuarios["total"],
             "total_usuarios_activos": resumen_usuarios["activos"],
             "logs_recientes": logs_recientes,
+            "leidas_hoy": resumen_hoy["leidas"],
+            "coincidencias_hoy": resumen_hoy["coincidencias"],
+            "coincidencias_detalle": coincidencias_hoy,
+            "telefonos": dispositivos,
+            "telefonos_en_linea": telefonos_en_linea,
+            "resumen_camara": resumen_camara,
             "usuario_actual": usuario_actual,
-            "ruta_activa": "dashboard",
+            "ruta_activa": "hoy",
         },
     )
 

@@ -1,0 +1,20 @@
+{#
+  _macros.html
+  FASE 7 "Asfalto y placa": macro Jinja único para dibujar una placa
+  colombiana en cualquier parte de la app. Uso:
+    {% from "_macros.html" import placa %}
+    {{ placa("ABC123") }}                 -> tamaño "chip" (tablas)
+    {{ placa("ABC123", "tarjeta") }}
+    {{ placa("ABC123", "cabecera", ciudad="BOGOTÁ D.C.") }}
+  Formatea siempre "ABC 123" (3+3 con espacio); si el texto no tiene 6
+  caracteres (una placa fuera de formato, o un valor vacío), se muestra
+  tal cual, sin forzar el espacio.
+#}
+{% macro placa(texto, tamano="chip", ciudad=none) %}
+{% set limpio = (texto or "") | upper %}
+{% set mostrar = (limpio[:3] + " " + limpio[3:]) if limpio | length == 6 else limpio %}
+<span class="placa placa-{{ tamano }}">{{ mostrar }}</span>
+{% if tamano == "cabecera" and ciudad %}
+<p class="text-xs text-zinc-500 mt-1">{{ ciudad }}</p>
+{% endif %}
+{% endmacro %}

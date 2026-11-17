@@ -831,6 +831,22 @@ def obtener_resumen_usuarios():
         return dict(fila)
 
 
+def resumen_camara_operadores():
+    """FASE 7 ('Hoy'): cuántos Operadores activos están en cada estado
+    CAMARA guardado (lectura directa, perezosa como el resto del
+    proyecto -- no recalcula aquí, cada usuario ya se recalculó la
+    última vez que se mostró su ficha/lista)."""
+    with get_connection() as conn:
+        fila = conn.execute(
+            """SELECT
+                COALESCE(SUM(CASE WHEN estado_camara = 'ACTIVA' THEN 1 ELSE 0 END), 0) AS activa,
+                COALESCE(SUM(CASE WHEN estado_camara = 'EN_ALERTA' THEN 1 ELSE 0 END), 0) AS en_alerta,
+                COALESCE(SUM(CASE WHEN estado_camara = 'SUSPENDIDA' THEN 1 ELSE 0 END), 0) AS suspendida
+               FROM usuarios WHERE rol = 'Operador' AND estado = 'activo'"""
+        ).fetchone()
+        return dict(fila)
+
+
 def cambiar_estado_a_baja(placa: str, usuario_id: int, observaciones: str = None):
     """
     Da de baja una placa. Requiere confirmación manual del usuario que llama

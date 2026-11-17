@@ -13,4 +13,9 @@
   El favicon también se resuelve localmente para evitar el 404 en consola.
 #}
 <link rel="icon" href="data:,">
-<link rel="stylesheet" href="/static/css/app.css?v=3">
+<!-- FASE 7 "Asfalto y placa": única excepción a "sin CDN" (explícitamente
+     permitida), Google Fonts para Barlow/Barlow Condensed. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/app.css?v=4">

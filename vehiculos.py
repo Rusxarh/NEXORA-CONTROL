@@ -86,7 +86,7 @@ def index(
             "usuario_actual": usuario_actual,
             "mensaje": mensaje,
             "tipo_mensaje": tipo,
-            "ruta_activa": "inventario",
+            "ruta_activa": "vehiculos",
         },
     )
 
@@ -369,3 +369,43 @@ def carga_masiva_procesar(
     mensaje = "Carga masiva: " + " · ".join(partes_mensaje)
 
     return usuarios.redirigir_con_mensaje("/vehiculos/carga-masiva", mensaje, tipo_mensaje)
+
+
+# ---------------------------------------------------------------------------
+# Ficha de Vehículos (FASE 7): consolida ficha + avistamientos de cámara +
+# RGM/Judicial + auditoría de ESA placa. Registrada AL FINAL del archivo
+# a propósito: "/vehiculos/{placa}" es una ruta comodín que, si se
+# registrara antes de "/vehiculos/alta"/"baja"/"carga-masiva", las
+# "atraparía" a ellas también (FastAPI empareja por orden de registro).
+# ---------------------------------------------------------------------------
+
+@router.get("/vehiculos/{placa}")
+def vehiculo_ficha_vista(
+    request: Request,
+    placa: str,
+    usuario_actual: dict = Depends(usuarios.requerir_autenticacion),
+):
+    import camara
+    import nexcam_db
+
+    placa_normalizada = placa.strip().upper()
+    vehiculo = db.obtener_ficha_vehiculo(placa_normalizada)
+    grado_placa = camara.calcular_grado_placa(vehiculo["fecha_ingreso"]) if vehiculo else None
+    vistas = nexcam_db.vistas_de([placa_normalizada]).get(placa_normalizada)
+
+    return templates.TemplateResponse(
+        request,
+        "vehiculo_ficha.html",
+        {
+            "request": request,
+            "usuario_actual": usuario_actual,
+            "ruta_activa": "vehiculos",
+            "placa": placa_normalizada,
+            "vehiculo": vehiculo,
+            "grado_placa": grado_placa,
+            "avistamientos": (vistas or {}).get("vistas", []),
+            "snapshot_rgm": db.obtener_ultimo_snapshot_por_fuente(placa_normalizada, "RGM"),
+            "snapshot_judicial": db.obtener_ultimo_snapshot_por_fuente(placa_normalizada, "JUDICIAL"),
+            "logs": db.listar_logs_de_placa(placa_normalizada) if vehiculo else [],
+        },
+    )

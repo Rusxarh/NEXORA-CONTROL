@@ -38,47 +38,62 @@
    activado por el toggle de tema (ver base.html) que guarda la
    preferencia en localStorage bajo la clave "nexora-theme".
 --------------------------------------------------------------------- */
+/* FASE 7 "Asfalto y placa": oscuro es el tema PRINCIPAL (:root, sin
+   atributo). html[data-theme="light"] es la variante clara equivalente.
+   Mismo mecanismo de siempre (toggle en base.html, localStorage
+   "nexora-theme"), solo que invertido: antes :root era claro y
+   [data-theme="dark"] la excepción; ahora es al revés. */
 :root {
-  --nx-bg: #F8FAFC;
-  --nx-surface: #FFFFFF;
-  --nx-surface-2: #F1F5F9;
-  --nx-text: #0F172A;
-  --nx-text-muted: #64748B;
-  --nx-border: #E2E8F0;
-  --nx-primary: #2563EB;
-  --nx-primary-dark: #1D4ED8;
-  --nx-primary-soft: #DBEAFE;
-  --nx-primary-hover: #1D4ED8;
-  --nx-success: #16A34A;
-  --nx-warning: #F59E0B;
-  --nx-danger: #DC2626;
-  --nx-info: #0EA5E9;
-  --nx-shadow: 0 1px 2px rgba(15,23,42,.06), 0 1px 3px rgba(15,23,42,.08);
-  --nx-shadow-lg: 0 10px 15px -3px rgba(15,23,42,.1), 0 4px 6px -4px rgba(15,23,42,.1);
-}
-
-/* Dark mode: el documento define success/warning/danger/info un poco
-   más brillantes que en claro (mismo matiz, más luminosidad) para
-   mantener contraste suficiente sobre fondo oscuro; la paleta original
-   del encargo solo especificaba bg/surface/texto/borde/primario para
-   oscuro, esto es una extrapolación razonable, documentada aquí. */
-html[data-theme="dark"] {
-  --nx-bg: #0F172A;
-  --nx-surface: #1E293B;
-  --nx-surface-2: #334155;
-  --nx-text: #F8FAFC;
-  --nx-text-muted: #94A3B8;
-  --nx-border: #334155;
-  --nx-primary: #3B82F6;
-  --nx-primary-dark: #2563EB;
-  --nx-primary-soft: rgba(59,130,246,.18);
-  --nx-primary-hover: #2563EB;
-  --nx-success: #22C55E;
-  --nx-warning: #F59E0B;
-  --nx-danger: #EF4444;
+  --nx-bg: #16191D;
+  --nx-surface: #1D2126;
+  --nx-surface-2: #2A3038;
+  --nx-elevado: #2A3038;
+  --nx-text: #EEF1F4;
+  --nx-text-muted: #9AA3AD;
+  --nx-text-menu: #D4D9DE;
+  --nx-border: #2E343B;
+  --nx-border-fuerte: #3A4149;
+  --nx-primary: #F2C200;        /* "placa": acento principal, amarillo */
+  --nx-primary-dark: #D9AE00;
+  --nx-primary-soft: rgba(242,194,0,.18);
+  --nx-primary-hover: #D9AE00;
+  --nx-tinta: #0E0E0E;          /* texto sobre fondo amarillo */
+  --nx-success: #3FA66B;
+  --nx-warning: #FFD979;
+  --nx-danger: #FF6B6B;
   --nx-info: #38BDF8;
+  /* Chips de estado (fondo/texto propios, no genéricos success/danger) */
+  --nx-en-lista-fondo: #5A1F22; --nx-en-lista-texto: #FFB4B4; --nx-en-lista-borde: #5A2A2C;
+  --nx-posible-fondo: #4A3A10; --nx-posible-texto: #FFD979; --nx-posible-borde: #5A4A1A;
+  --nx-activo-fondo: #1E3A2A; --nx-activo-texto: #8EE0AE; --nx-activo-punto: #3FA66B;
   --nx-shadow: 0 1px 2px rgba(0,0,0,.3), 0 1px 3px rgba(0,0,0,.4);
   --nx-shadow-lg: 0 10px 15px -3px rgba(0,0,0,.4), 0 4px 6px -4px rgba(0,0,0,.4);
+}
+
+html[data-theme="light"] {
+  --nx-bg: #F3F5F7;
+  --nx-surface: #FFFFFF;
+  --nx-surface-2: #EDEFF2;
+  --nx-elevado: #FFFFFF;
+  --nx-text: #13233A;
+  --nx-text-muted: #5B6B7D;
+  --nx-text-menu: #334155;
+  --nx-border: #DCE2EA;
+  --nx-border-fuerte: #C7CFDA;
+  --nx-primary: #F2C200;
+  --nx-primary-dark: #D9AE00;
+  --nx-primary-soft: rgba(242,194,0,.18);
+  --nx-primary-hover: #D9AE00;
+  --nx-tinta: #0E0E0E;
+  --nx-success: #1E8E55;
+  --nx-warning: #92660A;
+  --nx-danger: #C23B3B;
+  --nx-info: #0EA5E9;
+  --nx-en-lista-fondo: #FBE2E2; --nx-en-lista-texto: #8A1F24; --nx-en-lista-borde: #F3C6C6;
+  --nx-posible-fondo: #FBEFD2; --nx-posible-texto: #7A5A0A; --nx-posible-borde: #EDDBA0;
+  --nx-activo-fondo: #DFF3E8; --nx-activo-texto: #1E6B46; --nx-activo-punto: #1E8E55;
+  --nx-shadow: 0 1px 2px rgba(15,23,42,.06), 0 1px 3px rgba(15,23,42,.08);
+  --nx-shadow-lg: 0 10px 15px -3px rgba(15,23,42,.1), 0 4px 6px -4px rgba(15,23,42,.1);
 }
 
 /* ---------------------------------------------------------------------
@@ -102,7 +117,28 @@ a { color: inherit; text-decoration: inherit; }
 table { border-collapse: collapse; }
 
 body {
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-family: "Barlow", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 15px;
+}
+
+/* FASE 7: títulos y números en Barlow Condensed (más angosta, más
+   "placa de carro"). h1 de página = 44px/700 (ver .titulo-pagina, usado
+   por las plantillas que quieran el título grande de Hoy/Vehículos/etc.;
+   los h2 de tarjeta siguen en Barlow normal, ya definido por .text-sm
+   font-semibold en cada plantilla). */
+h1, h2, h3, .font-condensed {
+  font-family: "Barlow Condensed", "Barlow", ui-sans-serif, system-ui, sans-serif;
+  font-weight: 600;
+}
+.titulo-pagina {
+  font-family: "Barlow Condensed", "Barlow", ui-sans-serif, system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 2.75rem; /* 44px */
+  line-height: 1.1;
+  color: var(--nx-text);
+}
+@media (max-width: 480px) {
+  .titulo-pagina { font-size: 2rem; }
 }
 
 .antialiased { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
@@ -388,22 +424,38 @@ body {
   align-items: center;
   justify-content: center;
   gap: .375rem;
-  border-radius: .375rem;
+  border-radius: .5rem; /* 8px */
   font-size: .875rem;
   font-weight: 500;
   padding: .5rem .75rem;
+  min-height: 44px;
   white-space: nowrap;
   transition-property: color, background-color, border-color, opacity;
   transition-duration: 150ms;
 }
 .btn:disabled { opacity: .5; pointer-events: none; }
-.btn-sm { padding: .375rem .625rem; font-size: .75rem; }
+/* .btn-sm: usado en tablas/toolbars densos -- se exime del mínimo de 44px
+   (si no, ninguna fila de tabla cabría); el mínimo de 44px aplica al
+   botón "de acción" normal (.btn-primary/.btn-secondary sin .btn-sm). */
+.btn-sm { padding: .375rem .625rem; font-size: .75rem; min-height: 0; }
 
-.btn-primary { background-color: var(--nx-primary); color: #fff; }
+/* Botón principal = placa (pedido explícito): fondo amarillo, borde negro
+   grueso, texto negro, Barlow Condensed 700. */
+.btn-primary {
+  background-color: var(--nx-primary);
+  border: 2px solid var(--nx-tinta);
+  color: var(--nx-tinta);
+  font-family: "Barlow Condensed", "Barlow", sans-serif;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
 .btn-primary:hover { background-color: var(--nx-primary-hover); }
 
-.btn-secondary { background-color: var(--nx-surface-2); border: 1px solid var(--nx-border); color: var(--nx-text); }
-.btn-secondary:hover { background-color: var(--nx-border); }
+.btn-secondary { background-color: transparent; border: 1px solid var(--nx-border-fuerte); color: var(--nx-text); }
+.btn-secondary:hover { background-color: var(--nx-surface-2); }
+
+.btn-terciario { background-color: var(--nx-elevado); color: var(--nx-text); border: 1px solid transparent; }
+.btn-terciario:hover { background-color: var(--nx-surface-2); }
 
 .btn-danger { background-color: var(--nx-danger); color: #fff; }
 .btn-danger:hover { background-color: color-mix(in srgb, var(--nx-danger) 85%, #000 15%); }
@@ -455,6 +507,55 @@ body {
 .badge-danger { background-color: color-mix(in srgb, var(--nx-danger) 15%, var(--nx-surface)); color: var(--nx-danger); border-color: color-mix(in srgb, var(--nx-danger) 45%, var(--nx-border)); }
 .badge-neutral { background-color: var(--nx-surface-2); color: var(--nx-text-muted); border-color: var(--nx-border); }
 .badge-warning { background-color: color-mix(in srgb, var(--nx-warning) 18%, var(--nx-surface)); color: var(--nx-warning); border-color: color-mix(in srgb, var(--nx-warning) 45%, var(--nx-border)); }
+
+/* FASE 7 — chips de estado con receta propia (pedido explícito), no los
+   genéricos badge-success/danger/warning de arriba. */
+.badge-en-lista { background-color: var(--nx-en-lista-fondo); color: var(--nx-en-lista-texto); border-color: var(--nx-en-lista-borde); }
+.badge-posible { background-color: var(--nx-posible-fondo); color: var(--nx-posible-texto); border-color: var(--nx-posible-borde); }
+.badge-activa { background-color: var(--nx-activo-fondo); color: var(--nx-activo-texto); border-color: transparent; }
+.badge-activa .punto { background-color: var(--nx-activo-punto); }
+.badge-en-alerta { background-color: var(--nx-posible-fondo); color: var(--nx-posible-texto); border-color: var(--nx-posible-borde); }
+.badge-suspendida { background-color: var(--nx-en-lista-fondo); color: var(--nx-en-lista-texto); border-color: var(--nx-en-lista-borde); }
+.badge-en-prueba { background-color: var(--nx-surface-2); color: var(--nx-text-muted); border-color: var(--nx-border); font-style: italic; }
+
+/* ---------------------------------------------------------------------
+   Placa colombiana (FASE 7): macro Jinja único `placa(texto, tamano)` en
+   _macros.html. Tres tamaños: chip (tablas), tarjeta, cabecera (ficha).
+--------------------------------------------------------------------- */
+.placa {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--nx-primary);
+  color: var(--nx-tinta);
+  border: 2px solid var(--nx-tinta);
+  border-radius: .3125rem; /* 5px */
+  font-family: "Barlow Condensed", "Barlow", sans-serif;
+  font-weight: 700;
+  letter-spacing: .15em;
+  line-height: 1;
+  white-space: nowrap;
+}
+.placa-chip { font-size: 1.1rem; padding: .1rem .5rem; border-radius: .3125rem; }
+.placa-tarjeta { font-size: 1.6rem; padding: .2rem .7rem; border-width: 2.5px; }
+.placa-cabecera { font-size: 3.6rem; padding: .25rem 1rem; border-width: 3px; border-radius: .375rem; }
+
+/* Caja para fotos sin cargar (pedido explícito). */
+.foto-vacia {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--nx-elevado);
+  color: var(--nx-text-muted);
+  border: 1px dashed var(--nx-border-fuerte);
+  border-radius: .5rem;
+  font-size: .75rem;
+  text-align: center;
+  padding: .5rem;
+}
+
+/* Íconos SVG de trazo (nunca emoji en la web, solo en Telegram). */
+.icono { width: 1.125rem; height: 1.125rem; flex-shrink: 0; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
 
 .alert-success { border-radius: .5rem; border: 1px solid color-mix(in srgb, var(--nx-success) 45%, var(--nx-border)); background-color: color-mix(in srgb, var(--nx-success) 15%, var(--nx-surface)); color: var(--nx-success); padding: .75rem 1rem; font-size: .875rem; }
 .alert-error { border-radius: .5rem; border: 1px solid color-mix(in srgb, var(--nx-danger) 45%, var(--nx-border)); background-color: color-mix(in srgb, var(--nx-danger) 15%, var(--nx-surface)); color: var(--nx-danger); padding: .75rem 1rem; font-size: .875rem; }
