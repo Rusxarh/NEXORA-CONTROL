@@ -5,13 +5,16 @@ cookie (usuarios.requerir_admin), independiente del Bearer/X-Device-UUID
 que usa la app (nexcam_api.py). Una sola página con pestañas por
 querystring (?tab=...), mismo patrón que _tabs_gestion_masiva.html.
 
-Pestañas: teléfonos, en vivo, buscar placa, ya vistas, aprendizaje OCR,
-telegram (placeholder: el bot es FASE 3, todavía no existe).
+Pestañas (FASE 7: "Buscar placa" se retiró -- la cumple la ficha de
+Vehículos, /vehiculos/{placa}): teléfonos, en vivo, ya vistas,
+aprendizaje OCR, telegram.
 """
 
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import RedirectResponse
+from starlette.status import HTTP_303_SEE_OTHER
 
 import database as db
 import nexcam_db
@@ -21,7 +24,7 @@ from templates import templates
 
 router = APIRouter()
 
-TABS = ("telefonos", "en-vivo", "buscar", "ya-vistas", "ocr", "telegram")
+TABS = ("telefonos", "en-vivo", "ya-vistas", "ocr", "telegram")
 
 
 @router.get("/nexcam")
@@ -33,6 +36,12 @@ def nexcam_panel(
     mensaje: Optional[str] = None,
     tipo: str = "info",
 ):
+    # Compatibilidad: un enlace viejo a "?tab=buscar&q=PLACA" lleva ahora
+    # directo a la ficha de esa placa en Vehículos.
+    if tab == "buscar":
+        destino = f"/vehiculos/{nexcam_db.normalizar_placa(q)}" if q.strip() else "/"
+        return RedirectResponse(url=destino, status_code=HTTP_303_SEE_OTHER)
+
     tab = tab if tab in TABS else "telefonos"
     contexto = {
         "request": request,
@@ -48,14 +57,6 @@ def nexcam_panel(
         contexto["dispositivos"] = nexcam_db.listar_dispositivos()
     elif tab == "en-vivo":
         contexto["avistamientos"] = nexcam_db.avistamientos_recientes(30)
-    elif tab == "buscar":
-        placa_normalizada = nexcam_db.normalizar_placa(q) if q else ""
-        contexto["buscado"] = bool(placa_normalizada)
-        contexto["vehiculo"] = db.buscar_placa(placa_normalizada) if placa_normalizada else None
-        vistas = nexcam_db.vistas_de([placa_normalizada]) if placa_normalizada else {}
-        contexto["ficha"] = vistas.get(placa_normalizada)
-        contexto["snapshot_rgm"] = db.obtener_ultimo_snapshot_por_fuente(placa_normalizada, "RGM") if placa_normalizada else None
-        contexto["snapshot_judicial"] = db.obtener_ultimo_snapshot_por_fuente(placa_normalizada, "JUDICIAL") if placa_normalizada else None
     elif tab == "ya-vistas":
         contexto["ultimo_cruce"] = nexcam_db.obtener_ultimo_cruce()
     elif tab == "ocr":

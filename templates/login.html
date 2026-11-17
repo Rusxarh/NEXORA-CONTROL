@@ -30,9 +30,9 @@
     <div class="w-full max-w-sm">
 
       <div class="flex flex-col items-center mb-6">
-        <span class="inline-flex h-12 w-12 items-center justify-center rounded-xl bg-brand-600 text-white font-bold text-lg mb-3">NX</span>
-        <h1 class="text-lg font-semibold text-zinc-100">NEXORA</h1>
-        <p class="text-xs text-zinc-500 mt-0.5">Dashboard Admin · Inicia sesión para continuar</p>
+        <span class="placa placa-tarjeta mb-3">NX</span>
+        <h1 class="titulo-pagina" style="font-size:1.75rem;">NEXORA</h1>
+        <p class="text-xs text-zinc-500 mt-0.5">Control de placas · Inicia sesión para continuar</p>
       </div>
 
       <div class="card">
@@ -73,7 +73,8 @@
 
   <script>
     function obtenerTemaActual() {
-      return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+      // FASE 7: oscuro es el tema principal (por defecto, sin atributo).
+      return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
     }
     function actualizarBotonesTema() {
       var esOscuro = obtenerTemaActual() === 'dark';

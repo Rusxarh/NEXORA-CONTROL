@@ -1,5 +1,6 @@
 {% extends "base.html" %}
-{% block titulo %}Inventario de Vehículos · NEXORA{% endblock %}
+{% from "_macros.html" import placa as placa_macro %}
+{% block titulo %}Vehículos · NEXORA{% endblock %}
 
 {% block contenido %}
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -100,7 +101,7 @@
         <tbody class="table-body">
           {% for v in vehiculos %}
           <tr class="table-row">
-            <td class="table-cell font-mono font-semibold tracking-wider text-zinc-100">{{ v.placa }}</td>
+            <td class="table-cell">{{ placa_macro(v.placa) }}</td>
             <td class="table-cell text-zinc-300 capitalize">{{ v.tipo_vehiculo }}</td>
             <td class="table-cell">
               {% if v.estado == 'activo' %}
@@ -117,7 +118,7 @@
             <td class="table-cell text-zinc-400 whitespace-nowrap">{{ v.fecha_baja or '—' }}</td>
             <td class="table-cell text-right">
               <div class="flex items-center justify-end gap-2">
-                <a href="/historial/{{ v.placa }}" class="btn-secondary btn-sm">Historial</a>
+                <a href="/vehiculos/{{ v.placa }}" class="btn-secondary btn-sm">Ficha</a>
                 {% if v.estado == 'activo' and usuario_actual.rol == 'Admin' %}
                 <button
                   type="button"

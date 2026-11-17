@@ -23,8 +23,11 @@
 <body class="h-full bg-zinc-950 text-zinc-100 antialiased">
 
   {% macro nav_link(href, label, key, ruta_activa) %}
+  {# FASE 7: el ítem activo del menú es fondo elevado + texto amarillo
+     (pedido explícito), no el botón "placa" (ese es solo para acciones). #}
   <a href="{{ href }}"
-     class="flex items-center px-3 py-2 rounded-md text-sm transition {{ 'bg-brand-600 text-white' if ruta_activa == key else 'text-zinc-300 hover:bg-zinc-800' }}">
+     class="flex items-center px-3 py-2 rounded-md text-sm transition {{ '' if ruta_activa == key else 'hover:bg-zinc-800' }}"
+     style="{{ 'background-color: var(--nx-elevado); color: var(--nx-primary); font-weight:600;' if ruta_activa == key else 'color: var(--nx-text-menu);' }}">
     {{ label }}
   </a>
   {% endmacro %}
@@ -74,7 +77,7 @@
           </button>
 
           <div class="flex items-center gap-2">
-            <span class="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 text-white font-bold text-sm">NX</span>
+            <span class="placa" style="font-size:.95rem; padding:.25rem .5rem; border-radius:.375rem;">NX</span>
             <div>
               <p class="text-sm font-semibold leading-none">NEXORA</p>
               <p class="text-xs text-zinc-400 leading-none mt-0.5 hidden sm:block">Dashboard Admin</p>
@@ -132,7 +135,7 @@
       >
         <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
           <div class="flex items-center gap-2">
-            <span class="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 text-white font-bold text-sm">NX</span>
+            <span class="placa" style="font-size:.95rem; padding:.25rem .5rem; border-radius:.375rem;">NX</span>
             <p class="text-sm font-semibold">NEXORA</p>
           </div>
           <div class="flex items-center gap-2">

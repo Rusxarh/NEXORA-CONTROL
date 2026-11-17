@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import placa as placa_macro %}
 {% block titulo %}NEXCAM · NEXORA{% endblock %}
 
 {% block contenido %}
@@ -14,7 +15,6 @@
   <div class="flex flex-wrap gap-2">
     <a href="/nexcam?tab=telefonos" class="btn-sm {{ 'btn-primary' if tab == 'telefonos' else 'btn-secondary' }}">📱 Teléfonos</a>
     <a href="/nexcam?tab=en-vivo" class="btn-sm {{ 'btn-primary' if tab == 'en-vivo' else 'btn-secondary' }}">🔴 En vivo</a>
-    <a href="/nexcam?tab=buscar" class="btn-sm {{ 'btn-primary' if tab == 'buscar' else 'btn-secondary' }}">🔍 Buscar placa</a>
     <a href="/nexcam?tab=ya-vistas" class="btn-sm {{ 'btn-primary' if tab == 'ya-vistas' else 'btn-secondary' }}">📋 Ya vistas</a>
     <a href="/nexcam?tab=ocr" class="btn-sm {{ 'btn-primary' if tab == 'ocr' else 'btn-secondary' }}">🧠 Aprendizaje OCR</a>
     <a href="/nexcam?tab=telegram" class="btn-sm {{ 'btn-primary' if tab == 'telegram' else 'btn-secondary' }}">✈️ Telegram</a>
@@ -105,9 +105,9 @@
         <tbody class="table-body">
           {% for a in avistamientos %}
           <tr class="table-row">
-            <td class="table-cell font-mono font-semibold tracking-wider text-zinc-100">{{ a.placa }}</td>
+            <td class="table-cell">{{ placa_macro(a.placa) }}</td>
             <td class="table-cell">
-              {% if a.en_lista %}<span class="badge-danger">En lista</span>{% else %}<span class="badge-neutral">Sin novedad</span>{% endif %}
+              {% if a.en_lista %}<span class="badge-en-lista">En lista</span>{% else %}<span class="badge-neutral">Sin novedad</span>{% endif %}
             </td>
             <td class="table-cell text-zinc-300">{{ a.operador or '—' }}</td>
             <td class="table-cell text-zinc-400 whitespace-nowrap">{{ a.recibido_en }}</td>
@@ -131,96 +131,10 @@
   </section>
   {% endif %}
 
-  {# ---------------------------------------------------------- Buscar placa #}
-  {% if tab == 'buscar' %}
-  <section class="card">
-    <h2 class="text-sm font-semibold text-zinc-100 mb-3">Buscar placa</h2>
-    <form method="get" action="/nexcam" class="flex flex-wrap items-center gap-2 mb-5">
-      <input type="hidden" name="tab" value="buscar">
-      <input type="text" name="q" value="{{ q }}" placeholder="ABC123" maxlength="10"
-             oninput="this.value = this.value.toUpperCase()"
-             class="input-field w-40 font-mono text-sm py-1.5">
-      <button type="submit" class="btn-primary btn-sm">Buscar</button>
-    </form>
-
-    {% if buscado %}
-      {% if not vehiculo %}
-      <p class="alert-info text-xs">Esa placa no está en el inventario de NEXORA.</p>
-      {% else %}
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5 text-sm">
-        <div class="flex justify-between gap-3"><dt class="text-zinc-500">Placa</dt><dd class="font-mono font-semibold text-zinc-100">{{ vehiculo.placa }}</dd></div>
-        <div class="flex justify-between gap-3"><dt class="text-zinc-500">Estado</dt><dd>{% if vehiculo.estado == 'activo' %}<span class="badge-danger">En lista</span>{% else %}<span class="badge-neutral">Dado de baja</span>{% endif %}</dd></div>
-        <div class="flex justify-between gap-3"><dt class="text-zinc-500">Motivo</dt><dd class="text-zinc-300">{{ vehiculo.observaciones or '—' }}</dd></div>
-        <div class="flex justify-between gap-3"><dt class="text-zinc-500">Marca / Línea</dt><dd class="text-zinc-300">{{ vehiculo.marca or '—' }} / {{ vehiculo.linea or '—' }}</dd></div>
-        <div class="flex justify-between gap-3"><dt class="text-zinc-500">Color / Modelo</dt><dd class="text-zinc-300">{{ vehiculo.color or '—' }} / {{ vehiculo.modelo or '—' }}</dd></div>
-      </div>
-
-      <div class="pt-4 border-t border-zinc-800 mb-5">
-        <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
-          <p class="label-field mb-0">RGM (garantías mobiliarias) — en prueba</p>
-          <a href="/consulta?q={{ vehiculo.placa }}" class="btn-secondary btn-sm">🔎 Ir a Consulta</a>
-        </div>
-        {% if snapshot_rgm %}
-        <p class="text-xs text-zinc-500 mb-1">Última consulta: {{ snapshot_rgm.creado_en }}</p>
-        <pre class="text-xs font-mono text-zinc-400 whitespace-pre-wrap">{{ snapshot_rgm.datos }}</pre>
-        {% else %}
-        <p class="text-xs text-zinc-500">Todavía no se ha consultado RGM para esta placa. Pídela desde <a href="/consulta?q={{ vehiculo.placa }}" class="underline">Consulta</a>.</p>
-        {% endif %}
-
-        <p class="label-field mt-4 mb-1">Procesos judiciales — en prueba, solo Admin</p>
-        {% if snapshot_judicial %}
-        <p class="text-xs text-zinc-500 mb-1">Última consulta: {{ snapshot_judicial.creado_en }}</p>
-        <pre class="text-xs font-mono text-zinc-400 whitespace-pre-wrap">{{ snapshot_judicial.datos }}</pre>
-        {% else %}
-        <p class="text-xs text-zinc-500">Todavía no se han consultado procesos judiciales para esta placa. Pídelos desde <a href="/consulta?q={{ vehiculo.placa }}" class="underline">Consulta</a>.</p>
-        {% endif %}
-
-        <p class="text-xs text-zinc-500 mt-4">
-          <a href="/historial/{{ vehiculo.placa }}" class="underline">Ver auditoría completa de esta placa</a>
-        </p>
-      </div>
-      {% endif %}
-
-      <h3 class="text-xs font-semibold text-zinc-400 uppercase tracking-wide mb-2">Historial de avistamientos de la cámara</h3>
-      {% if not ficha or not ficha.vistas %}
-      <p class="text-sm text-zinc-500">La cámara nunca ha visto esta placa (ni variantes parecidas).</p>
-      {% else %}
-      <p class="text-xs text-zinc-500 mb-2">Coincidencia: {{ 'exacta' if ficha.tipo == 'exacta' else 'probable (posible confusión del OCR)' }}</p>
-      <div class="overflow-x-auto -mx-5">
-        <table class="table-shell">
-          <thead>
-            <tr class="table-head-row">
-              <th class="table-head-cell">Leída</th>
-              <th class="table-head-cell">Coincidencia</th>
-              <th class="table-head-cell">Operador</th>
-              <th class="table-head-cell">Hora</th>
-              <th class="table-head-cell">Fotos</th>
-            </tr>
-          </thead>
-          <tbody class="table-body">
-            {% for v in ficha.vistas %}
-            <tr class="table-row">
-              <td class="table-cell font-mono text-zinc-200">{{ v.leida }}</td>
-              <td class="table-cell">{% if v.coincidencia == 'exacta' %}<span class="badge-success">Exacta</span>{% else %}<span class="badge-warning">Probable</span>{% endif %}</td>
-              <td class="table-cell text-zinc-300">{{ v.operador or '—' }}</td>
-              <td class="table-cell text-zinc-400 whitespace-nowrap">{{ v.recibido_en }}</td>
-              <td class="table-cell">
-                <div class="flex gap-1">
-                  {% if v.snapshot %}<a href="{{ v.snapshot }}" target="_blank"><img src="{{ v.snapshot }}" class="h-10 w-14 object-cover rounded border border-zinc-700" onerror="this.style.display='none'"></a>{% endif %}
-                  {% if v.vehiculo %}<a href="{{ v.vehiculo }}" target="_blank"><img src="{{ v.vehiculo }}" class="h-10 w-14 object-cover rounded border border-zinc-700" onerror="this.style.display='none'"></a>{% endif %}
-                </div>
-              </td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      {% endif %}
-    {% else %}
-    <p class="text-sm text-zinc-500">Escribe una placa para ver sus datos y cada vez que la cámara la vio.</p>
-    {% endif %}
-  </section>
-  {% endif %}
+  {# "Buscar placa" se retiró de NEXCAM en FASE 7: su función la cumple
+     ahora la ficha de Vehículos (/vehiculos/{placa}), que ya reúne datos
+     del vehículo + RGM/Judicial + avistamientos + auditoría en un solo
+     lugar (no duplicar). #}
 
   {# ------------------------------------------------------------- Ya vistas #}
   {% if tab == 'ya-vistas' %}
