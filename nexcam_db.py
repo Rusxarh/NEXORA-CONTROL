@@ -55,6 +55,13 @@ GEMELOS = (("O", "Q", "D"), ("0",))
 TOKEN_TTL_HORAS = 12
 FORMATO_FECHA = "%Y-%m-%d %H:%M:%S"
 
+# "En línea" (Hoy y NEXCAM -> Teléfonos, mismo campo d["online"] para los
+# dos): último latido (/api/operator/status), upload o camera/state hace
+# menos de esto. autenticar() ya actualiza last_seen en CUALQUIER llamada
+# autenticada (plates/upload/operator-status/camera-state), así que no
+# hace falta distinguir el tipo de llamada aquí, solo el tiempo.
+VENTANA_EN_LINEA_SEGUNDOS = 2 * 60
+
 # Carpeta de fotos, configurable por variable de entorno (igual patrón que
 # NEXCAM_DATOS/DIAS_FOTOS en server.js). No se versiona (ver .gitignore).
 import os  # noqa: E402  (después de las constantes por legibilidad)
@@ -187,7 +194,7 @@ def _fila_dispositivo(row) -> Optional[dict]:
     d["authorized"] = bool(d["authorized"])
     d["revoked"] = bool(d["revoked"])
     ultimo = d.get("last_seen")
-    d["online"] = bool(ultimo and (datetime.now() - datetime.strptime(ultimo, FORMATO_FECHA)) < timedelta(seconds=90))
+    d["online"] = bool(ultimo and (datetime.now() - datetime.strptime(ultimo, FORMATO_FECHA)) < timedelta(seconds=VENTANA_EN_LINEA_SEGUNDOS))
     return d
 
 
@@ -588,10 +595,29 @@ def registrar_avistamiento(sesion: dict, placa_raw: str, leida_raw: Optional[str
     if not RE_PLACA_NEXCAM.match(placa):
         raise ErrorNexcamAPI("INVALID_PLATE", "Placa inválida.", 422)
 
+    ts = int(ts_ms) if ts_ms else int(datetime.now().timestamp() * 1000)
+
+    # Prueba real con el teléfono: si el servidor se demoró (ver el fix de
+    # broadcast() en nexcam_api.py), la app se rinde a los 12 s y reintenta
+    # el mismo POST -- pero NEXORA ya lo había guardado la primera vez.
+    # Mismo (device_uuid, placa, ts) exacto = el mismo avistamiento: se
+    # devuelve la fila que ya existe (mismo id, "ok" igual), sin insertar
+    # de nuevo ni volver a contarlo en "Coincidencias de hoy". El llamador
+    # (nexcam_api.detections_upload) usa "_ya_existia" para tampoco volver
+    # a avisar por Telegram ni a encolar RGM otra vez.
+    with db.get_connection() as conn:
+        fila_existente = conn.execute(
+            "SELECT id FROM nexcam_avistamientos WHERE device_uuid = ? AND placa = ? AND ts = ?",
+            (sesion["device_uuid"], placa, ts),
+        ).fetchone()
+    if fila_existente:
+        existente = obtener_avistamiento(fila_existente["id"])
+        existente["_ya_existia"] = True
+        return existente
+
     vehiculo = db.buscar_placa(placa)
     en_lista = bool(vehiculo and vehiculo["estado"] == "activo")
     motivo = vehiculo["observaciones"] if en_lista else None
-    ts = int(ts_ms) if ts_ms else int(datetime.now().timestamp() * 1000)
 
     with db.get_connection() as conn:
         cur = conn.execute(
@@ -613,7 +639,9 @@ def registrar_avistamiento(sesion: dict, placa_raw: str, leida_raw: Optional[str
                 (foto_placa, foto_vehiculo, avistamiento_id),
             )
 
-    return obtener_avistamiento(avistamiento_id)
+    resultado = obtener_avistamiento(avistamiento_id)
+    resultado["_ya_existia"] = False
+    return resultado
 
 
 def _fila_avistamiento(row) -> Optional[dict]:

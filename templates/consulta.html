@@ -48,11 +48,11 @@
       <dl class="space-y-2 text-sm">
         <div class="flex justify-between gap-3">
           <dt class="text-zinc-500">Fecha de ingreso</dt>
-          <dd class="text-zinc-300">{{ vehiculo.fecha_ingreso }}</dd>
+          <dd class="text-zinc-300">{{ vehiculo.fecha_ingreso | fecha_co }}</dd>
         </div>
         <div class="flex justify-between gap-3">
           <dt class="text-zinc-500">Fecha de baja</dt>
-          <dd class="text-zinc-300">{{ vehiculo.fecha_baja or '—' }}</dd>
+          <dd class="text-zinc-300">{{ vehiculo.fecha_baja | fecha_co }}</dd>
         </div>
         <div class="flex justify-between gap-3">
           <dt class="text-zinc-500">Registrado por</dt>
@@ -153,7 +153,7 @@
             <td class="table-cell text-zinc-400">{{ it.origen }}</td>
             <td class="table-cell">{% if it.estado == 'EN_CURSO' %}<span class="badge-warning">En curso</span>{% else %}<span class="badge-neutral">Pendiente</span>{% endif %}</td>
             <td class="table-cell text-zinc-400">{{ it.solicitado_por_nombre or '—' }}</td>
-            <td class="table-cell text-zinc-400 whitespace-nowrap">{{ it.creado }}</td>
+            <td class="table-cell text-zinc-400 whitespace-nowrap">{{ it.creado | fecha_co }}</td>
           </tr>
           {% endfor %}
         </tbody>
@@ -186,7 +186,7 @@
               {% elif it.estado == 'EN_CURSO' %}<span class="badge-warning">En curso</span>
               {% else %}<span class="badge-neutral">Pendiente</span>{% endif %}
             </td>
-            <td class="table-cell text-zinc-400 whitespace-nowrap">{{ it.terminado or '—' }}</td>
+            <td class="table-cell text-zinc-400 whitespace-nowrap">{{ it.terminado | fecha_co }}</td>
           </tr>
           {% else %}
           <tr><td colspan="4" class="px-5 py-8 text-center text-zinc-500 text-sm">Todavía no se completó ninguna consulta real.</td></tr>
@@ -200,11 +200,11 @@
   <section class="card">
     <p class="label-field mb-2">Último resultado guardado para {{ q | trim | upper }}</p>
     {% if snapshot_rgm %}
-    <p class="text-xs text-zinc-500 mb-1">RGM — {{ snapshot_rgm.creado_en }}</p>
+    <p class="text-xs text-zinc-500 mb-1">RGM — {{ snapshot_rgm.creado_en | fecha_co }}</p>
     <pre class="text-xs font-mono text-zinc-400 whitespace-pre-wrap mb-3">{{ snapshot_rgm.datos }}</pre>
     {% endif %}
     {% if snapshot_judicial %}
-    <p class="text-xs text-zinc-500 mb-1">Judicial — {{ snapshot_judicial.creado_en }}</p>
+    <p class="text-xs text-zinc-500 mb-1">Judicial — {{ snapshot_judicial.creado_en | fecha_co }}</p>
     <pre class="text-xs font-mono text-zinc-400 whitespace-pre-wrap">{{ snapshot_judicial.datos }}</pre>
     {% endif %}
   </section>

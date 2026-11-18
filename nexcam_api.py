@@ -16,6 +16,8 @@ requerir_autenticacion lo bloquee en la web (Etapa 4.6).
 
 import asyncio
 import json
+import queue
+import threading
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -41,9 +43,47 @@ _suscriptores_sse: list = []
 # petición HTTP que disparó el evento.
 _oyentes: list = []
 
+# Prueba real con el teléfono: /api/detections/upload (y operator/status,
+# camera/state) son rutas async, pero Telegram se llamaba con urllib
+# (bloqueante) EN EL MISMO HILO del event loop -- cada sendPhoto/
+# editMessage (segundos, red externa) congelaba TODO el servidor: la app
+# esperaba los 12 s de su propio timeout, los latidos de otros teléfonos
+# no entraban ("Sin conexión") y sus reintentos duplicaban avistamientos.
+#
+# broadcast() ya NO llama a los oyentes en el hilo de la petición: los
+# encola en _cola_oyentes y un único hilo trabajador (FIFO, por eso
+# "en orden") los reparte aparte. Las puestas en las colas SSE (asyncio.Queue)
+# SÍ se quedan aquí mismo, síncronas: son locales, nunca bloquean, y
+# asyncio.Queue no es thread-safe para llamarla desde otro hilo.
+_cola_oyentes: "queue.Queue" = queue.Queue()
+_hilo_oyentes: Optional[threading.Thread] = None
+_hilo_oyentes_lock = threading.Lock()
+
+
+def _repartir_a_oyentes():
+    while True:
+        evento, payload = _cola_oyentes.get()
+        for fn in list(_oyentes):
+            try:
+                fn(evento, payload)
+            except Exception:
+                pass
+
+
+def _asegurar_hilo_oyentes():
+    global _hilo_oyentes
+    if _hilo_oyentes is not None and _hilo_oyentes.is_alive():
+        return
+    with _hilo_oyentes_lock:
+        if _hilo_oyentes is not None and _hilo_oyentes.is_alive():
+            return
+        _hilo_oyentes = threading.Thread(target=_repartir_a_oyentes, daemon=True, name="nexcam-oyentes")
+        _hilo_oyentes.start()
+
 
 def suscribir(fn):
     _oyentes.append(fn)
+    _asegurar_hilo_oyentes()
 
 
 def broadcast(evento: str, payload: dict):
@@ -53,11 +93,9 @@ def broadcast(evento: str, payload: dict):
             cola.put_nowait(mensaje)
         except asyncio.QueueFull:
             pass
-    for fn in list(_oyentes):
-        try:
-            fn(evento, payload)
-        except Exception:
-            pass
+    if _oyentes:
+        _asegurar_hilo_oyentes()
+        _cola_oyentes.put((evento, payload))
 
 
 # ---------------------------------------------------------------------------
@@ -194,31 +232,35 @@ async def detections_upload(request: Request, authorization: Optional[str] = Hea
     except nexcam_db.ErrorNexcamAPI as e:
         _error_json(e)
 
-    # Actividad CAMARA: máximo una vez cada 10 min por usuario (regla pedida
-    # para esta integración; camara.registrar_actividad_camara no tiene ese
-    # límite por sí sola, así que se aplica aquí, sin modificar camara.py).
-    _registrar_actividad_camara_throttled(sesion["usuario_id"])
+    ya_existia = det.pop("_ya_existia", False)
+    if not ya_existia:
+        # Actividad CAMARA: máximo una vez cada 10 min por usuario (regla
+        # pedida para esta integración; camara.registrar_actividad_camara no
+        # tiene ese límite por sí sola, así que se aplica aquí, sin
+        # modificar camara.py).
+        _registrar_actividad_camara_throttled(sesion["usuario_id"])
 
-    # mock-api/server.js agrega `device` ("marca modelo") a cada avistamiento
-    # transmitido; nexcam_avistamientos no guarda ese texto, así que se arma
-    # aquí solo para el evento (el bot de Telegram lo usa en la cámara en
-    # vivo -- sin esto, siempre mostraba el "Teléfono" genérico).
-    broadcast("detection.hit", {**det, "device": nexcam_db.descripcion_dispositivo(sesion["device_uuid"])})
+        # mock-api/server.js agrega `device` ("marca modelo") a cada
+        # avistamiento transmitido; nexcam_avistamientos no guarda ese
+        # texto, así que se arma aquí solo para el evento (el bot de
+        # Telegram lo usa en la cámara en vivo -- sin esto, siempre
+        # mostraba el "Teléfono" genérico).
+        broadcast("detection.hit", {**det, "device": nexcam_db.descripcion_dispositivo(sesion["device_uuid"])})
 
-    # RGM automático (FASE 6): SOLO coincidencia exacta de una placa que
-    # está en lista en este momento. Una "posible coincidencia" (gemelo
-    # O/Q/D) o una lectura sin coincidencia nunca encolan nada -- evita
-    # cientos de consultas al portal real por lecturas erróneas del OCR.
-    # Va DESPUÉS de "detection.hit" a propósito: el bot de Telegram debe
-    # guardar a qué mensaje responder (_mensajes_por_avistamiento) antes
-    # de que exista la más mínima posibilidad de un rgm.resultado.
-    if det["en_lista"] and det.get("match_type") != "probable":
-        try:
-            import rgm_cola
+        # RGM automático (FASE 6): SOLO coincidencia exacta de una placa que
+        # está en lista en este momento. Una "posible coincidencia" (gemelo
+        # O/Q/D) o una lectura sin coincidencia nunca encolan nada -- evita
+        # cientos de consultas al portal real por lecturas erróneas del OCR.
+        # Va DESPUÉS de "detection.hit" a propósito: el bot de Telegram debe
+        # guardar a qué mensaje responder (_mensajes_por_avistamiento) antes
+        # de que exista la más mínima posibilidad de un rgm.resultado.
+        if det["en_lista"] and det.get("match_type") != "probable":
+            try:
+                import rgm_cola
 
-            rgm_cola.solicitar_consulta(det["placa"], "RGM", "camara", sesion["usuario_id"], avistamiento_id=det["id"])
-        except Exception:
-            pass
+                rgm_cola.solicitar_consulta(det["placa"], "RGM", "camara", sesion["usuario_id"], avistamiento_id=det["id"])
+            except Exception:
+                pass
 
     return {"ok": True, "id": det["id"], "enLista": bool(det["en_lista"]), "motivo": det["motivo"]}
 

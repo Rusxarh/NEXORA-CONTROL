@@ -114,8 +114,8 @@
               </span>
               {% endif %}
             </td>
-            <td class="table-cell text-zinc-400 whitespace-nowrap">{{ v.fecha_ingreso }}</td>
-            <td class="table-cell text-zinc-400 whitespace-nowrap">{{ v.fecha_baja or '—' }}</td>
+            <td class="table-cell text-zinc-400 whitespace-nowrap">{{ v.fecha_ingreso | fecha_co }}</td>
+            <td class="table-cell text-zinc-400 whitespace-nowrap">{{ v.fecha_baja | fecha_co }}</td>
             <td class="table-cell text-right">
               <div class="flex items-center justify-end gap-2">
                 <a href="/vehiculos/{{ v.placa }}" class="btn-secondary btn-sm">Ficha</a>

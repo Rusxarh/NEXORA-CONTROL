@@ -368,3 +368,110 @@ def test_sse_recibe_detection_hit(cliente):
         assert "EFG456" in mensaje
     finally:
         nexcam_api._suscriptores_sse.remove(cola)
+
+
+# --------------------------------------------------------------------- prueba real con el teléfono
+
+def test_broadcast_no_bloquea_la_peticion_y_reparte_en_orden(cliente):
+    """
+    Causa principal del bug visto con el teléfono real: broadcast() llamaba
+    a los oyentes (Telegram, urllib bloqueante) en el mismo hilo de la
+    petición async -- cada sendPhoto/editMessage de varios segundos
+    congelaba todo el servidor. Ahora broadcast() solo encola; un hilo
+    aparte reparte. Simula un oyente que tarda 0.1 s por llamada (proporción
+    de los "5 s" reales del reporte, para no alargar la suite) y confirma
+    que ninguna de 20 peticiones seguidas se demora por eso, y que los 20
+    avisos sí salen después, en el mismo orden en que se subieron.
+    """
+    import time
+
+    import nexcam_api
+
+    admin = _crear_usuario("Admin Broadcast", "Admin", "admin.broadcast")
+    device = _registrar_y_autorizar(cliente, "device-broadcast")
+    token = _login(cliente, "admin.broadcast", device).json()["token"]
+    placas = [f"BRD{i:03d}" for i in range(20)]
+    for placa in placas:
+        _crear_placa(placa, admin["id"])
+
+    recibidos = []
+
+    def oyente_lento(evento, payload):
+        if evento == "detection.hit":
+            time.sleep(0.1)
+            recibidos.append(payload["placa"])
+
+    nexcam_api.suscribir(oyente_lento)
+
+    duraciones = []
+    for i, placa in enumerate(placas):
+        inicio = time.monotonic()
+        r = cliente.post(
+            "/api/detections/upload",
+            headers={"Authorization": f"Bearer {token}", "X-Device-UUID": device},
+            json={"placa": placa, "ts": int(datetime.now().timestamp() * 1000) + i},
+        )
+        duraciones.append(time.monotonic() - inicio)
+        assert r.status_code == 200
+
+    assert max(duraciones) < 1.0, f"una petición tardó {max(duraciones):.2f}s con el oyente lento de por medio"
+
+    limite = time.monotonic() + 5
+    while len(recibidos) < len(placas) and time.monotonic() < limite:
+        time.sleep(0.05)
+    assert recibidos == placas
+
+
+# --------------------------------------------------------------------- sin duplicados al reintentar
+
+def test_reintento_mismo_device_placa_ts_no_duplica_ni_reavisa(cliente):
+    """Si la app se rinde a los 12 s y reintenta el mismo POST, NEXORA ya
+    lo había guardado: debe responder ok con el MISMO id, sin insertar otra
+    fila (ni contarla dos veces en "Coincidencias de hoy") y sin volver a
+    avisar por Telegram/RGM."""
+    import nexcam_api
+
+    admin = _crear_usuario("Admin Retry", "Admin", "admin.retry")
+    device = _registrar_y_autorizar(cliente, "device-retry")
+    token = _login(cliente, "admin.retry", device).json()["token"]
+    _crear_placa("GCV471", admin["id"])
+    ts = int(datetime.now().timestamp() * 1000)
+
+    eventos = []
+    nexcam_api.suscribir(lambda evento, payload: eventos.append((evento, payload.get("placa"))))
+
+    cuerpo = {"placa": "GCV471", "ts": ts}
+    r1 = cliente.post("/api/detections/upload", headers={"Authorization": f"Bearer {token}", "X-Device-UUID": device}, json=cuerpo)
+    r2 = cliente.post("/api/detections/upload", headers={"Authorization": f"Bearer {token}", "X-Device-UUID": device}, json=cuerpo)
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert r1.json()["id"] == r2.json()["id"]
+
+    avistamientos = nexcam_db.avistamientos_recientes(50)
+    assert sum(1 for a in avistamientos if a["placa"] == "GCV471") == 1
+
+    import time
+    time.sleep(0.3)  # deja que el hilo trabajador reparta lo que sí se encoló
+    detection_hits = [p for ev, p in eventos if ev == "detection.hit"]
+    assert detection_hits == ["GCV471"]  # una sola vez, no dos
+
+
+def test_reintento_con_ts_distinto_si_cuenta_como_otra_lectura(cliente):
+    """El de-duplicado es por (device_uuid, placa, ts) EXACTOS: una lectura
+    real posterior de la misma placa (ts distinto) sí debe guardarse y
+    avisarse, no confundirse con un reintento."""
+    admin = _crear_usuario("Admin Retry2", "Admin", "admin.retry2")
+    device = _registrar_y_autorizar(cliente, "device-retry2")
+    token = _login(cliente, "admin.retry2", device).json()["token"]
+    _crear_placa("HIJ890", admin["id"])
+    ts = int(datetime.now().timestamp() * 1000)
+
+    r1 = cliente.post("/api/detections/upload", headers={"Authorization": f"Bearer {token}", "X-Device-UUID": device}, json={"placa": "HIJ890", "ts": ts})
+    r2 = cliente.post("/api/detections/upload", headers={"Authorization": f"Bearer {token}", "X-Device-UUID": device}, json={"placa": "HIJ890", "ts": ts + 1000})
+    assert r1.json()["id"] != r2.json()["id"]
+    assert sum(1 for a in nexcam_db.avistamientos_recientes(50) if a["placa"] == "HIJ890") == 2
+
+
+# --------------------------------------------------------------------- "en línea": ventana de 2 min
+
+def test_telefono_en_linea_ventana_dos_minutos():
+    assert nexcam_db.VENTANA_EN_LINEA_SEGUNDOS == 2 * 60

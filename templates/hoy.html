@@ -65,7 +65,7 @@
               <span class="badge-en-lista">En lista</span>
             </div>
             <p class="text-xs text-zinc-400">{{ c.motivo or 'Sin motivo registrado' }}</p>
-            <p class="text-[11px] text-zinc-600 mt-1">{{ c.recibido_en }} · {{ c.operador or '—' }}{% if c.lat and c.lng %} · <a href="https://maps.google.com/?q={{ c.lat }},{{ c.lng }}" target="_blank" class="underline">mapa</a>{% endif %}</p>
+            <p class="text-[11px] text-zinc-600 mt-1">{{ c.recibido_en | fecha_co }} · {{ c.operador or '—' }}{% if c.lat and c.lng %} · <a href="https://maps.google.com/?q={{ c.lat }},{{ c.lng }}" target="_blank" class="underline">mapa</a>{% endif %}</p>
           </div>
           <div class="flex flex-col gap-1 shrink-0">
             <a href="/vehiculos/{{ c.placa }}" class="btn-secondary btn-sm">Ver ficha</a>
@@ -137,7 +137,7 @@
         <tbody class="table-body">
           {% for log in logs_recientes %}
           <tr class="table-row">
-            <td class="table-cell text-zinc-400 whitespace-nowrap">{{ log.fecha_hora }}</td>
+            <td class="table-cell text-zinc-400 whitespace-nowrap">{{ log.fecha_hora | fecha_co }}</td>
             <td class="table-cell">{{ log.usuario_id }}</td>
             <td class="table-cell">
               {% if log.accion == 'ALTA_PLACA' %}<span class="badge-success">Alta</span>

@@ -370,3 +370,33 @@ def test_alerta_fuera_de_sesion_tambien_edita_una_sola_vez(bot):
     assert len(envios) == 1
     assert len(ediciones) == 1
     assert ("tel-5", "VWX333") in bot._alertas_sin_sesion
+
+
+def test_lectura_tardia_no_contamina_la_sesion_y_avisa_aparte(bot):
+    """Prueba real con el teléfono: lecturas de la cola acumulada (ts de
+    ANTES de que la sesión de cámara actual empezara) no deben aparecer en
+    "Cámara encendida" como si fueran de ahora, ni editar una alerta de
+    esta sesión como si fuera nueva -- si nunca se avisó esa placa en esta
+    sesión, se manda un aviso aparte marcado "con retraso"."""
+    admin = _crear_usuario("Admin Tele17", "Admin", "admin.tele17", telegram_id=556305)
+    bot._vincular(556305, [bot.codigo], "Admin Tele17")
+    db.insertar_placa("LMN222", "carro", admin["id"], "Prueba tardía")
+
+    bot.on_evento("camera.started", {"device_uuid": "tel-tardio", "device": "HONOR ALT-NX3", "operador": "Eduardo"})
+    bot.llamadas.clear()
+
+    ts_tardio = int(time.time() * 1000) - 5 * 60 * 1000  # 5 min antes del inicio de la sesión
+    bot.on_evento("detection.hit", _deteccion("LMN222", device_uuid="tel-tardio", id=99, ts=ts_tardio))
+
+    sesion = bot.sesiones["tel-tardio"]
+    assert "LMN222" not in sesion["placas"]
+    assert "LMN222" not in sesion["alertas"]
+
+    ultimo = [c for metodo, c in bot.llamadas if metodo == "sendMessage"][-1]
+    assert "llegó con retraso" in ultimo["text"]
+    assert "🚗" in ultimo["text"] and "LMN222"[:3] in ultimo["text"]
+
+    # Una SEGUNDA lectura tardía de la MISMA placa ya no debe avisar de nuevo.
+    bot.llamadas.clear()
+    bot.on_evento("detection.hit", _deteccion("LMN222", device_uuid="tel-tardio", id=100, ts=ts_tardio + 1000))
+    assert bot.llamadas == []

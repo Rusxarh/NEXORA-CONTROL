@@ -669,6 +669,24 @@ class BotTelegram:
                 if "not modified" not in str(e).lower():
                     self.log(f"Telegram: no se pudo actualizar la alerta de {estado['placa']} - {e}")
 
+    def _alerta_tardia(self, p: dict):
+        """Aviso independiente para una lectura que llegó de la cola del
+        teléfono con un `ts` de antes del inicio de esta sesión de cámara
+        -- nunca crea ni edita el estado de alerta "en vivo" de la sesión
+        actual (eso se queda limpio de lecturas fuera de orden)."""
+        placa = p["placa"]
+        vehiculo = db.buscar_placa(placa)
+        tipo = "probable" if p.get("match_type") == "probable" else "exacta"
+        lineas = [f"🚗 <b>{_esc(_fmt_placa(placa))}</b>"]
+        if tipo == "probable":
+            lineas.append(f"⚠️ POSIBLE · leyó {_esc(p.get('leida') or '')}")
+        else:
+            motivo = p.get("motivo") or (vehiculo.get("observaciones") if vehiculo else None) or "en lista"
+            lineas.append(f"🚨 EN LISTA · {_esc(motivo)}")
+        lineas.append(f"🕘 Vista el {_hora(p.get('ts'))} (llegó con retraso)")
+        estado_botones = {"placa": placa, "avistamiento_id": p.get("id")}
+        self._a_todos("\n".join(lineas), extra={"reply_markup": self._botones_alerta(estado_botones)})
+
     def _alerta_placa(self, p: dict):
         """
         Prompt 2: una sola alerta por placa (la de la lista, no la leída)
@@ -683,6 +701,18 @@ class BotTelegram:
             return
         placa = p["placa"]
         sesion = self.sesiones.get(p.get("device_uuid"))
+
+        # Lectura tardía (llegó de la cola del teléfono, de antes de que
+        # esta sesión de cámara empezara): nunca edita la alerta de la
+        # sesión actual como si fuera nueva. Si nunca se avisó esta placa
+        # en esta sesión, se manda un aviso aparte marcado "con retraso",
+        # con la fecha real de cuando se vio, no la de ahora.
+        if sesion is not None and p.get("ts") and p["ts"] < sesion["inicio"]:
+            if placa not in sesion["alertas"] and placa not in sesion["avisos_tardios"]:
+                self._alerta_tardia(p)
+                sesion["avisos_tardios"].add(placa)
+            return
+
         clave = (p.get("device_uuid"), placa)
         if sesion is not None:
             estado = sesion["alertas"].get(placa)
@@ -748,7 +778,7 @@ class BotTelegram:
                 return self.sesiones.get(device_uuid)
             s = {"device_uuid": device_uuid, "device": device or "Teléfono", "operador": operador,
                  "inicio": ts or int(time.time() * 1000), "ultima": time.time(), "placas": {},
-                 "alertas": {}, "mensajes": [], "timer": None}
+                 "alertas": {}, "avisos_tardios": set(), "mensajes": [], "timer": None}
             self.sesiones[device_uuid] = s
         s["mensajes"] = self._a_todos(self._texto_sesion(s))
         return s
@@ -787,6 +817,12 @@ class BotTelegram:
         if not s:
             s = self._abrir_sesion(p["device_uuid"], p.get("device"), p.get("operador"), p.get("ts"))
         if not s:
+            return
+        # Prueba real: lecturas que llegaban tarde (cola acumulada del
+        # teléfono mientras no había conexión) con un `ts` de ANTES de
+        # que esta sesión de cámara empezara no deben aparecer como si
+        # fueran lo que la cámara está viendo "ahora" en "Cámara encendida".
+        if p.get("ts") and p["ts"] < s["inicio"]:
             return
         s["ultima"] = time.time()
         placa = p["placa"]

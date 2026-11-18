@@ -48,7 +48,7 @@
       <tbody class="table-body">
         {% for log in logs %}
         <tr class="table-row">
-          <td class="table-cell text-zinc-400 whitespace-nowrap">{{ log.fecha_hora }}</td>
+          <td class="table-cell text-zinc-400 whitespace-nowrap">{{ log.fecha_hora | fecha_co }}</td>
           <td class="table-cell">{{ log.usuario_id }}</td>
           <td class="table-cell">
             {% if log.accion == 'ALTA_PLACA' %}

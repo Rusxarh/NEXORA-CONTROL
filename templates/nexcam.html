@@ -59,7 +59,7 @@
             <td class="table-cell">
               {% if d.online %}<span class="badge-success">En línea</span>{% else %}<span class="badge-neutral">Fuera de línea</span>{% endif %}
             </td>
-            <td class="table-cell text-zinc-400 whitespace-nowrap">{{ d.last_seen or '—' }}</td>
+            <td class="table-cell text-zinc-400 whitespace-nowrap">{{ d.last_seen | fecha_co }}</td>
             <td class="table-cell text-right">
               <div class="flex gap-2 justify-end">
                 {% if not d.authorized %}
@@ -110,7 +110,7 @@
               {% if a.en_lista %}<span class="badge-en-lista">En lista</span>{% else %}<span class="badge-neutral">Sin novedad</span>{% endif %}
             </td>
             <td class="table-cell text-zinc-300">{{ a.operador or '—' }}</td>
-            <td class="table-cell text-zinc-400 whitespace-nowrap">{{ a.recibido_en }}</td>
+            <td class="table-cell text-zinc-400 whitespace-nowrap">{{ a.recibido_en | fecha_co }}</td>
             <td class="table-cell">
               <div class="flex gap-1">
                 {% if a.snapshot %}<a href="{{ a.snapshot }}" target="_blank"><img src="{{ a.snapshot }}" class="h-10 w-14 object-cover rounded border border-zinc-700" onerror="this.style.display='none'"></a>{% endif %}
@@ -143,7 +143,7 @@
     {% if not ultimo_cruce %}
     <p class="text-sm text-zinc-500">Todavía no se ha procesado ninguna carga masiva de placas desde que esta integración existe. Se actualiza automáticamente cada vez que se usa "Carga masiva de placas".</p>
     {% else %}
-    <p class="text-xs text-zinc-500 mb-4">Cruce del {{ ultimo_cruce.creado_en }} · {{ ultimo_cruce.total_cargadas }} placa(s) cargada(s) · {{ ultimo_cruce.total_ya_vistas }} ya vista(s) por la cámara.</p>
+    <p class="text-xs text-zinc-500 mb-4">Cruce del {{ ultimo_cruce.creado_en | fecha_co }} · {{ ultimo_cruce.total_cargadas }} placa(s) cargada(s) · {{ ultimo_cruce.total_ya_vistas }} ya vista(s) por la cámara.</p>
     {% if not ultimo_cruce.ya_vistas %}
     <p class="alert-info text-xs">Ninguna de las placas de esa carga había sido vista antes por la cámara.</p>
     {% else %}
