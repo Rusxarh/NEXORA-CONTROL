@@ -460,6 +460,10 @@ def _vehiculo_para_app(row) -> dict:
         "linea": row["linea"] if "linea" in row.keys() else None,
         "color": row["color"] if "color" in row.keys() else None,
         "modelo": row["modelo"] if "modelo" in row.keys() else None,
+        # Prompt 2b: la app YA lee tipo_servicio (app/src/services/db.js:
+        # `p.tipo_servicio || p.servicio`) pero NEXORA nunca se lo mandaba
+        # -- el RGM sí lo completa (rgm_cola._actualizar_vehiculo_desde_rgm).
+        "tipo_servicio": row["tipo_servicio"] if "tipo_servicio" in row.keys() else None,
     }
 
 

@@ -6,7 +6,7 @@ Actualizado: 17/11/2026, 10:00 p. m.
 
 Este archivo vive en dos lugares:
 - En el Proyecto NEXORA de Claude (`claude/nexcam-prompts-y-pruebas.md`).
-- En tu PC, para que Claude Code lo lea: `C:\Users\Rus\Documents\NEXORA\NEXORA-CONTROL\docs\NEXCAM-PROMPTS-Y-PRUEBAS.md`.
+- En tu PC, para que Claude Code lo lea: `C:\Users\Rus\Documents\NEXORA\PROMPTS Y PRUEBAS DOCS\NEXCAM-PROMPTS-Y-PRUEBAS.md` (fuera de los repositorios: sirve para todas las apps y no se sube a GitHub).
 
 Cuando este archivo cambie, reemplaza la copia de la PC.
 
@@ -14,16 +14,18 @@ Orden de trabajo:
 
 | Paso | Qué le pides a Claude Code | Qué pruebas tú |
 |---|---|---|
-| 1 | Prompts 0 y 2 | Fases 7 y 10 |
+| 1 | Prompts 0, 2 y 2b | Fases 7 y 10 |
 | 2 | Nada nuevo (ya está hecho) | Fases 8 y 9 (RGM y Judicial) |
-| 3 | Prompt 3 | Fases 11 a 14 |
+| 3 | Prompt 3 (bloques A a G) | Fases 11 a 14 |
+| 4 | Prompt 4 (en NEXDOC) | Fase 15 |
+| 1b | Prompt 5 (después de los 0, 2 y 2b; antes del 3) | Fase 16 |
 
 ### Prompt para arrancar el paso 1 (conversación NUEVA de Claude Code)
 
 ```text
-Lee completos CLAUDE.md y docs/NEXCAM-PROMPTS-Y-PRUEBAS.md (en
-C:\Users\Rus\Documents\NEXORA\NEXORA-CONTROL). Ese archivo es la instrucción
-vigente. Trabaja en la rama `nexcam`.
+Lee completos CLAUDE.md (de NEXORA-CONTROL) y
+"C:\Users\Rus\Documents\NEXORA\PROMPTS Y PRUEBAS DOCS\NEXCAM-PROMPTS-Y-PRUEBAS.md".
+Ese archivo es la instrucción vigente. Trabaja en NEXORA-CONTROL, rama `nexcam`.
 Ejecuta ahora el Prompt 0 y después el Prompt 2, sin preguntarme (sigue CLAUDE.md).
 No hagas todavía el Prompt 3.
 Push de `nexcam` autorizado al terminar. Al final, repórtame punto por punto qué
@@ -33,10 +35,11 @@ quedó hecho de los Prompts 0 y 2, y qué pruebas de las Fases 7 y 10 ya puedo h
 ### Prompt para arrancar el paso 3 (cuando las Fases 7 a 10 estén bien)
 
 ```text
-Lee de nuevo docs/NEXCAM-PROMPTS-Y-PRUEBAS.md (puede haber cambiado) y ejecuta el
-Prompt 3 completo, bloques A a F en orden, sin preguntarme (sigue CLAUDE.md). Rama
+Lee de nuevo "C:\Users\Rus\Documents\NEXORA\PROMPTS Y PRUEBAS DOCS\NEXCAM-PROMPTS-Y-PRUEBAS.md" (puede haber cambiado) y ejecuta el
+Prompt 3 completo, bloques A a G en orden, sin preguntarme (sigue CLAUDE.md). Rama
 `nexcam`, commit por bloque, push autorizado al terminar. Al final, repórtame bloque
 por bloque qué quedó hecho y qué pruebas de las Fases 11 a 14 ya puedo hacer.
+Después, en la carpeta de NEXDOC, ejecuta el Prompt 4.
 ```
 
 ---
@@ -141,6 +144,40 @@ ediciones; 0 sendLocation; fecha de ingreso presente; nombre del teléfono prese
 camera/state false cierra con "Cámara apagada". Commit y push de nexcam.
 ```
 
+## Prompt 2b: los datos del RGM reescriben la placa y llegan a la app
+
+```text
+Rama nexcam, sin preguntar. Cuando llega un resultado RGM con estado "OK"
+(automático, desde Consulta o desde Telegram):
+
+1) Reescribe los datos del vehículo con lo del RGM (el RGM manda sobre la lista):
+   - marca ← vehiculo.marca; modelo ← vehiculo.modelo; tipo_servicio ←
+     vehiculo.tipo_servicio.
+   - línea: el RGM la trae dentro de vehiculo.descripcion_bien ("...Linea: LOGAN");
+     extráela de ahí (texto después de "Linea:" hasta el final o el siguiente
+     rótulo). El color no viene en el RGM: no lo toques.
+   - Guarda lo anterior en el historial/auditoría ("Actualizado con RGM el
+     17/11/2026, 11:30 p. m.: marca X → Y") y muestra en la ficha
+     "Datos del vehículo: según RGM del <fecha>".
+   - Si el RGM no trae un campo, se conserva el que había.
+   - Esto anula la regla anterior de "solo completar vacíos" para estos campos.
+
+2) A la app NEXCAM le llegan esos datos del vehículo: /api/plates (sync completa e
+   incremental) incluye marca, línea, modelo, color, tipo_servicio y motivo, y una
+   placa actualizada por RGM entra en el ?since= siguiente (marca su cambio). Así la
+   alerta del teléfono muestra "Renault Logan · 2020". NUNCA van a la app: deudor,
+   documento, acreedor/banco, radicado ni procesos (regla Etapa 5 §2/§37).
+   Verifica qué campos lee la app hoy (app/src/services/db.js plate_cache y
+   CameraScreen) y repórtalo; si la app necesita un campo nuevo, dímelo y lo agrego
+   yo en la app.
+
+3) Telegram: la alerta usa esos datos ("Renault Logan · 2020 · Particular").
+   El banco (acreedor) en la alerta solo para chats de Admin.
+
+Pruebas con resultado RGM simulado (el JSON de ejemplo con descripcion_bien real de
+formato, datos ficticios). Commit y push de nexcam.
+```
+
 ### Cómo debe verse la alerta
 
 ```
@@ -177,7 +214,7 @@ La cámara lee una placa por cuadro (la centrada en el recuadro). Leer varias pl
 Decisiones de Gabriel (17/11/2026): Telegram es la herramienta de trabajo (nada de chat dentro de la app NEXCAM); oficio = PDF adjunto a la placa (sin PDF = "Sin oficio"); garantía = banco; los oficios llegan nombrados por NEXDOC (juzgado + placa + banco); "Gestión masiva de placas" se queda igual, solo cambia cómo se pegan las placas; el estudio masivo usa RGM/Judicial; aviso de vigencia a los 3 meses, la baja siempre manual.
 
 ```text
-Prompt 3 para NEXORA-CONTROL, rama nexcam, sin preguntar (CLAUDE.md). Bloques A a F,
+Prompt 3 para NEXORA-CONTROL, rama nexcam, sin preguntar (CLAUDE.md). Bloques A a G,
 en orden. Commit por bloque, push de nexcam al final, un solo reporte punto por punto.
 
 A) CARGA DE PLACAS (dentro de "Gestión masiva de placas", que se queda igual)
@@ -305,12 +342,161 @@ F) REVISAR VIGENCIA (aviso, nunca borrado automático)
 - Contador pequeño junto a "Hoy" en el menú cuando haya placas por revisar.
 - Nada se da de baja solo: la decisión es siempre del Admin.
 
+G) OFICIOS DESDE NEXDOC (cada Admin, desde su propio computador)
+Contexto verificado en el código de NEXDOC (C:\Users\Rus\Documents\Trabajo\Placas\_App Ordenes,
+solo lectura): NEXDOC archiva en Placas\<Departamento>\<Municipio>\ con nombre
+<DANE><esp><NN>-<PLACA>-<FINANCIERA>-<AUTO|OFICIO>[-CORREGIDO][-2].pdf
+(esp: C, P, PC, CC; ej. 05088C01-LGT748-GMAC-OFICIO.pdf), y ya extrae placa,
+radicado, juzgado, municipio, depto, financiera, tipo, fecha, correo del juzgado y
+vehículo (marca, línea, modelo, color). Google Drive es opcional y personal: NO se usa.
+NEXDOC enviará cada documento directo a NEXORA por la red (ver Prompt 4).
+- AUTO u OFICIO: cualquiera de los dos cuenta como "tiene documento" (✓). Mostrar el
+  tipo: "📄 Oficio del <fecha>" o "📄 Auto del <fecha>".
+- API nueva: POST /api/nexdoc/documentos (multipart: archivo PDF + "datos" JSON con
+  los campos de NEXDOC) y GET /api/nexdoc/estado (prueba de conexión). Auth: token
+  propio de NEXDOC (Bearer), NO la sesión web ni el token de la app NEXCAM.
+- Tokens: en Usuarios → ficha de un usuario → "Conectar NEXDOC": genera un token
+  (se muestra una sola vez, se guarda solo su hash), con nombre del equipo, último
+  uso y botón Revocar. Solo un Admin genera tokens, para Admins o para operadores.
+- Subir documentos A MANO (web "Oficios" y PDFs enviados al bot de Telegram): solo Admin.
+- Lo que llega desde NEXDOC:
+  · de un ADMIN: se guarda directo. Si la placa (LLLDDD) no está en la lista, se
+    agrega sola (banco, tipo de aprehensión vacío, grado por defecto) y se avisa.
+  · de un OPERADOR (NEXDOC lo envía solo, en segundo plano, sin preguntarle): entra
+    como "De operador · por validar". Queda adjunto a la ficha marcado así, y un
+    Admin lo valida o descarta (web y botón en Telegram). Si la placa no está en la
+    lista, NO se agrega sola: se ofrece "Agregar a la lista" al validar.
+  · motos (LLLDDL) y placas raras: se guardan con su documento pero la cámara no
+    las busca; se marcan "moto".
+- Sin duplicados por SHA-256 del PDF. "-CORREGIDO" reemplaza al vigente de esa
+  placa y tipo; el anterior queda en el historial de la ficha. Responde
+  {"ok": true, "placa": "...", "estado": "nuevo"|"duplicado"|"reemplaza"|"por_revisar"}.
+- Completar en vehiculos marca/línea/modelo/color si están vacíos; guardar
+  radicado (string), juzgado, municipio, departamento, correo del juzgado, fecha.
+- Telegram (Admin): resumen agrupado cada 2 min como máximo:
+  "📄 3 documentos nuevos desde NEXDOC (Juan): LGT 748 GMAC oficio, …"
+  y botón [Revisar] si hay alguno por revisar. Nunca un mensaje por archivo.
+- Pruebas con PDFs falsos y nombres reales de formato (sin datos reales).
+
 Pruebas (Telegram y portales simulados, PDFs falsos generados en la prueba):
 extracción de placas con todos los formatos (incluye pegadas y textos con basura);
 reactivación una por una y en grupo; tabla de revisión de oficios con nombres al
 estilo NEXDOC; alerta con PDF al Admin y sin PDF al operador hasta que el Admin lo
 envíe; aviso silencioso al Admin; ida y vuelta del chat; ningún dato sensible al
 operador.
+```
+
+## Prompt 4: NEXDOC envía los documentos a NEXORA
+
+Se hace DESPUÉS del bloque G del Prompt 3 (necesita la API de NEXORA). Se trabaja en la carpeta de NEXDOC, no en NEXORA-CONTROL.
+
+```text
+Trabajo en NEXDOC (C:\Users\Rus\Documents\Trabajo\Placas\_App Ordenes), sin preguntar
+(mismas reglas de CLAUDE.md de NEXORA-CONTROL). Si la carpeta tiene git, rama
+`conexion-nexora`; si no, haz primero una copia de respaldo de la carpeta del código.
+NUNCA toques: firma.nxd, nexdoc_licencia.py (salvo leerlo), la carpeta
+"Documents\NEXDOC llave", el Excel REGISTRO DE RADICADOS real ni ningún PDF real.
+
+1) Conexión con NEXORA:
+   - En configuración: "Conectar con NEXORA": dirección (ej. http://192.168.1.2:8000)
+     y token (lo genera un Admin en NEXORA → Usuarios → Conectar NEXDOC). Botón
+     "Probar conexión" (GET /api/nexdoc/estado). Se guarda en el config.json del
+     usuario (USR_DIR), nunca en el repositorio.
+   - Esa sección la configura un Admin de NEXDOC (nexdoc_usuarios / nexdoc_acceso):
+     un usuario operador no puede verla, cambiarla ni apagarla. Una vez configurada,
+     el envío es automático: NUNCA se le pregunta al operador si sube o no un archivo.
+   - Transparencia (una sola vez, no por archivo): agrega en LEEME/manual y en la
+     pantalla de licencia la frase "Los documentos que procesa NEXDOC se sincronizan
+     con el sistema NEXORA de la empresa".
+   - Indicador en el encabezado, junto a "Drive conectado": "NEXORA conectado" /
+     "NEXORA: N por enviar" / "NEXORA sin conexión".
+2) Envío en segundo plano: cada vez que NEXDOC guarda un AUTO u OFICIO (guardar /
+   confirmar / procesar, incluidas las "hermanas"), encola el envío a
+   POST /api/nexdoc/documentos: el PDF + JSON con placa, radicado, codigo, juzgado,
+   municipio, depto, financiera, tipo, fecha, correo_juzgado, correo_policia,
+   vehiculo (marca, línea, modelo, color por separado; hoy se juntan en
+   res["vehiculo"]: guarda también los campos sueltos), usuario, nombre del archivo.
+   - Hilo aparte: la ventana nunca se congela. Cola persistente en USR_DIR
+     (como pendientes_ws.json), reintentos con espera creciente, sobrevive a cerrar
+     la app. Lo que responde "duplicado" se da por enviado.
+3) "Enviar lo ya archivado a NEXORA": botón que recorre Placas\<depto>\<municipio>\
+   y encola todos los PDF con nombre de formato NEXDOC (los de formato viejo
+   "2401-..." se omiten), con progreso y sin duplicar.
+4) Excel REGISTRO DE RADICADOS: agrega al final las columnas Marca, Línea, Modelo,
+   Color y Correo juzgado, igual que se agregó "Usuario" (registros viejos: se añade
+   la columna sin tocar lo demás).
+5) Sube VERSION en nexdoc_rutas.py (1.4.2 → 1.5.0) y anota en CHANGELOG.md.
+6) Pruebas con PDFs falsos y un servidor NEXORA simulado: envío, cola sin conexión,
+   reintento, duplicado, backfill, columnas nuevas en un Excel de prueba.
+Reporte final punto por punto y cómo publicarlo para los demás con
+NEXDOC-actualizaciones.
+```
+
+## Prompt 5: RGM completo en la ficha, avisos solo a pedido, En vivo compacto y Telegram más legible
+
+Resultado de la prueba real del 18/11/2026: el RGM ya funciona (20 placas consultadas OK). Lo que se corrige aquí sale de esa prueba.
+
+```text
+Rama nexcam, sin preguntar (CLAUDE.md). Commit por punto, push al final, reporte
+punto por punto. Incluye el Prompt 2b si aún no lo hiciste.
+
+1) RGM automático = SILENCIOSO. Hoy cada consulta automática manda a Telegram
+   "📄 RGM consultado: GCV 471 · Vehículo: RENAULT · Consulta hecha" (llegaron 20
+   mensajes seguidos). Cambia:
+   - Consultas automáticas (cámara, estudio masivo): solo guardan y completan la
+     ficha. NO mandan mensaje.
+   - Consultas pedidas por un Admin (botón 🔎 RGM en Telegram, o Consultar en la
+     página Consulta): al terminar, un mensaje al chat de quien la pidió (si la
+     pidió desde la web: a los chats de Admin) con los datos registrados:
+       🚗 <b>GCT 953</b> · RGM del 18/11/2026, 12:37 a. m.
+       Chevrolet Tracker · 2021 · Particular
+       Serie/VIN: … · Motor: …
+       🏦 Acreedor: …            (solo Admin)
+       👤 Deudor: nombre · C.C. · ciudad   (solo Admin)
+       [📋 Ficha] [⚖️ Procesos judiciales (en prueba)]
+     Si el RGM no trae datos: "RGM sin datos para GXX 931".
+
+2) RGM llena TODAS las partes del vehículo (vehiculos + ficha), reescribiendo lo
+   que había (el RGM manda; lo anterior va a auditoría):
+   marca, línea (de descripcion_bien "Linea: X"), modelo (año), tipo_servicio,
+   número de serie/VIN, chasis y motor (de descripcion_bien "Chasis:", "Vin:",
+   "Motor:", "Serie:"). Agrega esas columnas con migración aditiva. El color NO
+   viene en el RGM: se conserva el de la lista o NEXDOC.
+   Hoy la ficha de GCT953 muestra "CHEVROLET / —" y "— / —" aunque el RGM trae
+   línea TRACKER y modelo 2021: eso debe quedar lleno.
+
+3) Ficha → "Datos RGM": hoy muestra el JSON crudo. Muéstralo como tabla legible
+   (Vehículo: marca, línea, modelo, servicio, serie, motor · Acreedor · Deudor con
+   nombre, documento y ciudad), fecha de consulta, y el JSON crudo solo detrás de un
+   "Ver datos originales" plegado.
+
+4) NEXCAM → En vivo: hoy cada fila tiene la foto enorme. Hazlo compacto: filas de
+   ~56 px con miniatura de 72×48 (vehículo) y 48×32 (placa); al tocar una miniatura
+   se abre ampliada en un visor (overlay oscuro, Esc o clic fuera para cerrar,
+   flechas para pasar a la siguiente lectura). Paginación de 30.
+
+5) Telegram, lista en vivo "📷 Cámara encendida": solo las ÚLTIMAS 10 placas
+   (configurable TG_VIVO_MAX), la más reciente arriba; al llegar la 11ª sale la más
+   vieja. La cabecera sigue contando el total de la sesión ("31 placas · 2 en lista").
+   Formato de cada fila, más grande y fácil de leer en la calle:
+     🔴 🚗 𝗚𝗖𝗩 𝟰𝟳𝟭   1:09     (en lista)
+     🟡 🚗 𝗔𝗕𝗤 𝟳𝟳𝟳   1:09     (posible)
+     ⚪ 🚗 𝗟𝗤𝗥 𝟵𝟱𝟭   1:09     (leída)
+   La placa en letras Unicode "negrita sans" (𝗔-𝗭, 𝟬-𝟵), que en Telegram se ven
+   más gruesas y de otra fuente (Telegram no permite cambiar el tamaño de letra).
+   Hazlo con una función única placa_destacada(texto) y úsala también en la lista
+   de "🕒 Últimas". En alertas y fichas la placa sigue en texto normal en negrilla
+   (para poder copiarla y buscarla).
+
+6) Telegram, "🕒 Últimas": paginada, la más reciente primero, 10 por página:
+   "🕒 Últimas placas · página 1 de 4" + filas con el formato del punto 5 + hora y
+   operador; botones [◀ Anterior] [1/4] [Siguiente ▶] que EDITAN el mismo mensaje
+   (no mandan otro); y debajo los botones 📋 de las placas de esa página en 2
+   columnas.
+
+Pruebas con Telegram y RGM simulados: consulta automática no manda mensaje; a
+pedido sí, con datos y sensibles solo a Admin; línea/serie/motor extraídos de
+descripcion_bien; lista en vivo con máximo 10; Últimas paginada edita el mensaje.
 ```
 
 ---
@@ -388,6 +574,32 @@ Antes de cada tanda: reiniciar NEXORA (cerrar la ventana y abrir `iniciar-nexora
 - **14.5** Período "Más de 3 meses" muestra las placas antiguas.
 - **14.6** Hoy muestra "N placas llevan más de 3 meses: revisa si siguen vigentes" y el contador en el menú.
 - **14.7** [Sigue vigente] saca la placa del aviso; [Dar de baja] pide confirmación y queda en Auditoría; nada se borra solo.
+
+**Fase 15: oficios desde NEXDOC (bloque G + Prompt 4)**
+- **15.1** En NEXORA, Usuarios → tu usuario → Conectar NEXDOC → copiar el token.
+- **15.2** En NEXDOC, configuración → Conectar con NEXORA → Probar conexión → "NEXORA conectado".
+- **15.3** Procesar un oficio nuevo en NEXDOC → en segundos aparece en la ficha de esa placa y llega el resumen a Telegram.
+- **15.4** Un AUTO también cuenta como documento (✓ "Auto del …").
+- **15.5** Un oficio de una placa que no estaba en la lista (desde Admin) → se agrega sola.
+- **15.6** NEXORA apagada → NEXDOC muestra "N por enviar"; al encender NEXORA se envían solos.
+- **15.7** "Enviar lo ya archivado" → sube los oficios viejos sin duplicar.
+- **15.8** Un operador procesa un oficio en NEXDOC → se envía solo, sin preguntarle; en NEXORA aparece "De operador · por validar" y tú lo validas.
+- **15.10** Un operador no ve ni puede apagar la conexión con NEXORA en NEXDOC.
+- **15.11** Subir oficios a mano (web y Telegram) solo funciona para Admin.
+- **15.9** El Excel de NEXDOC ahora tiene Marca, Línea, Modelo, Color y Correo juzgado.
+
+**Fase 16: RGM completo y Telegram legible (Prompt 5 + app 0.5.3)**
+- **16.1** Con la cámara viendo placas de la lista, el RGM automático llena la ficha y NO manda mensajes a Telegram.
+- **16.2** Botón 🔎 RGM en Telegram (o Consultar en la web) → llega un mensaje con marca, línea, modelo, servicio, serie y motor; acreedor y deudor solo para Admin.
+- **16.3** La ficha de GCT 953 muestra "Chevrolet / Tracker" y modelo 2021; Datos RGM en tabla, no en JSON.
+- **16.4** NEXCAM → En vivo con filas pequeñas; tocar la foto la amplía.
+- **16.5** La lista "📷 Cámara encendida" muestra solo las últimas 10, con 🔴/🟡/⚪ y la placa en letra gruesa.
+- **16.6** "🕒 Últimas" con páginas: ◀ ▶ cambian de página en el mismo mensaje.
+- **16.7** App: botón 🌙 deja la pantalla en negro y la cámara sigue leyendo; mantener el dedo 5 s la enciende; una alerta la enciende sola.
+- **16.8** App: botón ⏻ apaga la cámara (Telegram dice "Cámara apagada") y "Encender cámara" la vuelve a prender.
+
+### Pendiente: migrar la base de placas desde WhatsApp
+Falta un ejemplo del chat exportado (WhatsApp → grupo → ⋮ → Más → Exportar chat → Sin archivos) y saber cómo se escribe en el grupo una placa que se borra. Con eso se arma el importador.
 
 ### Resultados
 

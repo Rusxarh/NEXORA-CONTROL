@@ -30,13 +30,20 @@ Decisiones de esta fase:
   su propio snapshot (fuente 'RGM' o 'JUDICIAL' en snapshots_placa,
   NUNCA 'COMPLETO': ese valor no existe como fuente, solo como alcance
   pedido).
-- El extractor real de RGM (content.js) solo entrega marca y "Año
-  Correspondiente al Modelo" del vehículo -- nunca línea ni color (esos
-  campos no existen en su resultado). _completar_datos_vehiculo por eso
-  solo completa marca/modelo.
+- Prompt 2b/5 (NEXCAM-PROMPTS-Y-PRUEBAS.md): el extractor real de RGM
+  (content.js) entrega marca, modelo ("Año Correspondiente al Modelo" --
+  el campo se llama "modelo", nunca "anio_modelo"), tipo_servicio y
+  numero_serial como campos directos de `vehiculo`, más una
+  descripcion_bien de texto corrido con rótulos "Linea:"/"Chasis:"/
+  "Vin:"/"Motor:"/"Serie:" (mismo formato que ya usa content.js para
+  extraer "T. Servicio:"). El RGM MANDA sobre la lista: ahora
+  _actualizar_vehiculo_desde_rgm SOBRESCRIBE estas columnas (antes solo
+  completaba si estaban vacías); el color nunca llega del RGM, así que
+  nunca se toca.
 """
 
 import json
+import re
 from datetime import datetime
 from typing import Optional
 
@@ -135,38 +142,94 @@ def reservar_siguiente() -> Optional[dict]:
     return db.reservar_siguiente_item_rgm()
 
 
-def _completar_datos_vehiculo_desde_rgm(placa: str, vehiculo_rgm: dict) -> dict:
+def _extraer_campo_descripcion_bien(descripcion: Optional[str], etiqueta: str) -> Optional[str]:
     """
-    Completa marca/modelo en `vehiculos` SOLO si la columna está vacía
-    (nunca sobrescribe lo que ya vino de la lista del día o del alta
-    manual). Si el valor de RGM difiere del que ya había, tampoco lo
-    sobrescribe: se devuelve en `diferencias` para que la ficha lo
-    muestre. línea/color nunca llegan de RGM (ver docstring del módulo),
-    así que nunca se tocan aquí.
+    `vehiculo.descripcion_bien` del RGM trae varios rótulos CORRIDOS sin
+    separador propio (mismo formato que ya usa content.js para extraer
+    "T. Servicio:", p.ej. "...Linea: LOGAN Chasis: ABC123 Motor: ..."):
+    se busca "<etiqueta>:" y se toma el texto hasta el siguiente rótulo
+    con mayúscula inicial, o el final de la cadena.
+    """
+    if not descripcion:
+        return None
+    patron = re.compile(rf"{etiqueta}\s*:\s*(.*?)(?=[A-ZÁÉÍÓÚÑ][a-záéíóúñ.]*:|$)", re.IGNORECASE)
+    m = patron.search(descripcion)
+    if m and m.group(1).strip():
+        return m.group(1).strip()
+    return None
+
+
+def _datos_vehiculo_desde_rgm(vehiculo_rgm: dict) -> dict:
+    """
+    Arma {columna: valor} con TODO lo que el RGM trae para `vehiculos`
+    (Prompt 2b/5): marca/modelo/tipo_servicio vienen del bloque
+    `vehiculo` directo (content.js: modelo = "Año Correspondiente al
+    Modelo" -- OJO, el campo real se llama "modelo", nunca
+    "anio_modelo"); línea/chasis/motor se extraen de descripcion_bien,
+    el único lugar donde el RGM los trae. numero_serie usa primero el
+    campo directo `numero_serial`; si vino vacío, cae a "Vin:"/"Serie:"
+    de descripcion_bien (el RGM no siempre usa el mismo rótulo). El
+    color NUNCA sale de aquí: el RGM no lo trae (ni como campo directo
+    ni en descripcion_bien).
+    """
+    if not vehiculo_rgm:
+        return {}
+    descripcion = vehiculo_rgm.get("descripcion_bien")
+    numero_serie = (
+        vehiculo_rgm.get("numero_serial")
+        or _extraer_campo_descripcion_bien(descripcion, "Vin")
+        or _extraer_campo_descripcion_bien(descripcion, "Serie")
+    )
+    datos = {
+        "marca": vehiculo_rgm.get("marca"),
+        "modelo": vehiculo_rgm.get("modelo"),
+        "tipo_servicio": vehiculo_rgm.get("tipo_servicio"),
+        "numero_serie": numero_serie,
+        "linea": _extraer_campo_descripcion_bien(descripcion, "Linea"),
+        "chasis": _extraer_campo_descripcion_bien(descripcion, "Chasis"),
+        "motor": _extraer_campo_descripcion_bien(descripcion, "Motor"),
+    }
+    return {col: val.strip() for col, val in datos.items() if isinstance(val, str) and val.strip()}
+
+
+def _actualizar_vehiculo_desde_rgm(placa: str, vehiculo_rgm: dict, usuario_id: int) -> dict:
+    """
+    Prompt 2b: el RGM MANDA sobre la lista -- a diferencia de la regla
+    anterior (solo completar vacíos), esto SOBRESCRIBE marca/línea/
+    modelo/tipo_servicio/numero_serie/chasis/motor con lo que traiga el
+    RGM. Si el RGM no trae un campo, se conserva el que había. El color
+    nunca se toca (el RGM no lo trae). Cada columna que de verdad cambió
+    queda en logs_auditoria (placa_afectada=placa, para que el ?since=
+    de /api/plates la recoja -- ver nexcam_db.placas_cambiadas_desde) y
+    se devuelve en `cambios` para que la ficha/Telegram puedan mostrar
+    "antes -> ahora". rgm_actualizado_en se actualiza siempre que hubo
+    al menos un cambio, para "según RGM del <fecha>" en la ficha.
     """
     vehiculo = db.buscar_placa(placa)
-    if vehiculo is None or not vehiculo_rgm:
+    datos_rgm = _datos_vehiculo_desde_rgm(vehiculo_rgm)
+    if vehiculo is None or not datos_rgm:
         return {}
 
-    diferencias = {}
     cambios = {}
-    candidatos = {"marca": vehiculo_rgm.get("marca"), "modelo": vehiculo_rgm.get("anio_modelo")}
-    for columna, valor_rgm in candidatos.items():
-        valor_rgm = valor_rgm.strip() if isinstance(valor_rgm, str) else valor_rgm
-        if not valor_rgm:
-            continue
-        valor_actual = (vehiculo.get(columna) or "").strip()
-        if not valor_actual:
-            cambios[columna] = valor_rgm
-        elif valor_actual != str(valor_rgm).strip():
-            diferencias[columna] = {"en_lista": valor_actual, "en_rgm": valor_rgm}
+    for columna, valor_nuevo in datos_rgm.items():
+        valor_anterior = (vehiculo.get(columna) or "").strip()
+        if valor_anterior != valor_nuevo:
+            cambios[columna] = {"antes": valor_anterior or None, "despues": valor_nuevo}
 
-    if cambios:
-        with db.get_connection() as conn:
-            asignaciones = ", ".join(f"{columna} = ?" for columna in cambios)
-            conn.execute(f"UPDATE vehiculos SET {asignaciones} WHERE placa = ?", (*cambios.values(), placa))
+    if not cambios:
+        return {}
 
-    return diferencias
+    with db.get_connection() as conn:
+        asignaciones = ", ".join(f"{columna} = ?" for columna in cambios)
+        conn.execute(
+            f"UPDATE vehiculos SET {asignaciones}, rgm_actualizado_en = datetime('now', 'localtime') WHERE placa = ?",
+            (*[c["despues"] for c in cambios.values()], placa),
+        )
+
+    resumen = ", ".join(f"{col} {c['antes'] or '(vacío)'} → {c['despues']}" for col, c in cambios.items())
+    db.registrar_log(usuario_id, "RGM_ACTUALIZO_VEHICULO", placa_afectada=placa,
+                      observaciones=f"Actualizado con RGM: {resumen}.")
+    return cambios
 
 
 def completar_item(item_id: int, resultado: dict) -> dict:
@@ -188,7 +251,7 @@ def completar_item(item_id: int, resultado: dict) -> dict:
     diferencias = {}
     if rgm_resultado is not None:
         db.crear_snapshot(item["placa"], "RGM", json.dumps(rgm_resultado, ensure_ascii=False))
-        diferencias = _completar_datos_vehiculo_desde_rgm(item["placa"], rgm_resultado.get("vehiculo") or {})
+        diferencias = _actualizar_vehiculo_desde_rgm(item["placa"], rgm_resultado.get("vehiculo") or {}, item["solicitado_por"])
     if judicial_resultado is not None:
         db.crear_snapshot(item["placa"], "JUDICIAL", json.dumps(judicial_resultado, ensure_ascii=False))
 
@@ -213,4 +276,5 @@ def marcar_error(item_id: int, mensaje: str):
     db.marcar_item_rgm_error(item_id, mensaje)
     item = db.obtener_item_rgm(item_id)
     if item and item["estado"] == "ERROR":
-        _emitir("rgm.error", {"item_id": item_id, "placa": item["placa"], "alcance": item["alcance"], "error": mensaje})
+        _emitir("rgm.error", {"item_id": item_id, "placa": item["placa"], "alcance": item["alcance"],
+                               "origen": item["origen"], "error": mensaje})

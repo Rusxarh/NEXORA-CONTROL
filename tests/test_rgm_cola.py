@@ -11,6 +11,7 @@ import json
 from datetime import datetime, timedelta
 
 import database as db
+import nexcam_db
 import rgm_cola
 import usuarios
 
@@ -122,20 +123,29 @@ def test_completar_item_rgm_completa_marca_y_modelo_vacios(cliente):
 
     # El resultado que manda la página Consulta es SIEMPRE {"rgm":..., "judicial":...}
     # (igual forma que consulta.rgm/consulta.judicial del Connector).
+    # "modelo" es el nombre REAL del campo del RGM (content.js: "Año
+    # Correspondiente al Modelo"); nunca "anio_modelo".
     resultado = {"rgm": {"estado": "OK", "deudor_garante": {"nombre": "Juan Pérez"},
-                          "vehiculo": {"marca": "Mazda", "anio_modelo": "2019"}}, "judicial": None}
+                          "vehiculo": {"marca": "Mazda", "modelo": "2019"}}, "judicial": None}
     salida = rgm_cola.completar_item(item["id"], resultado)
 
-    assert salida["diferencias"] == {}
+    assert salida["diferencias"] == {
+        "marca": {"antes": None, "despues": "Mazda"},
+        "modelo": {"antes": None, "despues": "2019"},
+    }
     vehiculo = db.buscar_placa("STU901")
     assert vehiculo["marca"] == "Mazda"
     assert vehiculo["modelo"] == "2019"
+    assert vehiculo["rgm_actualizado_en"] is not None
     assert db.obtener_item_rgm(item["id"])["estado"] == "OK"
     snapshot = db.obtener_ultimo_snapshot_por_fuente("STU901", "RGM")
     assert json.loads(snapshot["datos"])["deudor_garante"]["nombre"] == "Juan Pérez"
 
 
-def test_completar_item_rgm_no_sobrescribe_y_marca_diferencia(cliente):
+def test_completar_item_rgm_sobrescribe_y_queda_en_auditoria(cliente):
+    """Prompt 2b: el RGM manda sobre la lista -- ya NO se conserva el
+    valor anterior; queda en logs_auditoria (placa_afectada) para que
+    tanto la ficha como el ?since= de /api/plates lo vean."""
     admin = _crear_admin("Admin RGM Siete", "admin.rgm7")
     _crear_placa("VWX234", admin["id"], marca="Chevrolet")
     item = rgm_cola.solicitar_consulta("VWX234", "RGM", "panel", admin["id"])["item"]
@@ -143,8 +153,64 @@ def test_completar_item_rgm_no_sobrescribe_y_marca_diferencia(cliente):
     resultado = {"rgm": {"estado": "OK", "vehiculo": {"marca": "Renault"}}, "judicial": None}
     salida = rgm_cola.completar_item(item["id"], resultado)
 
-    assert db.buscar_placa("VWX234")["marca"] == "Chevrolet"  # nunca se sobrescribe
-    assert salida["diferencias"] == {"marca": {"en_lista": "Chevrolet", "en_rgm": "Renault"}}
+    assert db.buscar_placa("VWX234")["marca"] == "Renault"  # el RGM manda
+    assert salida["diferencias"] == {"marca": {"antes": "Chevrolet", "despues": "Renault"}}
+    logs = db.listar_logs_de_placa("VWX234")
+    assert any(
+        l["accion"] == "RGM_ACTUALIZO_VEHICULO" and "Chevrolet" in (l["observaciones"] or "") and "Renault" in (l["observaciones"] or "")
+        for l in logs
+    )
+
+
+def test_completar_item_rgm_extrae_linea_chasis_motor_y_serie_de_descripcion_bien(cliente):
+    """Prompt 2b/5: línea/chasis/motor/serie no son campos directos del
+    RGM -- vienen todos corridos sin separador dentro de
+    vehiculo.descripcion_bien, igual formato que ya usa content.js para
+    "T. Servicio:"."""
+    admin = _crear_admin("Admin RGM Nueve", "admin.rgm9")
+    _crear_placa("BCD123", admin["id"])
+    item = rgm_cola.solicitar_consulta("BCD123", "RGM", "panel", admin["id"])["item"]
+
+    descripcion = ("T. Servicio: Particular Linea: LOGAN Chasis: 9BW1234567 "
+                   "Motor: K4M710 Serie: VF1LSRAC512345678")
+    resultado = {"rgm": {"estado": "OK", "vehiculo": {
+        "marca": "RENAULT", "modelo": "2020", "tipo_servicio": "Particular",
+        "descripcion_bien": descripcion,
+    }}, "judicial": None}
+    rgm_cola.completar_item(item["id"], resultado)
+
+    vehiculo = db.buscar_placa("BCD123")
+    assert vehiculo["linea"] == "LOGAN"
+    assert vehiculo["chasis"] == "9BW1234567"
+    assert vehiculo["motor"] == "K4M710"
+    assert vehiculo["numero_serie"] == "VF1LSRAC512345678"
+    assert vehiculo["tipo_servicio"] == "Particular"
+
+
+def test_actualizacion_rgm_llega_a_la_app_por_api_plates(cliente):
+    """Prompt 2b, punto 2: /api/plates (incremental) debe incluir
+    tipo_servicio y marcar como cambiada una placa que el RGM acaba de
+    actualizar, aunque su fecha_ingreso/fecha_baja no se haya tocado --
+    placas_cambiadas_desde ya detecta esto vía logs_auditoria, que
+    _actualizar_vehiculo_desde_rgm alimenta con placa_afectada=placa."""
+    admin = _crear_admin("Admin RGM Diez", "admin.rgm10")
+    usuario_admin = db.obtener_usuario_por_id(admin["id"])
+    _crear_placa("EFG456", admin["id"])
+    desde_ms = int(datetime.now().timestamp() * 1000)
+
+    item = rgm_cola.solicitar_consulta("EFG456", "RGM", "panel", admin["id"])["item"]
+    resultado = {"rgm": {"estado": "OK", "vehiculo": {
+        "marca": "RENAULT", "modelo": "2020", "tipo_servicio": "Particular",
+        "descripcion_bien": "Linea: LOGAN",
+    }}, "judicial": None}
+    rgm_cola.completar_item(item["id"], resultado)
+
+    completa = {p["placa"]: p for p in nexcam_db.placas_activas_para_app(usuario_admin)}
+    assert completa["EFG456"]["tipo_servicio"] == "Particular"
+    assert completa["EFG456"]["linea"] == "LOGAN"
+
+    cambiadas = {p["placa"] for p in nexcam_db.placas_cambiadas_desde(desde_ms - 1000, usuario_admin)}
+    assert "EFG456" in cambiadas
 
 
 def test_completar_item_judicial_no_toca_vehiculo(cliente):

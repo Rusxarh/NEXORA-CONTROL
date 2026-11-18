@@ -421,6 +421,23 @@ def _migrar_columnas_vehiculo_nexcam(conn):
             conn.execute(f"ALTER TABLE vehiculos ADD COLUMN {columna} TEXT")
 
 
+def _migrar_columnas_vehiculo_rgm(conn):
+    """
+    Prompt 2b/5 (NEXCAM-PROMPTS-Y-PRUEBAS.md): el RGM llena TODAS las
+    partes del vehículo, no solo marca/modelo. tipo_servicio/numero_serie
+    vienen directo del bloque `vehiculo` del RGM; chasis/motor se extraen
+    de `vehiculo.descripcion_bien` (ver rgm_cola._datos_vehiculo_desde_rgm).
+    rgm_actualizado_en guarda cuándo se completó por última vez con un RGM
+    real, para que la ficha pueda mostrar "según RGM del <fecha>" (línea y
+    color NUNCA se tocan aquí: línea ya existía desde FASE 1, color no
+    viene del RGM).
+    """
+    columnas = {fila["name"] for fila in conn.execute("PRAGMA table_info(vehiculos)")}
+    for columna in ("tipo_servicio", "numero_serie", "chasis", "motor", "rgm_actualizado_en"):
+        if columna not in columnas:
+            conn.execute(f"ALTER TABLE vehiculos ADD COLUMN {columna} TEXT")
+
+
 def _migrar_rgm_cola_alcance(conn):
     """
     FASE 6/7: `rgm_cola` nació con la columna `tipo` (solo RGM/JUDICIAL) en
@@ -471,6 +488,7 @@ def inicializar_db():
         _migrar_columnas_operativas(conn)
         _migrar_codigo_operativo(conn)
         _migrar_columnas_vehiculo_nexcam(conn)
+        _migrar_columnas_vehiculo_rgm(conn)
     print(f"Base de datos inicializada en: {DB_PATH}")
 
 

@@ -8,6 +8,7 @@ requieren una red o un servidor de Telegram simulado corriendo, que queda
 pendiente como hueco de prueba explícito (ver reporte de la FASE 3).
 """
 
+import json
 import time
 from datetime import datetime
 
@@ -174,7 +175,30 @@ def test_asignar_usuario_a_chat(bot):
 
 # --------------------------------------------------------------------- FASE 6: filtro de seguridad RGM/Judicial
 
-def test_rgm_resultado_admin_ve_deudor_operador_no(bot):
+def test_rgm_automatico_camara_queda_silencioso(bot):
+    """Prompt 5 punto 1: origen "camara"/"estudio" (automático) nunca
+    manda nada a Telegram -- ya se guardó el snapshot y actualizó la
+    ficha del lado de rgm_cola, eso es todo."""
+    _crear_usuario("Admin Tele9b", "Admin", "admin.tele9b", telegram_id=555998)
+    bot._vincular(555998, [bot.codigo], "Admin Tele9b")
+    bot.llamadas.clear()
+
+    bot.on_evento("rgm.resultado", {
+        "item_id": 1, "placa": "ABC123", "alcance": "RGM", "origen": "camara", "avistamiento_id": 10,
+        "resultado": {"rgm": {"estado": "OK", "deudor_garante": {"nombre": "Juan Pérez"},
+                              "vehiculo": {"marca": "Mazda"}}, "judicial": None},
+    })
+    assert bot.llamadas == []
+
+    bot.on_evento("rgm.error", {"item_id": 1, "placa": "ABC123", "alcance": "RGM", "origen": "camara", "error": "timeout"})
+    assert bot.llamadas == []
+
+
+def test_rgm_resultado_panel_solo_a_chats_admin(bot):
+    """Prompt 5 punto 1: una consulta pedida desde la web ("panel") avisa
+    a los chats de Admin; un chat de Operador ni siquiera recibe mensaje
+    (antes SÍ le llegaba una versión recortada -- ya no, origen "panel"
+    nunca se dirige a un Operador)."""
     admin = _crear_usuario("Admin Tele9", "Admin", "admin.tele9", telegram_id=555999)
     oper = _crear_usuario("Oper Tele2", "Operador", "oper.tele2", telegram_id=556000)
     bot._vincular(555999, [bot.codigo], "Admin Tele9")
@@ -189,13 +213,11 @@ def test_rgm_resultado_admin_ve_deudor_operador_no(bot):
 
     por_chat = {c["chat_id"]: c["text"] for metodo, c in bot.llamadas if metodo == "sendMessage"}
     assert "Juan Pérez" in por_chat[555999]
-    assert "Juan Pérez" not in por_chat[556000]
-    assert "999888777" not in por_chat[556000]
-    assert "Mazda" in por_chat[556000]  # el dato del vehículo SÍ es visible para todos
-    assert "consulta hecha" in por_chat[556000].lower()
+    assert "999888777" in por_chat[555999]
+    assert 556000 not in por_chat  # el Operador no recibe nada de un origen "panel"
 
 
-def test_rgm_resultado_judicial_solo_admin_ve_radicados(bot):
+def test_rgm_resultado_judicial_panel_solo_a_chats_admin(bot):
     admin = _crear_usuario("Admin Tele10", "Admin", "admin.tele10", telegram_id=556111)
     oper = _crear_usuario("Oper Tele3", "Operador", "oper.tele3", telegram_id=556112)
     bot._vincular(556111, [bot.codigo], "Admin Tele10")
@@ -209,24 +231,52 @@ def test_rgm_resultado_judicial_solo_admin_ve_radicados(bot):
 
     por_chat = {c["chat_id"]: c["text"] for metodo, c in bot.llamadas if metodo == "sendMessage"}
     assert "05001310300120250012300" in por_chat[556111]
-    assert "05001310300120250012300" not in por_chat[556112]
-    assert "consulta hecha" in por_chat[556112].lower()
+    assert 556112 not in por_chat
 
 
-def test_rgm_resultado_responde_al_mensaje_del_avistamiento(bot):
-    admin = _crear_usuario("Admin Tele11", "Admin", "admin.tele11", telegram_id=556222)
-    bot._vincular(556222, [bot.codigo], "Admin Tele11")
-    bot._mensajes_por_avistamiento[42] = [{"chat_id": 556222, "message_id": 777}]
+def test_rgm_resultado_telegram_responde_solo_al_chat_que_pidio_y_filtra_por_rol(bot):
+    """El botón 🔎 RGM lo puede usar cualquier chat con usuario asignado
+    (pedir no es sensible); el resultado SÍ se filtra según el rol de
+    quien pidió, y solo le llega a ÉL, no a todos los chats."""
+    _crear_usuario("Admin Tele9c", "Admin", "admin.tele9c", telegram_id=555997)
+    oper = _crear_usuario("Oper Tele2b", "Operador", "oper.tele2b", telegram_id=556001)
+    bot._vincular(555997, [bot.codigo], "Admin Tele9c")
+    bot._vincular(556001, [bot.codigo], "Oper Tele2b")
     bot.llamadas.clear()
 
+    bot._boton_pulsado({"id": "cbq1", "message": {"chat": {"id": 556001}, "message_id": 1}, "data": "rgm:ABC123"})
+    item_id = next(iter(bot._chat_por_item_rgm))
+    assert bot._chat_por_item_rgm[item_id] == 556001
+
     bot.on_evento("rgm.resultado", {
-        "item_id": 3, "placa": "GHI789", "alcance": "RGM", "avistamiento_id": 42,
-        "resultado": {"rgm": {"vehiculo": {"marca": "Kia"}}, "judicial": None},
+        "item_id": item_id, "placa": "ABC123", "alcance": "RGM", "origen": "telegram", "avistamiento_id": None,
+        "resultado": {"rgm": {"estado": "OK", "deudor_garante": {"nombre": "Juan Pérez"},
+                              "vehiculo": {"marca": "Mazda"}}, "judicial": None},
     })
 
-    ultimo = [c for metodo, c in bot.llamadas if metodo == "sendMessage"][-1]
-    assert ultimo["reply_to_message_id"] == 777
-    assert 42 not in bot._mensajes_por_avistamiento  # se consume, no queda colgado
+    por_chat = {c["chat_id"]: c["text"] for metodo, c in bot.llamadas if metodo == "sendMessage"}
+    assert 555997 not in por_chat  # solo le llega a quien lo pidió, no a todos los Admin
+    assert "Juan Pérez" not in por_chat[556001]  # pero filtrado: Operador no ve al deudor
+    assert "Mazda" in por_chat[556001]
+    assert item_id not in bot._chat_por_item_rgm  # se consume, no queda colgado
+
+
+def test_rgm_snapshot_vigente_responde_de_una_vez_por_boton(bot, monkeypatch):
+    """SNAPSHOT_VIGENTE nunca pasa por la cola -- rgm.resultado NUNCA
+    llegaría para este caso, así que el botón manda el resultado ahí
+    mismo, sin esperar nada."""
+    import rgm_cola
+
+    admin = _crear_usuario("Admin Tele9d", "Admin", "admin.tele9d", telegram_id=555996)
+    bot._vincular(555996, [bot.codigo], "Admin Tele9d")
+    db.insertar_placa("SNV111", "carro", admin["id"], None)
+    db.crear_snapshot("SNV111", "RGM", json.dumps({"estado": "OK", "vehiculo": {"marca": "Kia", "modelo": "2022"}}))
+    bot.llamadas.clear()
+
+    bot._boton_pulsado({"id": "cbq2", "message": {"chat": {"id": 555996}, "message_id": 1}, "data": "rgm:SNV111"})
+
+    textos = [c["text"] for metodo, c in bot.llamadas if metodo == "sendMessage"]
+    assert any("Kia" in t for t in textos)
 
 
 # --------------------------------------------------------------------- "0. Pendientes rápidos": instalar app
