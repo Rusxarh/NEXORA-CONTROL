@@ -279,3 +279,94 @@ def test_crear_enlace_apk_temporal_queda_vigente():
     token = url.split("k=")[1]
     assert nexcam_telegram.enlace_apk_temporal_vigente(token) is True
     assert nexcam_telegram.enlace_apk_temporal_vigente("otro-token") is False
+
+
+# --------------------------------------------------------------------- Prompt 2: rediseño del bot
+
+def _deteccion(placa, device_uuid="tel-1", **extra):
+    base = {
+        "id": extra.pop("id", 1), "placa": placa, "leida": placa, "en_lista": True,
+        "match_type": None, "motivo": "Prueba", "operador": "Eduardo", "device": "HONOR ALT-NX3",
+        "device_uuid": device_uuid, "confidence": 0.78, "lat": 4.6, "lng": -74.1,
+        "ts": int(time.time() * 1000),
+    }
+    base.update(extra)
+    return base
+
+
+def test_alerta_unica_por_placa_edita_en_vez_de_repetir(bot):
+    admin = _crear_usuario("Admin Tele12", "Admin", "admin.tele12", telegram_id=556300)
+    bot._vincular(556300, [bot.codigo], "Admin Tele12")
+    db.insertar_placa("PQR111", "carro", admin["id"], "Aprehensión judicial")
+    bot.llamadas.clear()
+
+    bot.on_evento("camera.started", {"device_uuid": "tel-1", "device": "HONOR ALT-NX3", "operador": "Eduardo"})
+    for i in range(5):
+        bot.on_evento("detection.hit", _deteccion("PQR111", id=i + 1))
+
+    envios = [m for m in bot.llamadas if m[0] in ("sendMessage", "sendPhoto")]
+    ediciones = [m for m in bot.llamadas if m[0] in ("editMessageText", "editMessageCaption")]
+    # 1 mensaje nuevo para la alerta de la placa (+ 1 para "Cámara encendida"
+    # en vivo) y 4 ediciones de esa misma alerta (una por cada repetición).
+    assert len(envios) == 2
+    assert len(ediciones) == 4
+    assert all(m[0] != "sendLocation" for m in bot.llamadas)
+
+
+def test_alerta_trae_fecha_de_ingreso_y_telefono(bot):
+    admin = _crear_usuario("Admin Tele13", "Admin", "admin.tele13", telegram_id=556301)
+    bot._vincular(556301, [bot.codigo], "Admin Tele13")
+    db.insertar_placa("STU222", "carro", admin["id"], "Hurto")
+    bot.llamadas.clear()
+
+    bot.on_evento("detection.hit", _deteccion("STU222", device_uuid="tel-2", id=10))
+
+    # Sin snapshot/vehiculo en el payload, _foto_principal no encuentra
+    # ninguna foto real: la alerta sale por sendMessage (texto), no sendPhoto.
+    ultimo = [c for metodo, c in bot.llamadas if metodo == "sendMessage"][-1]
+    assert "📅 En la lista desde" in ultimo["text"]
+    assert "HONOR ALT-NX3" in ultimo["text"]
+
+
+def test_camara_encendida_muestra_nombre_real_del_telefono(bot):
+    admin = _crear_usuario("Admin Tele14", "Admin", "admin.tele14", telegram_id=556302)
+    bot._vincular(556302, [bot.codigo], "Admin Tele14")
+    bot.llamadas.clear()
+
+    bot.on_evento("camera.started", {"device_uuid": "tel-3", "device": "HONOR ALT-NX3", "operador": "Eduardo"})
+
+    ultimo = [c for metodo, c in bot.llamadas if metodo == "sendMessage"][-1]
+    assert "HONOR ALT-NX3" in ultimo["text"]
+    assert "Teléfono" not in ultimo["text"]
+
+
+def test_camera_state_false_cierra_con_camara_apagada_no_senal_perdida(bot):
+    admin = _crear_usuario("Admin Tele15", "Admin", "admin.tele15", telegram_id=556303)
+    bot._vincular(556303, [bot.codigo], "Admin Tele15")
+    bot.llamadas.clear()
+
+    bot.on_evento("camera.started", {"device_uuid": "tel-4", "device": "HONOR ALT-NX3", "operador": "Eduardo"})
+    bot.on_evento("camera.stopped", {"device_uuid": "tel-4", "device": "HONOR ALT-NX3", "operador": "Eduardo"})
+
+    ultimo = [c for metodo, c in bot.llamadas if metodo == "editMessageText"][-1]
+    assert "Cámara apagada" in ultimo["text"]
+    assert "Se perdió la señal" not in ultimo["text"]
+
+
+def test_alerta_fuera_de_sesion_tambien_edita_una_sola_vez(bot):
+    """Sin camera.started (en_vivo apagado o lectura antes de abrir sesión):
+    el de-duplicado cae al diccionario _alertas_sin_sesion por TG_REPETIR_MIN."""
+    admin = _crear_usuario("Admin Tele16", "Admin", "admin.tele16", telegram_id=556304)
+    bot._vincular(556304, [bot.codigo], "Admin Tele16")
+    bot.cfg["en_vivo"] = False
+    db.insertar_placa("VWX333", "carro", admin["id"], "Prueba")
+    bot.llamadas.clear()
+
+    bot.on_evento("detection.hit", _deteccion("VWX333", device_uuid="tel-5", id=20))
+    bot.on_evento("detection.hit", _deteccion("VWX333", device_uuid="tel-5", id=21))
+
+    envios = [m for m in bot.llamadas if m[0] in ("sendMessage", "sendPhoto")]
+    ediciones = [m for m in bot.llamadas if m[0] in ("editMessageText", "editMessageCaption")]
+    assert len(envios) == 1
+    assert len(ediciones) == 1
+    assert ("tel-5", "VWX333") in bot._alertas_sin_sesion

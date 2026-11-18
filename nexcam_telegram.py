@@ -49,7 +49,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -68,7 +68,18 @@ def _pruebas_activas() -> bool:
 
 CONFIG_PATH = Path(__file__).parent / "telegram.json"
 EDIT_SEGUNDOS = 3
-VENTANA_SIN_SENAL_SEGUNDOS = 10 * 60
+VENTANA_SIN_SENAL_SEGUNDOS = int(os.environ.get("TG_SIN_SENAL_MIN", "10")) * 60
+
+# Prompt 2 (NEXCAM-PROMPTS-Y-PRUEBAS.md): una sola alerta por placa por
+# sesión de cámara del teléfono, o por este tiempo si no hay sesión abierta
+# (operador con "En vivo" apagado, o primera lectura antes de camera.started).
+TG_REPETIR_MIN = int(os.environ.get("TG_REPETIR_MIN", "30"))
+
+# Colombia no tiene horario de verano (fijo en UTC-5 desde 1993): se usa un
+# offset fijo en vez de zoneinfo porque Windows no trae la base de datos de
+# zonas horarias instalada por defecto (zoneinfo.ZoneInfo("America/Bogota")
+# falla ahí) y evita sumar tzdata como dependencia nueva solo para esto.
+BOGOTA = timezone(timedelta(hours=-5))
 VENTANA_EVENTOS_SEGUNDOS = 60
 
 ICONO = {"exacta": "🚨", "probable": "⚠️"}
@@ -133,14 +144,49 @@ def _fmt_placa(p: str = "") -> str:
     return f"{p[:3]} {p[3:]}" if len(p or "") >= 6 else (p or "")
 
 
+def _dt_bogota(ts_ms: Optional[int] = None) -> datetime:
+    """`ts_ms` es epoch-ms (UTC, como lo manda la app): se convierte
+    explícitamente a la hora de Colombia, sin depender de la zona horaria
+    del sistema operativo (ver BOGOTA)."""
+    return datetime.fromtimestamp((ts_ms or int(time.time() * 1000)) / 1000, tz=BOGOTA)
+
+
+def _ms_de_texto_local(s: Optional[str]) -> Optional[int]:
+    """Convierte una fecha guardada en la base (texto naive "AAAA-MM-DD
+    HH:MM:SS", ya en hora de Colombia -- igual convención que el resto de
+    NEXORA) a epoch-ms, para poder formatearla con _hora()/_reloj()."""
+    if not s:
+        return None
+    try:
+        momento = datetime.strptime(str(s)[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=BOGOTA)
+        return int(momento.timestamp() * 1000)
+    except Exception:
+        return None
+
+
+def _meridiano(hora24: int) -> str:
+    return "a. m." if hora24 < 12 else "p. m."
+
+
+def _hm(momento: datetime) -> str:
+    return f"{momento.hour % 12 or 12}:{momento.minute:02d}"
+
+
 def _hora(ts_ms: Optional[int] = None) -> str:
-    momento = datetime.fromtimestamp((ts_ms or int(time.time() * 1000)) / 1000)
-    return momento.strftime("%I:%M %p, %d %b").lstrip("0").replace(" 0", " ")
+    """Fecha y hora completas, formato colombiano: "17/11/2026, 9:21 p. m.\""""
+    m = _dt_bogota(ts_ms)
+    return f"{m:%d/%m/%Y}, {_hm(m)} {_meridiano(m.hour)}"
 
 
 def _reloj(ts_ms: Optional[int] = None) -> str:
-    momento = datetime.fromtimestamp((ts_ms or int(time.time() * 1000)) / 1000)
-    return momento.strftime("%I:%M %p").lstrip("0")
+    """Solo la hora, con a. m./p. m.: "9:04 p. m.\""""
+    m = _dt_bogota(ts_ms)
+    return f"{_hm(m)} {_meridiano(m.hour)}"
+
+
+def _reloj_corto(ts_ms: Optional[int] = None) -> str:
+    """Solo la hora, sin a. m./p. m. (filas de la lista en vivo): "9:03\""""
+    return _hm(_dt_bogota(ts_ms))
 
 
 def _duracion(ms: float) -> str:
@@ -192,6 +238,7 @@ class BotTelegram:
         self.esperando = {}   # chat_id -> {"que": ..., "hasta": datetime}
         self.sesiones = {}    # device_uuid -> sesión de cámara en vivo
         self._mensajes_por_avistamiento = {}  # avistamiento_id -> [{chat_id, message_id}] (FASE 6)
+        self._alertas_sin_sesion = {}  # (device_uuid, placa) -> estado de alerta (Prompt 2, sin sesión de cámara)
         self._lock = threading.Lock()
         self._hilo_bucle = None
         self._hilo_eventos = None
@@ -415,8 +462,10 @@ class BotTelegram:
                 self.log(f"Telegram: no se pudo enviar la foto - {e}")
         return self._texto(chat_id, text, extra)
 
-    def _a_todos(self, text, foto: Optional[Path] = None, extra: dict = None, ubicacion: dict = None,
+    def _a_todos(self, text, foto: Optional[Path] = None, extra: dict = None,
                  aun_en_silencio: bool = False, chats: Optional[list] = None) -> list:
+        # Prompt 2: nada de sendLocation -- la ubicación va como enlace
+        # "📍 Ver ubicación" dentro del propio texto (ver _url_mapa).
         if not self.activo or (self.cfg["silencio"] and not aun_en_silencio):
             return []
         destino = chats if chats is not None else self.cfg["chats"]
@@ -427,8 +476,6 @@ class BotTelegram:
             try:
                 m = self._enviar(c["id"], text, foto, extra)
                 enviados.append({"chat_id": c["id"], "message_id": m.get("message_id") if m else None})
-                if ubicacion:
-                    self._llamar("sendLocation", {"chat_id": c["id"], "latitude": ubicacion["lat"], "longitude": ubicacion["lng"]})
             except Exception as e:
                 self.log(f"Telegram: no se pudo avisar a {c.get('nombre') or c['id']} - {e}")
         return enviados
@@ -454,11 +501,11 @@ class BotTelegram:
         return {**(extra or {}), "reply_markup": self._menu()}
 
     def _botones_vista(self, v: dict) -> dict:
+        # Prompt 2: se quita el botón Mapa -- la ubicación ya va como
+        # enlace "📍 Ver ubicación" en el propio texto del mensaje.
         fila = [{"text": "📋 Ficha", "callback_data": f"ficha:{v['placa']}"}]
         if v.get("snapshot") and v.get("vehiculo"):
             fila.append({"text": "🔢 Foto de la placa", "callback_data": f"placa:{v['id']}"})
-        if _tiene_gps(v):
-            fila.append({"text": "🗺️ Mapa", "url": _url_mapa(v["lat"], v["lng"])})
         filas = [fila]
         # FASE 6: pedir la consulta nunca es sensible (el resultado sí; se
         # filtra en _on_rgm_resultado), pero el botón solo se ofrece
@@ -492,16 +539,6 @@ class BotTelegram:
 
     # ------------------------------------------------------------ textos
 
-    def _detalle_deteccion(self, d: dict) -> str:
-        lineas = []
-        if d.get("motivo"):
-            lineas.append(f"Motivo: {_esc(d['motivo'])}")
-        lineas.append(f"Operador: {_esc(d.get('operador') or '—')}")
-        conf = f"{round((d.get('confidence') or 0) * 100)}%" if d.get("confidence") is not None else "—"
-        lineas.append(f"Confianza: {conf}")
-        lineas.append(f"Hora: {_hora(d.get('ts'))}")
-        return "\n".join(lineas)
-
     def _texto_ya_vista(self, h: dict, titulo: str) -> str:
         ult = h["vistas"][0]
         lineas = [titulo]
@@ -514,7 +551,7 @@ class BotTelegram:
             lineas.append(f"En tu lista: {_esc(veh)}")
 
         def donde(v):
-            return f'<a href="{_url_mapa(v["lat"], v["lng"])}">mapa</a>' if _tiene_gps(v) else "sin ubicación"
+            return f'<a href="{_url_mapa(v["lat"], v["lng"])}">ubicación</a>' if _tiene_gps(v) else "sin ubicación"
 
         n = len(h["vistas"])
         lineas.append(f"Vista {'1 vez' if n == 1 else f'{n} veces'}. Última: {_hora(ult.get('ts'))}, {_esc(ult.get('operador') or '')}, {donde(ult)}")
@@ -525,6 +562,142 @@ class BotTelegram:
         if n > 6:
             lineas.append(f"…y {n - 6} más (ver en el panel).")
         return "\n".join(lineas)
+
+    # ------------------------------------------------------------ alerta por placa (Prompt 2)
+
+    def _texto_alerta(self, estado: dict) -> str:
+        placa = estado["placa"]
+        lineas = [f"🚗 <b>{_esc(_fmt_placa(placa))}</b>"]
+        if estado["tipo"] == "probable":
+            lineas.append(f"⚠️ POSIBLE · leyó {_esc(estado.get('leida') or '')}")
+        else:
+            lineas.append(f"🚨 EN LISTA · {_esc(estado.get('motivo') or 'en lista')}")
+        if estado.get("vehiculo_txt"):
+            lineas.append(_esc(estado["vehiculo_txt"]))
+        if estado.get("fecha_ingreso_ms") is not None:
+            lineas.append(f"📅 En la lista desde: {_hora(estado['fecha_ingreso_ms'])}")
+        if estado["total_historico"] <= 1:
+            lineas.append("👁 Primera vez que se ve")
+        else:
+            antes = f" · antes: {_hora(estado['antes_ts'])}" if estado.get("antes_ts") is not None else ""
+            lineas.append(f"👁 Vista {estado['total_historico']} veces{antes}")
+        conf = f"{round(estado['confianza'] * 100)} %" if estado.get("confianza") is not None else "—"
+        lineas.append(f"🕘 {_hora(estado['ultima_ts'])} · confianza {conf}")
+        lineas.append(f"👤 {_esc(estado.get('operador') or '—')} · {_esc(estado.get('device') or 'Teléfono')}")
+        if estado.get("lat") is not None and estado.get("lng") is not None:
+            lineas.append(f'📍 <a href="{_url_mapa(estado["lat"], estado["lng"])}">Ver ubicación</a>')
+        return "\n".join(lineas)
+
+    def _botones_alerta(self, estado: dict) -> dict:
+        fila = [{"text": "📋 Ficha", "callback_data": f"ficha:{estado['placa']}"}]
+        if estado.get("avistamiento_id") is not None:
+            fila.append({"text": "🔢 Placa", "callback_data": f"placa:{estado['avistamiento_id']}"})
+        filas = [fila]
+        # El botón RGM solo se ofrece cuando todavía no hay datos (pedido
+        # explícito del Prompt 2): si ya hay un snapshot < 24 h, _on_rgm_resultado
+        # ya respondió con los datos, mostrarlo de nuevo no aporta nada.
+        if not db.obtener_ultimo_snapshot_por_fuente(estado["placa"], "RGM"):
+            filas.append([{"text": "🔎 RGM", "callback_data": f"rgm:{estado['placa']}"}])
+        return {"inline_keyboard": filas}
+
+    def _crear_alerta(self, p: dict) -> dict:
+        placa = p["placa"]
+        tipo = "probable" if p.get("match_type") == "probable" else "exacta"
+        vehiculo = db.buscar_placa(placa)
+        vistas = nexcam_db.vistas_de([placa]).get(placa)
+        total_vistas = vistas["vistas"] if vistas else []
+        total_historico = len(total_vistas) or 1
+        # La vista [0] es la que se acaba de insertar (esta misma lectura):
+        # "antes" es la que quedó justo detrás, fija mientras dure esta
+        # racha (no se recalcula en cada edición, para no perder de vista
+        # cuándo fue la vez anterior a HOY).
+        antes_ts = total_vistas[1]["ts"] if len(total_vistas) > 1 else None
+        estado = {
+            "placa": placa, "tipo": tipo, "leida": p.get("leida"),
+            "motivo": p.get("motivo") or (vehiculo.get("observaciones") if vehiculo else None),
+            "vehiculo_txt": _vehiculo_txt(vehiculo),
+            "fecha_ingreso_ms": _ms_de_texto_local(vehiculo.get("fecha_ingreso")) if vehiculo else None,
+            "total_historico": total_historico, "antes_ts": antes_ts,
+            "ultima_ts": p.get("ts") or int(time.time() * 1000),
+            "confianza": p.get("confidence"), "operador": p.get("operador"), "device": p.get("device"),
+            "lat": p.get("lat"), "lng": p.get("lng"),
+            "avistamiento_id": p.get("id"), "ultima_actividad": time.time(),
+        }
+        foto = self._foto_principal(p)
+        estado["con_foto"] = bool(foto)
+        enviados = self._a_todos(self._texto_alerta(estado), foto=foto, extra={"reply_markup": self._botones_alerta(estado)})
+        estado["mensajes"] = enviados
+        if p.get("id") is not None and enviados:
+            self._mensajes_por_avistamiento[p["id"]] = enviados
+            if len(self._mensajes_por_avistamiento) > 500:
+                self._mensajes_por_avistamiento.pop(next(iter(self._mensajes_por_avistamiento)))
+        return estado
+
+    def _editar_alerta(self, estado: dict, p: dict):
+        estado["tipo"] = "probable" if p.get("match_type") == "probable" else "exacta"
+        estado["leida"] = p.get("leida") or estado.get("leida")
+        estado["total_historico"] += 1
+        estado["ultima_ts"] = p.get("ts") or int(time.time() * 1000)
+        estado["confianza"] = p.get("confidence")
+        if p.get("lat") is not None and p.get("lng") is not None:
+            estado["lat"], estado["lng"] = p["lat"], p["lng"]
+        estado["ultima_actividad"] = time.time()
+        if p.get("id") is not None:
+            estado["avistamiento_id"] = p["id"]  # el botón "Placa" siempre apunta a la foto más reciente
+        # No hace falta volver a registrar _mensajes_por_avistamiento aquí:
+        # rgm_cola.solicitar_consulta ya deduplica (SNAPSHOT_VIGENTE/
+        # YA_EN_COLA), así que el item de la cola se quedó con el
+        # avistamiento_id de la PRIMERA lectura de esta racha -- la
+        # entrada que _crear_alerta ya dejó para ese id sigue siendo la
+        # correcta para cuando llegue rgm.resultado.
+        texto = self._texto_alerta(estado)
+        teclado = self._botones_alerta(estado)
+        for m in estado.get("mensajes") or []:
+            if not m.get("message_id"):
+                continue
+            try:
+                cuerpo = {"chat_id": m["chat_id"], "message_id": m["message_id"], "parse_mode": "HTML",
+                          "reply_markup": teclado}
+                if estado.get("con_foto"):
+                    cuerpo["caption"] = texto
+                    self._llamar("editMessageCaption", cuerpo)
+                else:
+                    cuerpo["text"] = texto
+                    cuerpo["disable_web_page_preview"] = True
+                    self._llamar("editMessageText", cuerpo)
+            except Exception as e:
+                if "not modified" not in str(e).lower():
+                    self.log(f"Telegram: no se pudo actualizar la alerta de {estado['placa']} - {e}")
+
+    def _alerta_placa(self, p: dict):
+        """
+        Prompt 2: una sola alerta por placa (la de la lista, no la leída)
+        por sesión de cámara del teléfono, o por TG_REPETIR_MIN si no hay
+        sesión abierta. Las repeticiones EDITAN la alerta original en vez
+        de mandar un mensaje nuevo; todas las lecturas se siguen guardando
+        igual en la base (eso no cambia, viene de antes en registrar_avistamiento).
+        """
+        if not (p.get("en_lista") or p.get("match_type") in ("exacta", "probable")):
+            if self.cfg["modo"] == "todo" and not self.cfg["en_vivo"]:
+                self._a_todos(f"▫️ {_esc(_fmt_placa(p['placa']))} leída. No está en la lista.\n{_esc(p.get('operador') or '')}, {_hora(p.get('ts'))}")
+            return
+        placa = p["placa"]
+        sesion = self.sesiones.get(p.get("device_uuid"))
+        clave = (p.get("device_uuid"), placa)
+        if sesion is not None:
+            estado = sesion["alertas"].get(placa)
+        else:
+            estado = self._alertas_sin_sesion.get(clave)
+            if estado and (time.time() - estado["ultima_actividad"]) > TG_REPETIR_MIN * 60:
+                estado = None  # venció la ventana sin sesión: cuenta como una alerta nueva
+        if estado:
+            self._editar_alerta(estado, p)
+            return
+        estado = self._crear_alerta(p)
+        if sesion is not None:
+            sesion["alertas"][placa] = estado
+        else:
+            self._alertas_sin_sesion[clave] = estado
 
     def _texto_estado(self) -> str:
         dispositivos = nexcam_db.listar_dispositivos()
@@ -546,31 +719,36 @@ class BotTelegram:
     # ------------------------------------------------------------ cámara en vivo
 
     def _texto_sesion(self, s: dict, final: Optional[str] = None) -> str:
-        en_lista = sum(1 for l in s["lecturas"] if l.get("tipo"))
+        # Prompt 2: una fila por PLACA (con contador ×N y hora de la última
+        # lectura), no una fila por lectura -- antes s["lecturas"] guardaba
+        # cada lectura suelta; ahora s["placas"] agrega por placa.
+        n_placas = len(s["placas"])
+        en_lista = sum(1 for d in s["placas"].values() if d["tipo"] == "exacta")
+        actor = f"{_esc(s.get('operador') or 'Operador')} ({_esc(s['device'])})"
         if final:
-            motivo = "Se perdió la señal del teléfono." if final == "sin-senal" else ""
-            cab = (f"⏹️ <b>Cámara apagada</b>: {_esc(s['device'])}\n"
-                   f"{_reloj(s['inicio'])} a {_reloj(s['fin'])} ({_duracion(s['fin'] - s['inicio'])}). {motivo}")
+            motivo = " Se perdió la señal del teléfono." if final == "sin-senal" else ""
+            cab = (f"⏹️ <b>Cámara apagada</b> · {actor}\n"
+                   f"{_reloj(s['inicio'])} a {_reloj(s['fin'])} ({_duracion(s['fin'] - s['inicio'])}).{motivo}")
         else:
-            cab = f"📷 <b>Cámara encendida</b>: {_esc(s['device'])}\nDesde las {_reloj(s['inicio'])}. Se actualiza solo."
-        cuenta = f"Placas leídas: <b>{s['total']}</b>" + (f", <b>{en_lista} en lista</b>" if en_lista else "")
-        if not s["lecturas"]:
-            return f"{cab}\n{cuenta}\n\n{'No leyó ninguna placa.' if final else 'Esperando placas…'}"
+            cab = f"📷 <b>Cámara encendida</b> · {actor}\nDesde {_reloj(s['inicio'])} · {n_placas} placas · {en_lista} en lista"
+        if not s["placas"]:
+            return f"{cab}\n\n{'No leyó ninguna placa.' if final else 'Esperando placas…'}"
+        filas_orden = sorted(s["placas"].values(), key=lambda d: -d["ultima_ts"])
         filas = []
-        for l in s["lecturas"][:20]:
-            marca = ICONO.get(l.get("tipo"), "▫️")
-            extra = f" (leyó {_esc(l['leida'])})" if l.get("tipo") == "probable" else (f" {_esc(l.get('motivo') or 'en lista')}" if l.get("tipo") else "")
-            filas.append(f"{marca} {_reloj(l['ts'])}  <b>{_esc(_fmt_placa(l['placa']))}</b>{extra}")
-        mas = f"\n…y {len(s['lecturas']) - 20} más antes." if len(s["lecturas"]) > 20 else ""
-        return f"{cab}\n{cuenta}\n\n{chr(10).join(filas)}{mas}"
+        for d in filas_orden[:30]:
+            marca = ICONO.get(d["tipo"], "▫️")
+            contador = f"  ×{d['veces']}" if d["veces"] > 1 else ""
+            filas.append(f"{marca} {_esc(_fmt_placa(d['placa']))}{contador}  {_reloj_corto(d['ultima_ts'])}")
+        mas = f"\n…y {len(filas_orden) - 30} placa(s) más." if len(filas_orden) > 30 else ""
+        return f"{cab}\n\n{chr(10).join(filas)}{mas}"
 
     def _abrir_sesion(self, device_uuid, device, operador, ts) -> Optional[dict]:
         with self._lock:
             if device_uuid in self.sesiones or not self.cfg["en_vivo"]:
                 return self.sesiones.get(device_uuid)
             s = {"device_uuid": device_uuid, "device": device or "Teléfono", "operador": operador,
-                 "inicio": ts or int(time.time() * 1000), "ultima": time.time(), "lecturas": [], "total": 0,
-                 "mensajes": [], "timer": None}
+                 "inicio": ts or int(time.time() * 1000), "ultima": time.time(), "placas": {},
+                 "alertas": {}, "mensajes": [], "timer": None}
             self.sesiones[device_uuid] = s
         s["mensajes"] = self._a_todos(self._texto_sesion(s))
         return s
@@ -611,10 +789,17 @@ class BotTelegram:
         if not s:
             return
         s["ultima"] = time.time()
-        s["total"] += 1
-        s["lecturas"].insert(0, {"ts": p.get("ts"), "placa": p["placa"], "leida": p.get("leida"),
-                                  "motivo": p.get("motivo"), "tipo": p.get("match_type") or ("exacta" if p.get("en_lista") else None)})
-        s["lecturas"] = s["lecturas"][:200]
+        placa = p["placa"]
+        tipo = p.get("match_type") or ("exacta" if p.get("en_lista") else None)
+        ts = p.get("ts") or int(time.time() * 1000)
+        existente = s["placas"].get(placa)
+        if existente:
+            existente["veces"] += 1
+            existente["ultima_ts"] = ts
+            if tipo:
+                existente["tipo"] = tipo
+        else:
+            s["placas"][placa] = {"placa": placa, "tipo": tipo, "veces": 1, "ultima_ts": ts}
         if not s.get("timer"):
             s["timer"] = threading.Timer(EDIT_SEGUNDOS, lambda: self._refrescar_sesion(s))
             s["timer"].daemon = True
@@ -626,6 +811,16 @@ class BotTelegram:
             for uuid, s in list(self.sesiones.items()):
                 if time.time() - s["ultima"] > VENTANA_SIN_SENAL_SEGUNDOS:
                     self._cerrar_sesion(uuid, "sin-senal")
+            # Poda las alertas por placa fuera de sesión (sin cámara en
+            # vivo) que ya vencieron su ventana de TG_REPETIR_MIN: así la
+            # próxima lectura de esa placa manda una alerta nueva, no edita
+            # una vieja de hace rato.
+            vencidas = [
+                clave for clave, estado in self._alertas_sin_sesion.items()
+                if (time.time() - estado["ultima_actividad"]) > TG_REPETIR_MIN * 60
+            ]
+            for clave in vencidas:
+                self._alertas_sin_sesion.pop(clave, None)
 
     # ------------------------------------------------------------ eventos del servidor -> avisos
 
@@ -660,26 +855,7 @@ class BotTelegram:
             return
         if evento == "detection.hit":
             self._lectura_en_vivo(p)
-            ubicacion = {"lat": p["lat"], "lng": p["lng"]} if _tiene_gps(p) else None
-            extra = {"reply_markup": self._botones_vista(p)}
-            if p.get("match_type") == "probable":
-                t = (f"⚠️ <b>Posible coincidencia: {_esc(_fmt_placa(p['placa']))}</b>\n"
-                     f"La cámara leyó {_esc(p.get('leida'))}. Verifica la placa antes de actuar.\n{self._detalle_deteccion(p)}")
-                self._a_todos(t, foto=self._foto_principal(p), extra=extra, ubicacion=ubicacion)
-                return
-            if p.get("en_lista") or p.get("match_type") == "exacta":
-                t = f"🚨 <b>PLACA EN LISTA: {_esc(_fmt_placa(p['placa']))}</b>\n{self._detalle_deteccion(p)}"
-                enviados = self._a_todos(t, foto=self._foto_principal(p), extra=extra, ubicacion=ubicacion)
-                # Guarda a qué mensajes responder cuando llegue rgm.resultado
-                # de este mismo avistamiento (encolado automático en
-                # nexcam_api.py bajo la misma condición en_lista+no-probable).
-                if p.get("id") is not None and enviados:
-                    self._mensajes_por_avistamiento[p["id"]] = enviados
-                    if len(self._mensajes_por_avistamiento) > 500:
-                        self._mensajes_por_avistamiento.pop(next(iter(self._mensajes_por_avistamiento)))
-                return
-            if self.cfg["modo"] == "todo" and not self.cfg["en_vivo"]:
-                self._a_todos(f"▫️ {_esc(_fmt_placa(p['placa']))} leída. No está en la lista.\n{_esc(p.get('operador') or '')}, {_hora(p.get('ts'))}")
+            self._alerta_placa(p)
             return
         if evento == "rgm.resultado":
             return self._on_rgm_resultado(p)
@@ -792,13 +968,26 @@ class BotTelegram:
         lista = db.buscar_placa(placa)
         vistas = nexcam_db.vistas_de([placa]).get(placa)
         en_lista_txt = (
-            f"En la lista: {_esc(lista['observaciones'] or 'sin motivo')}" if lista and lista["estado"] == "activo"
+            f"🚨 En lista: {_esc(lista['observaciones'] or 'sin motivo')}" if lista and lista["estado"] == "activo"
             else "Estuvo en la lista (dada de baja)." if lista else "No está en la lista."
         )
-        cab = [f"<b>{_esc(_fmt_placa(placa))}</b>", en_lista_txt]
+        cab = [f"🚗 <b>{_esc(_fmt_placa(placa))}</b>", en_lista_txt]
         veh = _vehiculo_txt(lista)
         if veh:
-            cab.append(f"Vehículo: {_esc(veh)}")
+            cab.append(_esc(veh))
+        fecha_ingreso_ms = _ms_de_texto_local(lista.get("fecha_ingreso")) if lista else None
+        if fecha_ingreso_ms is not None:
+            cab.append(f"📅 En la lista desde: {_hora(fecha_ingreso_ms)}")
+        # Datos RGM si hay (Prompt 2, punto 5): sensibles solo a chats de
+        # un usuario Admin activo -- misma regla que _on_rgm_resultado.
+        snap_rgm = db.obtener_ultimo_snapshot_por_fuente(placa, "RGM")
+        if snap_rgm:
+            usuario = self._usuario_de_chat(chat_id)
+            es_admin = bool(usuario and usuario["rol"] == "Admin" and usuario["estado"] == "activo")
+            try:
+                cab.append(self._texto_resultado_rgm(placa, json.loads(snap_rgm["datos"]), es_admin))
+            except Exception:
+                pass
         if not vistas or not vistas["vistas"]:
             return self._texto(chat_id, "\n".join(cab + ["Ninguna cámara la ha visto."]))
         v0 = {**vistas["vistas"][0], "placa": placa}
