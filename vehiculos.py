@@ -379,6 +379,49 @@ def carga_masiva_procesar(
 # "atraparía" a ellas también (FastAPI empareja por orden de registro).
 # ---------------------------------------------------------------------------
 
+def _datos_rgm_para_ficha(snapshot_rgm: Optional[dict]) -> Optional[dict]:
+    """
+    Prompt 5 punto 3: la ficha mostraba el JSON crudo del snapshot; esto
+    lo arma una sola vez acá (no en la plantilla) para una tabla legible,
+    reusando rgm_cola._datos_vehiculo_desde_rgm (la MISMA extracción de
+    línea/chasis/motor/serie desde descripcion_bien que ya completa
+    `vehiculos`, para no duplicar ese parseo aquí). Acreedor/deudor viajan
+    aparte: la plantilla decide si mostrarlos según el rol (Etapa 5
+    §2/§37 -- antes el JSON crudo se mostraba completo a cualquier
+    usuario autenticado, Operador incluido, sin filtrar nada).
+    Si el JSON no se puede leer (snapshot viejo/corrupto), devuelve None
+    y la plantilla cae al texto crudo tal cual.
+    """
+    import json
+
+    import rgm_cola
+
+    if not snapshot_rgm:
+        return None
+    try:
+        crudo = json.loads(snapshot_rgm["datos"])
+    except Exception:
+        return None
+
+    datos_vehiculo = rgm_cola._datos_vehiculo_desde_rgm(crudo.get("vehiculo") or {})
+    resumen_vehiculo = " · ".join(
+        x for x in (datos_vehiculo.get("marca"), datos_vehiculo.get("linea"),
+                     datos_vehiculo.get("modelo"), datos_vehiculo.get("tipo_servicio")) if x
+    )
+    deudor = crudo.get("deudor_garante") or {}
+    documento = " ".join(x for x in (deudor.get("tipo_identificacion"), deudor.get("numero_identificacion")) if x)
+    return {
+        "resumen_vehiculo": resumen_vehiculo or None,
+        "serie": datos_vehiculo.get("numero_serie"),
+        "motor": datos_vehiculo.get("motor"),
+        "acreedor": (crudo.get("acreedor") or {}).get("razon_social"),
+        "deudor_nombre": deudor.get("nombre"),
+        "deudor_documento": documento or None,
+        "deudor_ciudad": deudor.get("ciudad"),
+        "crudo": snapshot_rgm["datos"],
+    }
+
+
 @router.get("/vehiculos/{placa}")
 def vehiculo_ficha_vista(
     request: Request,
@@ -392,6 +435,7 @@ def vehiculo_ficha_vista(
     vehiculo = db.obtener_ficha_vehiculo(placa_normalizada)
     grado_placa = camara.calcular_grado_placa(vehiculo["fecha_ingreso"]) if vehiculo else None
     vistas = nexcam_db.vistas_de([placa_normalizada]).get(placa_normalizada)
+    snapshot_rgm = db.obtener_ultimo_snapshot_por_fuente(placa_normalizada, "RGM")
 
     return templates.TemplateResponse(
         request,
@@ -404,7 +448,8 @@ def vehiculo_ficha_vista(
             "vehiculo": vehiculo,
             "grado_placa": grado_placa,
             "avistamientos": (vistas or {}).get("vistas", []),
-            "snapshot_rgm": db.obtener_ultimo_snapshot_por_fuente(placa_normalizada, "RGM"),
+            "snapshot_rgm": snapshot_rgm,
+            "rgm_datos": _datos_rgm_para_ficha(snapshot_rgm),
             "snapshot_judicial": db.obtener_ultimo_snapshot_por_fuente(placa_normalizada, "JUDICIAL"),
             "logs": db.listar_logs_de_placa(placa_normalizada) if vehiculo else [],
         },

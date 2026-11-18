@@ -95,8 +95,28 @@
           </form>
         </div>
         {% if snapshot_rgm %}
-        <p class="text-xs text-zinc-500 mb-1">Consultado: {{ snapshot_rgm.creado_en | fecha_co }}</p>
+        <p class="text-xs text-zinc-500 mb-2">Consultado: {{ snapshot_rgm.creado_en | fecha_co }}</p>
+        {% if rgm_datos %}
+        <dl class="space-y-1 text-sm mb-2">
+          <div class="flex justify-between gap-3"><dt class="text-zinc-500">Vehículo</dt><dd class="text-zinc-300 text-right">{{ rgm_datos.resumen_vehiculo or '—' }}</dd></div>
+          {% if rgm_datos.serie %}<div class="flex justify-between gap-3"><dt class="text-zinc-500">Serie/VIN</dt><dd class="text-zinc-300">{{ rgm_datos.serie }}</dd></div>{% endif %}
+          {% if rgm_datos.motor %}<div class="flex justify-between gap-3"><dt class="text-zinc-500">Motor</dt><dd class="text-zinc-300">{{ rgm_datos.motor }}</dd></div>{% endif %}
+        </dl>
+        {% if usuario_actual.rol == 'Admin' and (rgm_datos.acreedor or rgm_datos.deudor_nombre) %}
+        <div class="space-y-1 text-sm mb-2">
+          {% if rgm_datos.acreedor %}<p>🏦 Acreedor: <span class="text-zinc-300">{{ rgm_datos.acreedor }}</span></p>{% endif %}
+          {% if rgm_datos.deudor_nombre %}
+          <p>👤 Deudor: <span class="text-zinc-300">{{ rgm_datos.deudor_nombre }}{% if rgm_datos.deudor_documento %} · {{ rgm_datos.deudor_documento }}{% endif %}{% if rgm_datos.deudor_ciudad %} · {{ rgm_datos.deudor_ciudad }}{% endif %}</span></p>
+          {% endif %}
+        </div>
+        {% endif %}
+        <details>
+          <summary class="text-xs text-zinc-500 cursor-pointer hover:text-zinc-300">Ver datos originales</summary>
+          <pre class="text-xs font-mono text-zinc-500 whitespace-pre-wrap mt-2">{{ rgm_datos.crudo }}</pre>
+        </details>
+        {% else %}
         <pre class="text-xs font-mono text-zinc-400 whitespace-pre-wrap">{{ snapshot_rgm.datos }}</pre>
+        {% endif %}
         {% else %}
         <p class="text-sm text-zinc-500">Todavía no se ha consultado RGM para esta placa.</p>
         {% endif %}
