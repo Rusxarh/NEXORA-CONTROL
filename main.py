@@ -16,8 +16,8 @@ pertenece exclusivamente a ninguno de ellos.
 from datetime import datetime
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, Request
-from fastapi.responses import RedirectResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.status import HTTP_303_SEE_OTHER
 
@@ -87,6 +87,29 @@ def _redirigir_por_permiso(request: Request, exc: usuarios.PermisoDenegadoError)
         url=f"/?mensaje={mensaje}&tipo=error",
         status_code=HTTP_303_SEE_OTHER,
     )
+
+
+@app.exception_handler(HTTPException)
+async def _aplanar_error_nexcam(request: Request, exc: HTTPException):
+    """
+    La app NEXCAM (Android) lee el código/mensaje de error en la raíz de la
+    respuesta ({"code": ..., "message": ...}), igual que NEXCAM/mock-api/
+    server.js (ver app/src/services/api.js: `data.code`, `data.message`).
+    FastAPI anida por defecto el `detail` de HTTPException bajo
+    {"detail": {...}}, así que la app nunca veía el code real y caía a
+    "HTTP 403"/UNAUTHORIZED genérico, sin poder distinguir TOKEN_EXPIRED,
+    DEVICE_REVOKED ni SESSION_REPLACED (App.js decide con ese code si debe
+    borrar los datos locales del teléfono).
+
+    Se aplana solo para /api/* y /app/* (el contrato de la app). El resto
+    de la web sigue con el {"detail": ...} de siempre, incluida /fotos/...
+    de nexcam_api.py, que usa la sesión de cookie del Admin, no el Bearer
+    de la app.
+    """
+    ruta = request.url.path
+    if (ruta.startswith("/api/") or ruta.startswith("/app/")) and isinstance(exc.detail, dict):
+        return JSONResponse(status_code=exc.status_code, content=exc.detail, headers=exc.headers)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers)
 
 
 @app.get("/dashboard")

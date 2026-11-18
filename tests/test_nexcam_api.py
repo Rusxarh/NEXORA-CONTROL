@@ -93,14 +93,14 @@ def test_login_clave_mala(cliente):
     device = _registrar_y_autorizar(cliente, "device-malo")
     r = _login(cliente, "admin.dos", device, password="otra-clave")
     assert r.status_code == 401
-    assert r.json()["detail"]["code"] == "BAD_CREDENTIALS"
+    assert r.json()["code"] == "BAD_CREDENTIALS"
 
 
 def test_login_telefono_no_registrado(cliente):
     _crear_usuario("Oper Uno", "Operador", "oper.uno", grado="Grado 1")
     r = _login(cliente, "oper.uno", "device-fantasma")
     assert r.status_code == 403
-    assert r.json()["detail"]["code"] == "DEVICE_UNKNOWN"
+    assert r.json()["code"] == "DEVICE_UNKNOWN"
 
 
 def test_login_telefono_no_autorizado(cliente):
@@ -109,7 +109,7 @@ def test_login_telefono_no_autorizado(cliente):
     assert r0.json()["authorized"] is False
     r = _login(cliente, "oper.dos", "device-pendiente")
     assert r.status_code == 403
-    assert r.json()["detail"]["code"] == "DEVICE_NOT_AUTHORIZED"
+    assert r.json()["code"] == "DEVICE_NOT_AUTHORIZED"
 
 
 def test_login_operador_suspendido(cliente):
@@ -118,7 +118,7 @@ def test_login_operador_suspendido(cliente):
     device = _registrar_y_autorizar(cliente, "device-susp")
     r = _login(cliente, "oper.tres", device)
     assert r.status_code == 403
-    assert r.json()["detail"]["code"] == "CAMERA_SUSPENDED"
+    assert r.json()["code"] == "CAMERA_SUSPENDED"
 
 
 def test_login_sesion_reemplazada(cliente):
@@ -132,7 +132,7 @@ def test_login_sesion_reemplazada(cliente):
         "Authorization": f"Bearer {token1}", "X-Device-UUID": device,
     })
     assert r_viejo.status_code == 401
-    assert r_viejo.json()["detail"]["code"] == "SESSION_REPLACED"
+    assert r_viejo.json()["code"] == "SESSION_REPLACED"
 
     r_nuevo = cliente.get("/api/ocr/confusions", headers={
         "Authorization": f"Bearer {token2}", "X-Device-UUID": device,
@@ -154,7 +154,7 @@ def test_login_token_vencido(cliente):
 
     r = cliente.get("/api/ocr/confusions", headers={"Authorization": f"Bearer {token}", "X-Device-UUID": device})
     assert r.status_code == 401
-    assert r.json()["detail"]["code"] == "TOKEN_EXPIRED"
+    assert r.json()["code"] == "TOKEN_EXPIRED"
 
 
 def test_login_token_usado_desde_otro_dispositivo(cliente):
@@ -166,7 +166,68 @@ def test_login_token_usado_desde_otro_dispositivo(cliente):
         "Authorization": f"Bearer {token}", "X-Device-UUID": "device-ajeno",
     })
     assert r.status_code == 401
-    assert r.json()["detail"]["code"] == "DEVICE_MISMATCH"
+    assert r.json()["code"] == "DEVICE_MISMATCH"
+
+
+def test_errores_quedan_planos_como_espera_app_src_services_api_js(cliente):
+    """
+    app/src/services/api.js lee `data.code`/`data.message` en la RAÍZ de la
+    respuesta (no bajo data.detail.code): `const data = await res.json();
+    ... data.code ... data.message`. Si el servidor anida el detalle bajo
+    {"detail": {...}} (comportamiento por defecto de FastAPI con
+    HTTPException), la app nunca ve el code real y cae siempre al
+    UNAUTHORIZED genérico de la línea `data.code || 'UNAUTHORIZED'`, sin
+    poder distinguir TOKEN_EXPIRED/DEVICE_REVOKED/SESSION_REPLACED (de lo
+    que depende App.js para decidir si borra los datos locales del
+    teléfono). Esta prueba repite, uno por uno, los errores que arma
+    NEXCAM/mock-api/server.js y confirma que no quedan anidados.
+    """
+    _crear_usuario("Admin Doce", "Admin", "admin.doce")
+
+    r = cliente.post("/api/device/register", json={"brand": "sin-uuid"})
+    assert r.status_code == 422
+    assert "detail" not in r.json()
+    assert r.json()["message"] == "device_uuid requerido"
+
+    device = _registrar_y_autorizar(cliente, "device-doce")
+    r = _login(cliente, "admin.doce", device, password="mala")
+    assert r.status_code == 401
+    cuerpo = r.json()
+    assert "detail" not in cuerpo
+    assert cuerpo["code"] == "BAD_CREDENTIALS"
+    assert isinstance(cuerpo["message"], str) and cuerpo["message"]
+
+    token = _login(cliente, "admin.doce", device).json()["token"]
+    vencido = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE nexcam_tokens SET expira_en = ? WHERE token_hash = ?",
+            (vencido, nexcam_db._hash_token(token)),
+        )
+    r = cliente.get("/api/ocr/confusions", headers={"Authorization": f"Bearer {token}", "X-Device-UUID": device})
+    assert r.status_code == 401
+    cuerpo = r.json()
+    assert "detail" not in cuerpo
+    assert cuerpo["code"] == "TOKEN_EXPIRED"
+    # Esto es justo lo que App.js usa para decidir "no borrar datos" (no es
+    # DEVICE_REVOKED/DEVICE_MISMATCH) y mostrar "Tu sesión expiró.".
+    assert cuerpo["code"] not in ("DEVICE_REVOKED", "DEVICE_MISMATCH")
+
+    # El caso que reportó el bug: revocar el teléfono y que la siguiente
+    # llamada autenticada traiga DEVICE_REVOKED plano en la raíz (de eso
+    # depende que App.js SÍ borre los datos locales: `revocado = code ===
+    # 'DEVICE_REVOKED' || code === 'DEVICE_MISMATCH'`).
+    _crear_usuario("Oper Doce", "Operador", "oper.doce", grado="Grado 1")
+    device_oper = _registrar_y_autorizar(cliente, "device-revocar")
+    token_oper = _login(cliente, "oper.doce", device_oper).json()["token"]
+    nexcam_db.revocar_dispositivo(device_oper)
+    r = cliente.get("/api/ocr/confusions", headers={
+        "Authorization": f"Bearer {token_oper}", "X-Device-UUID": device_oper,
+    })
+    assert r.status_code == 401
+    cuerpo = r.json()
+    assert "detail" not in cuerpo
+    assert cuerpo["code"] == "DEVICE_REVOKED"
 
 
 # --------------------------------------------------------------------- sync de placas + grado

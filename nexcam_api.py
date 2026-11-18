@@ -199,7 +199,11 @@ async def detections_upload(request: Request, authorization: Optional[str] = Hea
     # límite por sí sola, así que se aplica aquí, sin modificar camara.py).
     _registrar_actividad_camara_throttled(sesion["usuario_id"])
 
-    broadcast("detection.hit", det)
+    # mock-api/server.js agrega `device` ("marca modelo") a cada avistamiento
+    # transmitido; nexcam_avistamientos no guarda ese texto, así que se arma
+    # aquí solo para el evento (el bot de Telegram lo usa en la cámara en
+    # vivo -- sin esto, siempre mostraba el "Teléfono" genérico).
+    broadcast("detection.hit", {**det, "device": nexcam_db.descripcion_dispositivo(sesion["device_uuid"])})
 
     # RGM automático (FASE 6): SOLO coincidencia exacta de una placa que
     # está en lista en este momento. Una "posible coincidencia" (gemelo
@@ -252,7 +256,12 @@ async def camera_state(request: Request, authorization: Optional[str] = Header(N
                         x_device_uuid: Optional[str] = Header(None, alias="X-Device-UUID")):
     sesion = _autenticar(authorization, x_device_uuid)
     b = await _cuerpo(request)
-    payload = {"device_uuid": sesion["device_uuid"], "operador": sesion["nombre"]}
+    payload = {
+        "device_uuid": sesion["device_uuid"],
+        "operador": sesion["nombre"],
+        "ts": _ahora_ms(),
+        "device": nexcam_db.descripcion_dispositivo(sesion["device_uuid"]),
+    }
     broadcast("camera.started" if b.get("activa") else "camera.stopped", payload)
     if b.get("activa"):
         _registrar_actividad_camara_throttled(sesion["usuario_id"])

@@ -199,6 +199,21 @@ def obtener_dispositivo(device_uuid: str) -> Optional[dict]:
         return _fila_dispositivo(row)
 
 
+def descripcion_dispositivo(device_uuid: str) -> Optional[str]:
+    """
+    "marca modelo" del teléfono, o None si no hay registro -- la misma
+    idea que arma mock-api/server.js a partir de brand/model del
+    dispositivo. Lo usan los eventos que el bot de Telegram muestra en la
+    cámara en vivo (camera.started/stopped, detection.hit): sin este
+    campo, el bot cae siempre al "Teléfono" genérico.
+    """
+    dispositivo = obtener_dispositivo(device_uuid)
+    if not dispositivo:
+        return None
+    texto = f"{dispositivo.get('brand') or ''} {dispositivo.get('model') or ''}".strip()
+    return texto or None
+
+
 def listar_dispositivos() -> list:
     with db.get_connection() as conn:
         rows = conn.execute("SELECT * FROM nexcam_dispositivos ORDER BY created_at DESC").fetchall()
