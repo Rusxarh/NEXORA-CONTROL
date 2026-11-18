@@ -688,12 +688,18 @@ def avistamientos_en_lista_hoy(limite: int = 20) -> list:
         return [_fila_avistamiento(f) for f in filas]
 
 
-def avistamientos_recientes(n: int = 200) -> list:
+def avistamientos_recientes(n: int = 200, offset: int = 0) -> list:
     with db.get_connection() as conn:
         rows = conn.execute(
-            "SELECT * FROM nexcam_avistamientos ORDER BY id DESC LIMIT ?", (n,)
+            "SELECT * FROM nexcam_avistamientos ORDER BY id DESC LIMIT ? OFFSET ?", (n, offset)
         ).fetchall()
         return [_fila_avistamiento(r) for r in rows]
+
+
+def contar_avistamientos() -> int:
+    """Para la paginación de NEXCAM -> En vivo (Prompt 5 punto 4)."""
+    with db.get_connection() as conn:
+        return conn.execute("SELECT COUNT(*) AS n FROM nexcam_avistamientos").fetchone()["n"]
 
 
 # ---------------------------------------------------------------------------

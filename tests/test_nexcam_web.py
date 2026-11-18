@@ -102,3 +102,31 @@ def test_panel_ocr_sin_confusiones(cliente):
     r = cliente.get("/nexcam?tab=ocr")
     assert r.status_code == 200
     assert "Todavía no hay correcciones registradas." in r.text
+
+
+def test_panel_en_vivo_pagina_30_y_tiene_el_visor(cliente):
+    """Prompt 5 punto 4: NEXCAM -> En vivo con paginación real de 30 (no
+    un límite fijo que ignora el resto) y el visor ampliado para las
+    miniaturas."""
+    admin = _crear_admin("Admin Web Cinco", "admin.web5")
+    _login_web(cliente, "admin.web5")
+    sesion = {"usuario_id": admin["id"], "nombre": "Admin Web Cinco", "device_uuid": "device-paginado"}
+    for i in range(35):
+        nexcam_db.registrar_avistamiento(
+            sesion, "NOP111", "NOP111", "exact", 0.9, None, None, "prueba",
+            None, None, int(datetime.now().timestamp() * 1000) + i, None, None,
+        )
+
+    r1 = cliente.get("/nexcam?tab=en-vivo")
+    assert r1.status_code == 200
+    assert "Página 1 de 2" in r1.text
+    assert "visorFotoEnVivo" in r1.text  # el visor ampliado existe en la página
+
+    r2 = cliente.get("/nexcam?tab=en-vivo&pagina=2")
+    assert r2.status_code == 200
+    assert "Página 2 de 2" in r2.text
+
+    # pagina fuera de rango no revienta: se recorta al máximo disponible.
+    r3 = cliente.get("/nexcam?tab=en-vivo&pagina=99")
+    assert r3.status_code == 200
+    assert "Página 2 de 2" in r3.text

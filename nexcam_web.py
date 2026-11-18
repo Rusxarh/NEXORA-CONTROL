@@ -27,6 +27,9 @@ router = APIRouter()
 TABS = ("telefonos", "en-vivo", "ya-vistas", "ocr", "telegram")
 
 
+TAMANO_PAGINA_EN_VIVO = 30
+
+
 @router.get("/nexcam")
 def nexcam_panel(
     request: Request,
@@ -35,6 +38,7 @@ def nexcam_panel(
     q: str = "",
     mensaje: Optional[str] = None,
     tipo: str = "info",
+    pagina: int = 1,
 ):
     # Compatibilidad: un enlace viejo a "?tab=buscar&q=PLACA" lleva ahora
     # directo a la ficha de esa placa en Vehículos.
@@ -56,7 +60,14 @@ def nexcam_panel(
     if tab == "telefonos":
         contexto["dispositivos"] = nexcam_db.listar_dispositivos()
     elif tab == "en-vivo":
-        contexto["avistamientos"] = nexcam_db.avistamientos_recientes(30)
+        total = nexcam_db.contar_avistamientos()
+        total_paginas = max(1, -(-total // TAMANO_PAGINA_EN_VIVO))  # división hacia arriba
+        pagina_actual = min(max(1, pagina), total_paginas)
+        contexto["avistamientos"] = nexcam_db.avistamientos_recientes(
+            TAMANO_PAGINA_EN_VIVO, (pagina_actual - 1) * TAMANO_PAGINA_EN_VIVO
+        )
+        contexto["pagina_actual"] = pagina_actual
+        contexto["total_paginas"] = total_paginas
     elif tab == "ya-vistas":
         contexto["ultimo_cruce"] = nexcam_db.obtener_ultimo_cruce()
     elif tab == "ocr":

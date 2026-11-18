@@ -87,7 +87,7 @@
   {% if tab == 'en-vivo' %}
   <section class="card">
     <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
-      <h2 class="text-sm font-semibold text-zinc-100">Últimas lecturas ({{ avistamientos | length }})</h2>
+      <h2 class="text-sm font-semibold text-zinc-100">Últimas lecturas</h2>
       <a href="/nexcam?tab=en-vivo" class="btn-secondary btn-sm">🔄 Actualizar</a>
     </div>
     <div class="overflow-x-auto -mx-5">
@@ -104,7 +104,10 @@
         </thead>
         <tbody class="table-body">
           {% for a in avistamientos %}
-          <tr class="table-row">
+          <!-- Prompt 5 punto 4: fila compacta de ~56px, miniaturas chicas
+               (72×48 vehículo, 48×32 placa) en vez de la foto grande de
+               antes; clic abre el visor ampliado de más abajo. -->
+          <tr class="table-row" style="height: 56px;">
             <td class="table-cell">{{ placa_macro(a.placa) }}</td>
             <td class="table-cell">
               {% if a.en_lista %}<span class="badge-en-lista">En lista</span>{% else %}<span class="badge-neutral">Sin novedad</span>{% endif %}
@@ -112,9 +115,9 @@
             <td class="table-cell text-zinc-300">{{ a.operador or '—' }}</td>
             <td class="table-cell text-zinc-400 whitespace-nowrap">{{ a.recibido_en | fecha_co }}</td>
             <td class="table-cell">
-              <div class="flex gap-1">
-                {% if a.snapshot %}<a href="{{ a.snapshot }}" target="_blank"><img src="{{ a.snapshot }}" class="h-10 w-14 object-cover rounded border border-zinc-700" onerror="this.style.display='none'"></a>{% endif %}
-                {% if a.vehiculo %}<a href="{{ a.vehiculo }}" target="_blank"><img src="{{ a.vehiculo }}" class="h-10 w-14 object-cover rounded border border-zinc-700" onerror="this.style.display='none'"></a>{% endif %}
+              <div class="flex gap-1 items-center">
+                {% if a.vehiculo %}<img src="{{ a.vehiculo }}" data-foto-en-vivo data-placa="{{ a.placa }}" data-hora="{{ a.recibido_en | fecha_co }}" class="h-12 w-[72px] object-cover rounded border border-zinc-700 cursor-pointer" onerror="this.style.display='none'">{% endif %}
+                {% if a.snapshot %}<img src="{{ a.snapshot }}" data-foto-en-vivo data-placa="{{ a.placa }}" data-hora="{{ a.recibido_en | fecha_co }}" class="h-8 w-12 object-cover rounded border border-zinc-700 cursor-pointer" onerror="this.style.display='none'">{% endif %}
                 {% if not a.snapshot and not a.vehiculo %}<span class="text-zinc-600 text-xs">—</span>{% endif %}
               </div>
             </td>
@@ -128,7 +131,60 @@
         </tbody>
       </table>
     </div>
+
+    {% if total_paginas and total_paginas > 1 %}
+    <div class="flex items-center justify-center gap-3 mt-4 text-xs">
+      {% if pagina_actual > 1 %}<a href="/nexcam?tab=en-vivo&pagina={{ pagina_actual - 1 }}" class="btn-secondary btn-sm">◀ Anterior</a>{% endif %}
+      <span class="text-zinc-400">Página {{ pagina_actual }} de {{ total_paginas }}</span>
+      {% if pagina_actual < total_paginas %}<a href="/nexcam?tab=en-vivo&pagina={{ pagina_actual + 1 }}" class="btn-secondary btn-sm">Siguiente ▶</a>{% endif %}
+    </div>
+    {% endif %}
   </section>
+
+  <!-- Visor ampliado (Prompt 5 punto 4): overlay oscuro, Esc o clic fuera
+       para cerrar, flechas (← →) para pasar a la foto de la siguiente
+       lectura, en el mismo orden en que aparecen en la tabla. -->
+  <div id="visorFotoEnVivo" class="hidden fixed inset-0 z-50 bg-black/90 flex items-center justify-center"
+       onclick="if (event.target === this) cerrarVisorFotoEnVivo()">
+    <button type="button" onclick="cerrarVisorFotoEnVivo()" class="absolute top-4 right-4 text-white text-2xl leading-none" aria-label="Cerrar">✕</button>
+    <button type="button" onclick="moverVisorFotoEnVivo(-1)" class="absolute left-4 text-white text-3xl leading-none" aria-label="Foto anterior">‹</button>
+    <img id="visorFotoEnVivoImg" src="" alt="" class="max-h-[85vh] max-w-[85vw] object-contain rounded">
+    <button type="button" onclick="moverVisorFotoEnVivo(1)" class="absolute right-4 text-white text-3xl leading-none" aria-label="Foto siguiente">›</button>
+    <p id="visorFotoEnVivoLeyenda" class="absolute bottom-4 text-white text-xs"></p>
+  </div>
+  <script>
+    (function () {
+      var fotos = Array.prototype.map.call(document.querySelectorAll('[data-foto-en-vivo]'), function (img) {
+        return { url: img.getAttribute('src'), placa: img.getAttribute('data-placa'), hora: img.getAttribute('data-hora') };
+      });
+      var indiceActual = -1;
+      var visor = document.getElementById('visorFotoEnVivo');
+      var visorImg = document.getElementById('visorFotoEnVivoImg');
+      var visorLeyenda = document.getElementById('visorFotoEnVivoLeyenda');
+
+      function abrirVisor(i) {
+        indiceActual = i;
+        visorImg.src = fotos[i].url;
+        visorLeyenda.textContent = fotos[i].placa + ' · ' + fotos[i].hora;
+        visor.classList.remove('hidden');
+      }
+      window.cerrarVisorFotoEnVivo = function () { visor.classList.add('hidden'); };
+      window.moverVisorFotoEnVivo = function (delta) {
+        if (!fotos.length) return;
+        indiceActual = (indiceActual + delta + fotos.length) % fotos.length;
+        abrirVisor(indiceActual);
+      };
+      Array.prototype.forEach.call(document.querySelectorAll('[data-foto-en-vivo]'), function (img, i) {
+        img.addEventListener('click', function () { abrirVisor(i); });
+      });
+      document.addEventListener('keydown', function (e) {
+        if (visor.classList.contains('hidden')) return;
+        if (e.key === 'Escape') cerrarVisorFotoEnVivo();
+        if (e.key === 'ArrowLeft') moverVisorFotoEnVivo(-1);
+        if (e.key === 'ArrowRight') moverVisorFotoEnVivo(1);
+      });
+    })();
+  </script>
   {% endif %}
 
   {# "Buscar placa" se retiró de NEXCAM en FASE 7: su función la cumple
