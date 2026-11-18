@@ -270,6 +270,40 @@ def test_trabajador_rgm_reserva_completa_y_registra_error(cliente):
     assert r_err.json() == {"ok": True}
 
 
+def test_error_del_connector_muestra_su_motivo_en_ultimas_20(cliente):
+    """Prueba real del Connector: el timeout de 2 min de una consulta
+    externa (o cualquier consulta.errores que mande el Connector) debe
+    verse en /consulta -> "Últimas 20", no solo quedar en la base. El
+    motivo ya viaja completo desde consulta.html (terminarConError junta
+    evento.motivo + consulta.errores) hasta rgm_cola.marcar_error ->
+    columna `error`; esta prueba confirma que /consulta de verdad lo
+    renderiza (como title del badge "Error", consistente con el resto del
+    patrón de la tabla)."""
+    admin = _crear_admin("Admin RGM Timeout", "admin.rgmtimeout")
+    _crear_placa("TMO456", admin["id"])
+    _login_web(cliente, "admin.rgmtimeout")
+
+    cliente.post("/rgm/solicitar", data={"placa": "TMO456", "alcance": "RGM"})
+    motivo = "TIMEOUT_RGM_2MIN (se quedo colgada sin resultado final, revisa el NEXORA DEBUG de la pestana)"
+
+    # marcar_item_rgm_error reintenta (vuelve a PENDIENTE) hasta
+    # MAX_INTENTOS_RGM: hay que agotarlos para que de verdad quede en
+    # ERROR (final) con el motivo, en vez de solo reintentar en silencio.
+    item_id = None
+    for _ in range(db.MAX_INTENTOS_RGM):
+        item = cliente.post("/rgm/trabajador/siguiente").json()["item"]
+        item_id = item["id"]
+        r_err = cliente.post("/rgm/trabajador/error", json={"item_id": item_id, "mensaje": motivo})
+        assert r_err.json() == {"ok": True}
+
+    assert db.obtener_item_rgm(item_id)["estado"] == "ERROR"
+    assert db.obtener_item_rgm(item_id)["error"] == motivo
+
+    r_consulta = cliente.get("/consulta")
+    assert r_consulta.status_code == 200
+    assert motivo in r_consulta.text
+
+
 def test_rgm_solicitar_usa_snapshot_vigente_sin_encolar_de_nuevo(cliente):
     admin = _crear_admin("Admin RGM Panel2", "admin.rgmpanel2")
     _crear_placa("NOP012", admin["id"])
