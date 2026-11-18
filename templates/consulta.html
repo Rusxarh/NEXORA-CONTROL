@@ -402,6 +402,12 @@
     var itemActualId = null;   // null = la consulta en curso fue manual (ajena a la cola)
     var ocupado = false;
     var timeoutItemActual = null;
+    // Bug reportado en prueba real: la página mandaba el latido (y por lo
+    // tanto el servidor creía que "sí hay alguien atendiendo") sin
+    // comprobar si la extensión de verdad respondía. connectorDisponible
+    // empieza en false a propósito: hasta que el primer ping no confirme
+    // que la extensión está viva, ciclo() no debe reservar nada de la cola.
+    var connectorDisponible = false;
 
     // --- utilidades --------------------------------------------------
 
@@ -412,10 +418,37 @@
       el.textContent = (valor === null || valor === undefined || valor === "") ? "No disponible" : String(valor);
     }
 
+    // Ping real a la extensión (accion "PING", agregada en background.js
+    // junto con "alcance") -- nunca asume que está disponible solo porque
+    // chrome.runtime exista: en Brave/Chrome sin la extensión cargada (o
+    // con el ID equivocado), sendMessage igual existe como función, pero
+    // la respuesta nunca llega o chrome.runtime.lastError queda puesto.
+    function pingExtension(callback) {
+      if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.sendMessage) {
+        callback(false);
+        return;
+      }
+      try {
+        chrome.runtime.sendMessage(EXTENSION_ID_NEXORA_CONNECTOR, { accion: "PING" }, function (respuesta) {
+          callback(!chrome.runtime.lastError && !!respuesta && respuesta.ok === true);
+        });
+      } catch (e) {
+        callback(false);
+      }
+    }
+
     function latido() {
-      fetch("/rgm/trabajador/latido", { method: "POST" })
-        .then(function () { elBadgeTrabajador.textContent = "Atendiendo la cola"; elBadgeTrabajador.className = "badge-success"; })
-        .catch(function () { elBadgeTrabajador.textContent = "Sin conexión con el servidor"; elBadgeTrabajador.className = "badge-danger"; });
+      pingExtension(function (disponible) {
+        connectorDisponible = disponible;
+        if (!disponible) {
+          elBadgeTrabajador.textContent = "Connector no disponible: revisa la extensión";
+          elBadgeTrabajador.className = "badge-danger";
+          return; // nunca se manda el latido al servidor si la extensión no respondió
+        }
+        fetch("/rgm/trabajador/latido", { method: "POST" })
+          .then(function () { elBadgeTrabajador.textContent = "Atendiendo la cola"; elBadgeTrabajador.className = "badge-success"; })
+          .catch(function () { elBadgeTrabajador.textContent = "Sin conexión con el servidor"; elBadgeTrabajador.className = "badge-danger"; });
+      });
     }
     setInterval(latido, LATIDO_MS);
     latido();
@@ -794,6 +827,12 @@
 
     function ciclo() {
       if (ocupado) return;
+      // Sin Connector disponible, NO se reserva nada de la cola (antes
+      // esto dejaba la consulta "EN_CURSO" para terminar marcada Error
+      // solo porque el chrome.runtime.sendMessage fallaba después de ya
+      // haberla tomado): se queda pendiente tal cual hasta que el
+      // próximo latido confirme que la extensión volvió a responder.
+      if (!connectorDisponible) { setTimeout(ciclo, POLL_COLA_MS); return; }
       fetch("/rgm/trabajador/siguiente", { method: "POST" })
         .then(function (r) { return r.json(); })
         .then(function (datos) {
