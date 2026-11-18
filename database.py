@@ -465,6 +465,82 @@ def _migrar_rgm_cola_alcance(conn):
     conn.execute("DROP TABLE rgm_cola")
 
 
+def _migrar_backfill_rgm_a_vehiculos():
+    """
+    Prompt 6 punto 2 (NEXCAM-PROMPTS-Y-PRUEBAS.md): el Prompt 2b agregó la
+    regla "el RGM sobrescribe `vehiculos`", pero solo se aplica cuando
+    LLEGA un resultado nuevo -- los snapshots RGM guardados ANTES de esa
+    regla nunca llegaron a escribir la placa (ej. GCT 953 se quedó en
+    "CHEVROLET / —" aunque su snapshot ya traía línea TRACKER y modelo
+    2021). Esto corre UNA SOLA VEZ (idempotente: se detecta por el log
+    centinela RGM_BACKFILL_PROMPT6 en logs_auditoria, sin tabla nueva) y
+    aplica a cada placa su último snapshot RGM con estado "OK", con la
+    MISMA regla de rgm_cola._actualizar_vehiculo_desde_rgm (sobrescribe,
+    deja "antes -> después" en auditoría por placa). Copia MasterPlacas.db
+    antes de tocar nada (regla de CLAUDE.md para una migración que cambia
+    datos reales en volumen).
+
+    Se llama DESPUÉS de que _migrar_columnas_vehiculo_rgm ya agregó las
+    columnas (mismo bloque de inicializar_db) y con su PROPIA conexión,
+    nunca anidada dentro del `with get_connection()` de otra migración:
+    rgm_cola._actualizar_vehiculo_desde_rgm abre su propia conexión de
+    escritura, y dos conexiones escribiendo la misma transacción abierta
+    de SQLite se pisan entre sí.
+    """
+    with get_connection() as conn:
+        ya_corrido = conn.execute(
+            "SELECT 1 FROM logs_auditoria WHERE accion = 'RGM_BACKFILL_PROMPT6' LIMIT 1"
+        ).fetchone()
+        if ya_corrido:
+            return
+        admin = conn.execute(
+            "SELECT id FROM usuarios WHERE rol = 'Admin' ORDER BY id ASC LIMIT 1"
+        ).fetchone()
+        if admin is None:
+            return  # base nueva, sin ningún Admin todavía: no hay nada real que migrar
+        usuario_id = admin["id"]
+        filas = conn.execute(
+            """SELECT s.placa, s.datos FROM snapshots_placa s
+               WHERE s.fuente = 'RGM' AND s.id = (
+                   SELECT s2.id FROM snapshots_placa s2
+                   WHERE s2.placa = s.placa AND s2.fuente = 'RGM'
+                   ORDER BY s2.creado_en DESC, s2.id DESC LIMIT 1
+               )"""
+        ).fetchall()
+
+    if filas:
+        try:
+            import shutil
+
+            respaldo = DB_PATH.with_name(f"{DB_PATH.stem}.antes-backfill-rgm-prompt6.bak")
+            shutil.copy2(DB_PATH, respaldo)
+        except Exception as e:
+            print(f"AVISO: no se pudo copiar {DB_PATH.name} antes del backfill de RGM: {e}")
+
+    import json
+
+    import rgm_cola  # import perezoso: evita el ciclo rgm_cola <-> database al importar el módulo
+
+    total_actualizadas = 0
+    for fila in filas:
+        try:
+            datos = json.loads(fila["datos"] or "{}")
+        except Exception:
+            continue
+        if datos.get("estado") != "OK":
+            continue
+        cambios = rgm_cola._actualizar_vehiculo_desde_rgm(fila["placa"], datos.get("vehiculo") or {}, usuario_id)
+        if cambios:
+            total_actualizadas += 1
+
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO logs_auditoria (usuario_id, accion, observaciones) VALUES (?, 'RGM_BACKFILL_PROMPT6', ?)",
+            (usuario_id, f"Arreglo de datos viejos del RGM (Prompt 6): {total_actualizadas} placa(s) de "
+                         f"{len(filas)} con snapshot RGM actualizada(s) con su último snapshot OK."),
+        )
+
+
 def inicializar_db():
     """Crea las tablas e índices si no existen, y aplica migraciones aditivas
     sobre tablas ya existentes. Es seguro llamarla varias veces."""
@@ -489,6 +565,7 @@ def inicializar_db():
         _migrar_codigo_operativo(conn)
         _migrar_columnas_vehiculo_nexcam(conn)
         _migrar_columnas_vehiculo_rgm(conn)
+    _migrar_backfill_rgm_a_vehiculos()
     print(f"Base de datos inicializada en: {DB_PATH}")
 
 

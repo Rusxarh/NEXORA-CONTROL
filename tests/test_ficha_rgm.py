@@ -1,16 +1,21 @@
 """
 tests/test_ficha_rgm.py
 Prompt 5 punto 3: la ficha de Vehículos mostraba el JSON crudo de
-snapshots_placa para "Datos RGM"; ahora es una tabla legible (vehículo,
-serie/VIN, motor, acreedor y deudor), con el JSON original solo detrás
-de un "Ver datos originales" plegado. De paso, acreedor/deudor ahora
-quedan filtrados por rol (Etapa 5 §2/§37): antes el JSON crudo se
-mostraba completo a CUALQUIER usuario autenticado, Operador incluido.
+snapshots_placa para "Datos RGM"; ahora es una tabla legible, con el
+JSON original solo detrás de un "Ver datos originales" plegado.
+Prompt 6 punto 2: el vehículo (marca/línea/modelo/servicio/serie/motor/
+chasis) se movió al bloque principal, bajo la placa -- se lee directo de
+`vehiculos` (la misma tabla que el RGM sobrescribe), no del snapshot; la
+caja "Datos RGM" ya solo trae fecha de consulta, Actualizar, acreedor y
+deudor. Acreedor/deudor quedan filtrados por rol (Etapa 5 §2/§37): antes
+el JSON crudo se mostraba completo a CUALQUIER usuario autenticado,
+Operador incluido.
 """
 
 import json
 
 import database as db
+import rgm_cola
 import usuarios
 
 CLAVE = "clave-de-prueba-123"
@@ -39,15 +44,21 @@ def _snapshot_de_prueba():
 
 
 def test_ficha_admin_ve_tabla_legible_y_acreedor_deudor(cliente):
+    """El vehículo (marca/línea/modelo/servicio/motor) debe verse en el
+    bloque principal, bajo la placa (Prompt 6 punto 2) -- se arma con
+    completar_item (el camino real: el RGM sobrescribe `vehiculos`), no
+    insertando el snapshot a mano."""
     admin = _crear_usuario("Admin Ficha RGM", "Admin", "admin.fichargm")
     db.insertar_placa("GCT953", "carro", admin["id"], None)
-    db.crear_snapshot("GCT953", "RGM", _snapshot_de_prueba())
+    item = rgm_cola.solicitar_consulta("GCT953", "RGM", "panel", admin["id"])["item"]
+    rgm_cola.completar_item(item["id"], {"rgm": json.loads(_snapshot_de_prueba()), "judicial": None})
     _login_web(cliente, "admin.fichargm")
 
     r = cliente.get("/vehiculos/GCT953")
     assert r.status_code == 200
     assert "CHEVROLET" in r.text and "TRACKER" in r.text and "2021" in r.text and "Particular" in r.text
     assert "ABC123" in r.text  # motor extraído de descripcion_bien
+    assert "según RGM del" in r.text
     assert "Bancolombia" in r.text
     assert "Juan Pérez" in r.text
     assert "123456789" in r.text
@@ -72,19 +83,20 @@ def test_ficha_filtra_acreedor_y_deudor_sin_rol_admin(cliente):
         "ruta_activa": "vehiculos", "placa": "GCT954",
         "vehiculo": {"placa": "GCT954", "tipo_vehiculo": "carro", "estado": "activo",
                      "fecha_ingreso": "2026-01-01 00:00:00", "fecha_baja": None,
-                     "observaciones": None, "marca": None, "linea": None, "color": None, "modelo": None,
+                     "observaciones": None, "marca": "CHEVROLET", "linea": "TRACKER", "color": None,
+                     "modelo": "2021", "tipo_servicio": "Particular", "numero_serie": None,
+                     "motor": "ABC123", "chasis": None, "rgm_actualizado_en": "2026-11-18 00:00:00",
                      "registrado_por": None},
         "grado_placa": None, "avistamientos": [], "logs": [],
         "snapshot_rgm": {"creado_en": "2026-11-18 00:00:00"},
         "rgm_datos": {
-            "resumen_vehiculo": "CHEVROLET · TRACKER · 2021", "serie": None, "motor": "ABC123",
             "acreedor": "Bancolombia", "deudor_nombre": "Juan Pérez",
             "deudor_documento": "CC 123456789", "deudor_ciudad": "Bogotá", "crudo": "{}",
         },
         "snapshot_judicial": None,
     }
     html = templates.get_template("vehiculo_ficha.html").render(contexto)
-    assert "CHEVROLET" in html  # el dato del vehículo SÍ es visible para todos
+    assert "CHEVROLET" in html and "TRACKER" in html and "ABC123" in html  # el vehículo SÍ es visible para todos
     assert "Bancolombia" not in html
     assert "Juan Pérez" not in html
     assert "123456789" not in html

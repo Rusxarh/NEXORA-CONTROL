@@ -215,14 +215,19 @@ def dar_de_baja(
 ):
     observaciones = observaciones.strip() or None
 
+    # Prompt 6 punto 5: el botón "Dar de baja" ahora vive en la ficha del
+    # vehículo (ya no en la fila de la tabla de Vehículos), así que tras
+    # confirmar se vuelve a esa misma ficha, no al listado general.
+    placa = placa.strip().upper()
+    volver = f"/vehiculos/{placa}"
+
     if confirmar != "SI":
         # Nunca se ejecuta cambiar_estado_a_baja sin esta confirmación
         # explícita, ni siquiera para un Admin.
         mensaje = "Baja rechazada: no se recibió confirmación manual explícita."
-        return usuarios.redirigir_con_mensaje("/", mensaje, "error")
+        return usuarios.redirigir_con_mensaje(volver, mensaje, "error")
 
     try:
-        placa = placa.strip().upper()
         db.cambiar_estado_a_baja(placa, usuario_actual["id"], observaciones)
         mensaje = f"La placa {placa} fue dada de baja correctamente."
         tipo = "exito"
@@ -231,7 +236,7 @@ def dar_de_baja(
     except db.ValorInvalidoError as e:
         mensaje, tipo = str(e), "error"
 
-    return usuarios.redirigir_con_mensaje("/", mensaje, tipo)
+    return usuarios.redirigir_con_mensaje(volver, mensaje, tipo)
 
 
 # ---------------------------------------------------------------------------
@@ -381,20 +386,15 @@ def carga_masiva_procesar(
 
 def _datos_rgm_para_ficha(snapshot_rgm: Optional[dict]) -> Optional[dict]:
     """
-    Prompt 5 punto 3: la ficha mostraba el JSON crudo del snapshot; esto
-    lo arma una sola vez acá (no en la plantilla) para una tabla legible,
-    reusando rgm_cola._datos_vehiculo_desde_rgm (la MISMA extracción de
-    línea/chasis/motor/serie desde descripcion_bien que ya completa
-    `vehiculos`, para no duplicar ese parseo aquí). Acreedor/deudor viajan
-    aparte: la plantilla decide si mostrarlos según el rol (Etapa 5
-    §2/§37 -- antes el JSON crudo se mostraba completo a cualquier
-    usuario autenticado, Operador incluido, sin filtrar nada).
-    Si el JSON no se puede leer (snapshot viejo/corrupto), devuelve None
-    y la plantilla cae al texto crudo tal cual.
+    Prompt 5 punto 3 + Prompt 6 punto 2: la caja "Datos RGM" ya NO repite
+    el vehículo (eso ahora vive en el bloque principal, leído directo de
+    `vehiculos` -- la misma tabla que el RGM sobrescribe): esta caja solo
+    trae acreedor/deudor (sensibles, Etapa 5 §2/§37: la plantilla decide
+    si mostrarlos según el rol) y el JSON crudo detrás de "Ver datos
+    originales". Si el JSON no se puede leer (snapshot viejo/corrupto),
+    devuelve None y la plantilla cae al texto crudo tal cual.
     """
     import json
-
-    import rgm_cola
 
     if not snapshot_rgm:
         return None
@@ -403,17 +403,9 @@ def _datos_rgm_para_ficha(snapshot_rgm: Optional[dict]) -> Optional[dict]:
     except Exception:
         return None
 
-    datos_vehiculo = rgm_cola._datos_vehiculo_desde_rgm(crudo.get("vehiculo") or {})
-    resumen_vehiculo = " · ".join(
-        x for x in (datos_vehiculo.get("marca"), datos_vehiculo.get("linea"),
-                     datos_vehiculo.get("modelo"), datos_vehiculo.get("tipo_servicio")) if x
-    )
     deudor = crudo.get("deudor_garante") or {}
     documento = " ".join(x for x in (deudor.get("tipo_identificacion"), deudor.get("numero_identificacion")) if x)
     return {
-        "resumen_vehiculo": resumen_vehiculo or None,
-        "serie": datos_vehiculo.get("numero_serie"),
-        "motor": datos_vehiculo.get("motor"),
         "acreedor": (crudo.get("acreedor") or {}).get("razon_social"),
         "deudor_nombre": deudor.get("nombre"),
         "deudor_documento": documento or None,
@@ -427,6 +419,8 @@ def vehiculo_ficha_vista(
     request: Request,
     placa: str,
     usuario_actual: dict = Depends(usuarios.requerir_autenticacion),
+    mensaje: Optional[str] = None,
+    tipo: str = "info",
 ):
     import camara
     import nexcam_db
@@ -452,5 +446,7 @@ def vehiculo_ficha_vista(
             "rgm_datos": _datos_rgm_para_ficha(snapshot_rgm),
             "snapshot_judicial": db.obtener_ultimo_snapshot_por_fuente(placa_normalizada, "JUDICIAL"),
             "logs": db.listar_logs_de_placa(placa_normalizada) if vehiculo else [],
+            "mensaje": mensaje,
+            "tipo_mensaje": tipo,
         },
     )

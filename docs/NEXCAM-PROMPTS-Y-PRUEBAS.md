@@ -1,6 +1,6 @@
 # NEXCAM en NEXORA: prompts para Claude Code y plan de pruebas
 
-Actualizado: 17/11/2026, 10:00 p. m.
+Actualizado: 18/11/2026, 3:40 a. m.
 
 ## Cómo empezar
 
@@ -19,6 +19,25 @@ Orden de trabajo:
 | 3 | Prompt 3 (bloques A a G) | Fases 11 a 14 |
 | 4 | Prompt 4 (en NEXDOC) | Fase 15 |
 | 1b | Prompt 5 (después de los 0, 2 y 2b; antes del 3) | Fase 16 |
+| 1c | Prompt 6 (antes del 3) + apps 0.5.4 y 0.5.5 | Fase 16 (16.9 a 16.20) |
+
+### Regla para todos los reportes de Claude Code
+
+```text
+Al final de CADA reporte (de cualquier prompt o bloque), agrega la sección
+"Pruebas para tu visto bueno" con:
+- Las pruebas de este documento que ya se pueden hacer con lo que acabas de
+  terminar (número y nombre, ej. "16.1 RGM automático sin mensajes"), en el orden
+  en que conviene hacerlas.
+- Para cada una: qué abrir, qué hacer y qué debe verse si está bien, en pasos
+  cortos y sin jerga.
+- Lo que hay que hacer antes (reiniciar NEXORA, recargar el Connector, compilar
+  la app, etc.).
+- Las que todavía NO se pueden hacer y por qué.
+- Al final, la línea para responderte: "16.1 OK · 16.2 falla (captura)".
+Si cambiaste algo que no tiene prueba en este documento, propón la prueba nueva
+con el siguiente número de su fase.
+```
 
 ### Prompt para arrancar el paso 1 (conversación NUEVA de Claude Code)
 
@@ -244,6 +263,103 @@ primeras pestañas, copiando el flujo de la app "Gestión de Placas" que usa Gab
 - Resumen final: nuevas, actualizadas, reactivadas, omitidas, y "ya las vio la
   cámara" (esas se avisan por Telegram como "🗂️ Ya la viste").
 - La MISMA función de extracción se usa en la web y en Telegram (una sola).
+- Archivos .txt (incluido el chat exportado de WhatsApp, "Sin archivos"): se pueden
+  arrastrar a las pestañas Carga / Baja / Reactivación, y también enviarse al bot.
+  El NOMBRE del archivo decide la operación cuando se envía al bot o se suelta en
+  la pestaña Carga: si empieza por "BORRAR" → Baja masiva; "REACTIVAR" →
+  Reactivación; "CARGAR" o cualquier otro → Carga. Siempre se muestra el resumen y
+  se pide confirmación antes de aplicar.
+- Chat exportado de WhatsApp. Formato REAL (verificado con 3 exportaciones de
+  grupos de Gabriel, 18/11/2026; ~5.000 placas de carro y ~900 de moto entre los 3):
+  · Encabezado de mensaje "[m/d/aa, h:mm:ss AM/PM] Nombre: texto"
+    (ej. "[9/16/26, 8:08:47 PM]": MES/DÍA, estilo EE. UU.). Puede traer un carácter
+    invisible U+200E al inicio y U+202F antes de AM/PM. Acepta también el formato
+    Android "dd/mm/aa, h:mm a. m. - Nombre: texto". Si algún primer número es > 12,
+    es día/mes; si no, en el formato con [ ] y AM/PM, mes/día.
+  · Un mensaje sigue en las líneas siguientes hasta el próximo encabezado (listas de
+    cientos de placas en un solo mensaje).
+  · Prefijo "[Reenviado]" al inicio del texto: se ignora.
+  · Palabra "UBICAR" / "UBICAR BD" (y sus errores: UBCIAR, UBUCAR, UBICATR) = cargar.
+  · Líneas "PLACA<TAB>CC<TAB>número" (ej. "LVZ077  CC  1234…"): se toma SOLO la
+    placa para la lista; el número se guarda como documento del deudor (solo Admin,
+    ver abajo) y nunca va a la app ni a operadores.
+  · Ignorar: "<Mensaje de voz omitido>", "<Sticker omitido>", "<Imagen omitida>",
+    "Se eliminó este mensaje.", "#####", "🚨🚨🚨", saludos y conversación.
+  · Bajas dentro del mismo chat: un mensaje que contenga "CANCELAR", "CANCELAR
+    BÚSQUEDA DEL VEHÍCULO DE PLACA X", "BAJAR DE BASES LA PLACA X" (también
+    "ELIMINAR", "RETIRAR", "SACAR DE LA BASE", "CLIENTE AL DÍA", "INSOLVENCIA")
+    → las placas de ESE mensaje (en la misma línea o en las siguientes) van a
+    "Para dar de baja", no a "Para cargar". Cuenta el orden: el mensaje más reciente
+    de cada placa decide (UBICAR después de CANCELAR = vuelve a cargar).
+    En la prueba real: 17 placas marcadas para cancelar, 10 de ellas habían sido
+    pedidas antes con UBICAR.
+  · "CORREGIR X POR Y": X va a baja e Y a carga (las dos en el resumen).
+  · Mensajes con ficha del vehículo (grupo "UBICACIONES": un mensaje por placa,
+    ~245 de 273 traen ficha). Debajo de la placa vienen rótulos con el valor en la
+    MISMA línea o en la SIGUIENTE: "Tipo de servicio:", "Clase de vehículo:",
+    "Marca:", "Línea:", "Modelo:", "Color:", "SOAT si/no", "Tecnomecanica si/no".
+    Guardar en vehiculos: marca, línea, modelo, color, tipo_servicio, clase
+    (columna nueva, aditiva), soat y tecnomecanica (si/no, columnas nuevas). Es la
+    única fuente del COLOR (el RGM no lo trae): el RGM después reescribe marca,
+    línea y modelo, nunca el color.
+  · En esos mismos mensajes también se guardan (decisión de Gabriel, 18/11/2026)
+    el BANCO, el DEUDOR y las DIRECCIONES. Son datos sensibles: solo Admin, en la
+    web y en Telegram; NUNCA a la app NEXCAM ni a operadores (regla de siempre).
+    - Bloque "PARTES": 1 a 3 líneas hasta "DETALLE" o el siguiente rótulo. El orden
+      cambia (a veces el banco primero, a veces la persona). La línea que parece
+      financiera (BANCO, S.A., S.A.S, RCI, GM, CHEVYPLAN, FINANDINA, FINANZAUTO,
+      FINSOCIAL, DAVIVIENDA, BBVA, SANTANDER, TOYOTA, CARROFACIL, PLANAUTOS,
+      CAPITAL, COMPAÑIA DE FINANCIAMIENTO…) es el banco → vehiculos.banco; la línea
+      con nombre de persona es el deudor → deudor_nombre. "DETALLE", "PARTICULAR"
+      y líneas de vehículo ("• MARCA: …") no son partes. Si no se puede decidir
+      cuál es cuál, se guarda en "partes sin clasificar" para revisar en la ficha.
+    - Banco con nombre normalizado para filtrar y agrupar (ej. "RCI COLOMBIA S.A.
+      COMPAÑIA DE FINANCIAMIENTO" y "RCI" → RCI; "GM FINANCIAL…" y "GM" → GM
+      Financial; "BANCO DAVIVIENDA S.A." y "BANCO DAVIVIENDA" → Davivienda),
+      conservando el texto original. Tabla de equivalencias editable en la web.
+    - Documento del deudor: de la línea "PLACA<TAB>CC<TAB>número" → deudor_tipo_doc
+      y deudor_documento (esto reemplaza la regla anterior de descartarlo; ahora se
+      guarda, solo Admin).
+    - "UBICACION": de 0 a ~14 líneas "dirección<TAB>CIUDAD ( DEPARTAMENTO )" hasta
+      "SOAT", "Tecnomecanica" o el siguiente mensaje. Tabla nueva
+      vehiculo_direcciones (placa, direccion, ciudad, departamento, fuente
+      'whatsapp', fecha del mensaje, activa). Sin duplicar la misma dirección.
+    - Ficha (web, Admin): bloque "Deudor y direcciones registradas" con banco,
+      deudor, documento y la lista de direcciones, cada una con enlace "Ver en el
+      mapa" (Google Maps con dirección + ciudad); se pueden editar, agregar y
+      marcar como "ya no vive ahí". Origen visible ("del chat del 16/09/2026").
+    - Telegram (solo Admin): en la ficha, botón [🏠 Direcciones (N)] que manda la
+      lista con enlaces al mapa. En la alerta de un Admin, línea
+      "🏠 N direcciones registradas". Nada de esto en alertas de operadores.
+    - Si después llega el RGM: el acreedor y el deudor del RGM se muestran como
+      "según RGM del <fecha>" y, si difieren del chat, se ven los dos (no se borra
+      lo del chat). Las direcciones no las toca el RGM.
+    - Columnas y tablas nuevas con migración aditiva y copia de la base antes.
+  · "UBICAR A" / "UBICAR L": la letra no significa nada; se ignora.
+  · "YA FUE CAPTURADA" (y "CAPTURADO", "RECUPERADO") también cuenta como baja.
+    Ojo: "aprehensión" NO es palabra de baja (aparece en mensajes de carga).
+  · Motos (LLLDDL, ej. BEE48H): lista aparte "N motos (la cámara no las busca)",
+    con casilla "Guardar también las motos" (desactivada por defecto; si se marca,
+    se guardan con la marca "moto", igual que en el bloque G).
+  · Placas cortadas o raras ("MC0350…", "SZS", "387") → omitidos.
+  · Un mismo chat repite las mismas listas muchas veces (un grupo tenía ~2.600
+    placas repetidas): se cuentan una vez, con la PRIMERA fecha como fecha de
+    ingreso (opción "Usar la fecha del mensaje como fecha de ingreso", activada por
+    defecto cuando se detecta el formato).
+  · No se guarda el nombre ni el teléfono de quien escribió en el grupo, ni la
+    conversación: solo placa, fecha, operación y los datos de ficha descritos aquí.
+- Se acepta el .zip que entrega WhatsApp al exportar (lee el chat.txt de adentro;
+  ignora el resto) y VARIOS archivos a la vez: un solo resumen combinado, sin
+  duplicar entre archivos, con una línea por archivo ("Placas_Base_Captucol.zip:
+  3.604 placas, 1.210 nuevas"). La regla del nombre (CARGAR/BORRAR/REACTIVAR) se
+  aplica al nombre del .zip o del .txt.
+- Volumen: una carga de 5.000 placas se aplica en una sola transacción (con copia
+  de seguridad de MasterPlacas.db antes, regla de CLAUDE.md), no placa por placa,
+  y sin mandar un mensaje de Telegram por placa: un solo resumen al terminar. La
+  lista "Ver lista" se pagina.
+- Resumen antes de aplicar, en este orden: para cargar (nuevas / ya estaban activas
+  / estaban dadas de baja), para dar de baja (estaban activas / no estaban),
+  motos, omitidos. Cargar y dar de baja se confirman por separado.
 
 Telegram (solo usuarios Admin vinculados):
 - Pegar cualquier texto en el bot (o reenviar un mensaje de WhatsApp) → responde
@@ -499,6 +615,122 @@ pedido sí, con datos y sensibles solo a Admin; línea/serie/motor extraídos de
 descripcion_bien; lista en vivo con máximo 10; Últimas paginada edita el mensaje.
 ```
 
+## Prompt 6: Telegram ordenado, datos del vehículo bajo la placa y "Últimas" en vivo
+
+Resultado de las pruebas 16.1 a 16.6 (18/11/2026, 3:20 a. m.): 16.4 OK. Lo demás se corrige aquí.
+
+```text
+Rama nexcam, sin preguntar (CLAUDE.md). Commit por punto, push al final, reporte
+punto por punto con la sección "Pruebas para tu visto bueno".
+
+1) Un solo formato de ficha en Telegram (alerta, respuesta del 🔎 RGM, botón
+   📋 Ficha y /buscar), armado por UNA función. Hoy el RGM a pedido se pega al
+   final de la alerta y queda desordenado ("🚗 GCT 953" repetido, "Consulta hecha.",
+   "En tu lista: CHEVROLET", "Vista 4 veces. Última…", "Antes:"). Debe quedar así,
+   en este orden, omitiendo las líneas sin datos:
+     🚗 <b>GCT 953</b>
+     🚨 En lista: UBICAR                (el motivo; si está vacío: "UBICAR",
+                                          nunca "sin motivo")
+     📅 Ingreso: 13/09/2026, 10:05 p. m.
+     🚙 Chevrolet Tracker · 2021 · Particular · <color si hay>
+     🔩 Serie/VIN: … · Motor: …
+     🏦 Acreedor: …                      (solo Admin)
+     👤 Deudor: nombre · C.C. · ciudad    (solo Admin)
+     📄 RGM del 18/11/2026, 12:37 a. m.
+     🗺️ Ubicaciones (4)
+     • 18/11/2026, 3:06 a. m. · Eduardo Camacho · <a href=…>Ver</a>
+     • 18/11/2026, 12:25 a. m. · Eduardo Camacho · <a href=…>Ver</a>
+     (la más reciente arriba; máximo 8 y "… y N más en la web")
+   - Elimina "Consulta hecha.", "En tu lista: …", "Vista N veces. Última: …" y
+     "Antes:" (eso ya lo dice la lista de Ubicaciones).
+   - En una ALERTA, arriba de 🗺️ va la línea de la lectura actual: "🕘 18/11/2026,
+     3:06 a. m. · confianza 78 % · 👤 Eduardo Camacho".
+   - Cuando llega el RGM a pedido de una alerta: se EDITA esa alerta con el formato
+     completo (no se agrega texto al final ni se manda otro mensaje). Si la
+     consulta se pidió por /buscar o desde la web: un mensaje nuevo con ese formato.
+   - Marca, línea y servicio con mayúscula inicial ("Chevrolet Tracker"), no todo
+     en mayúsculas.
+   - Respeta el límite de 1024 caracteres del pie de foto: si no cabe, recorta la
+     lista de Ubicaciones primero.
+
+2) Web, ficha del vehículo: los datos del vehículo van DEBAJO DE LA PLACA, en el
+   bloque principal (hoy dice "CHEVROLET / —" y "— / —" aunque el RGM trae
+   TRACKER 2021). Bloque principal: Tipo · Marca / Línea · Modelo · Color ·
+   Servicio · Serie/VIN · Motor · Chasis · En la lista desde · Registrado por ·
+   Fecha de baja, con "según RGM del <fecha>" en pequeño.
+   - La caja lateral "Datos RGM" ya no repite el vehículo: solo fecha de consulta,
+     Actualizar, Acreedor y Deudor (solo Admin) y "Ver datos originales".
+   - Arreglo de datos viejos: los RGM guardados ANTES del Prompt 2b nunca llenaron
+     la placa. Haz una vez (al arrancar, con copia de MasterPlacas.db antes y
+     anotado en auditoría) que el último RGM "OK" de cada placa se aplique a
+     vehiculos con la misma regla del 2b. Así GCT 953 queda Chevrolet Tracker 2021
+     sin volver a consultar.
+
+3) "🕒 Últimas" en vivo: hoy es una lista paginada. Gabriel quiere que se vaya
+   actualizando sola mientras la cámara lee:
+   - Al pulsar 🕒 Últimas, el bot manda UN mensaje con las últimas 5 placas leídas
+     (formato del Prompt 5: 🔴/🟡/⚪ 🚗 placa gruesa · hora · operador) y lo EDITA
+     cada vez que entra una lectura nueva: la nueva entra arriba y la más vieja
+     sale. Ese mensaje sigue vivo hasta que se pulse 🕒 Últimas otra vez (el viejo
+     queda fijo con "⏸ Ya no se actualiza") o pasen 12 h.
+   - Máximo una edición cada 3 s por mensaje (si llegan varias lecturas juntas se
+     juntan en una edición), para no chocar con los límites de Telegram.
+   - Debajo, [◀ Anteriores] para ver páginas viejas (5 por página) y [🔴 En vivo]
+     para volver a la vista en vivo. Mientras se mira una página vieja, no se
+     actualiza.
+   - Botones 📋 de las 5 placas visibles en 2 columnas.
+
+4) Demora de los botones (Gabriel nota "mucho delay al pasar de páginas"):
+   - answerCallbackQuery INMEDIATO al recibir el botón, antes de calcular nada.
+   - Las ediciones que responden a un botón NO pasan por la cola de envíos de las
+     alertas: van directo (o por una cola aparte de alta prioridad).
+   - getUpdates en su propio hilo, sin esperar envíos. Meta: el mensaje cambia en
+     menos de 1 s. Mide y reporta el tiempo antes y después.
+   - Lo mismo para "📷 Cámara encendida" / "⏹️ Cámara apagada": Gabriel nota
+     demora al prender y apagar. POST /api/camera/state debe responder al teléfono
+     de una vez y el cambio del mensaje en Telegram ir por la cola de alta
+     prioridad (no detrás de alertas, fotos ni RGM). Meta: menos de 2 s desde que
+     se toca ⏻ hasta que cambia el mensaje. Mide y reporta.
+
+5) Web, Vehículos (tabla "Inventario de vehículos"): el botón rojo de cada fila
+   (dar de baja) sigue saliéndose por la derecha y se ve cortado. Adelanta aquí esa
+   parte del bloque B del Prompt 3:
+   - Quita el botón rojo de la fila; en la fila solo queda [Ficha]. "Dar de baja"
+     pasa al final de la ficha, con confirmación (y queda en auditoría).
+   - La tabla entra completa en su caja a 1366 px y 1440 px de ancho (sin cortar
+     columnas); en pantallas más angostas, scroll horizontal DENTRO de la caja.
+   - Agrega la columna "Vehículo" (marca y línea, ej. "Chevrolet Tracker") entre
+     Tipo y Estado.
+   Revisa con capturas de Playwright a 1366 y 1440 px antes de dar por hecho.
+
+6) Cada día empieza en 0 (la app 0.5.5 ya lo hace en el teléfono): en la web
+   (Hoy, NEXCAM) y en Telegram las cifras "N placas · M en lista" son del día
+   (desde medianoche, America/Bogota). La lista en vivo "📷 Cámara encendida" que
+   sigue abierta al pasar la medianoche cierra con el resumen del día y arranca
+   un mensaje nuevo. Nada se borra: todas las lecturas (también las "sin novedad",
+   con fotos y ubicación) siguen guardadas en NEXORA.
+
+7) "Ya la viste" completo: cuando entra a la lista una placa que la cámara ya vio
+   antes (alta individual en Vehículos, Carga masiva, Telegram, NEXDOC o
+   reactivación), NEXORA busca en TODAS las lecturas guardadas (también las "sin
+   novedad") y avisa:
+   - Telegram (Admin): "🗂️ Ya la viste: GCT 953" con la foto del vehículo de la
+     última vez + formato del punto 1 (vehículo si hay datos) + 🗺️ Ubicaciones
+     con cada vez que se vio (fecha · operador · enlace al mapa). Un mensaje por
+     placa (máximo 10 por carga y luego "… y N más, ver en la web").
+   - Web: en el resumen de la carga y arriba de la ficha, un aviso "La cámara ya
+     vio esta placa N veces (última: <fecha>, <lugar>)" con las fotos.
+   - Verifica que hoy se suben al servidor todas las lecturas con fotos (no solo
+     las de la lista) y que no se borran a los pocos días; si hay limpieza
+     automática, que conserve al menos 180 días (configurable) y lo reportas.
+
+Pruebas con Telegram simulado: formato único (orden de las líneas, sin "Consulta
+hecha", sin "En tu lista"); motivo vacío → UBICAR; RGM a pedido edita la alerta;
+ficha web con datos bajo la placa; arreglo de RGM viejos aplicado una sola vez;
+Últimas: 7 lecturas → el mensaje muestra las 5 últimas y se editó ≤ 3 veces en 3 s;
+el botón responde sin pasar por la cola de alertas.
+```
+
 ---
 
 ## Plan de pruebas
@@ -598,11 +830,44 @@ Antes de cada tanda: reiniciar NEXORA (cerrar la ventana y abrir `iniciar-nexora
 - **16.7** App: botón 🌙 deja la pantalla en negro y la cámara sigue leyendo; mantener el dedo 5 s la enciende; una alerta la enciende sola.
 - **16.8** App: botón ⏻ apaga la cámara (Telegram dice "Cámara apagada") y "Encender cámara" la vuelve a prender.
 
-### Pendiente: migrar la base de placas desde WhatsApp
-Falta un ejemplo del chat exportado (WhatsApp → grupo → ⋮ → Más → Exportar chat → Sin archivos) y saber cómo se escribe en el grupo una placa que se borra. Con eso se arma el importador.
+**Después del Prompt 6 y la app 0.5.4**
+- **16.9** Botón 🔎 RGM en una alerta → la MISMA alerta se reordena: placa, En lista: UBICAR, Ingreso, vehículo, serie/motor, acreedor y deudor, RGM del…, 🗺️ Ubicaciones. Sin "Consulta hecha" ni "En tu lista".
+- **16.10** Una placa sin motivo dice "En lista: UBICAR".
+- **16.11** Ficha web de GCT 953 SIN volver a consultar: debajo de la placa dice Chevrolet / Tracker, 2021, servicio, serie y motor; la caja Datos RGM solo trae acreedor y deudor.
+- **16.12** 🕒 Últimas con la cámara encendida: el mensaje muestra 5 placas y se va actualizando solo (entra la nueva arriba, sale la vieja).
+- **16.13** ◀ Anteriores y 🔴 En vivo cambian el mensaje en menos de 1 segundo.
+- **16.14** App 0.5.4: en el menú ⋮ (o Acerca de) dice versión 0.5.4, y arriba se ven los botones 🌙 y ⏻.
+- **16.15** Apuntar la cámara a una pantalla con texto (WhatsApp con direcciones y cédulas, o la lista de archivos de Claude) → no aparecen placas inventadas (KRB043, CCI017, AMV057) en Historial ni en Telegram.
+- **16.16** Apuntar a una placa real (o una impresa "GCT 953") → la sigue leyendo bien.
+- **16.17** Vehículos: ninguna fila tiene el botón rojo cortado; solo [Ficha]. "Dar de baja" está al final de la ficha y pide confirmación. Se ve la columna Vehículo.
+- **16.18** Tocar ⏻ en la app → en menos de 2 s el mensaje de Telegram cambia a "⏹️ Cámara apagada"; al encender, igual.
+- **16.19** App 0.5.5: al día siguiente (o cambiando la fecha del teléfono a mañana), "Hoy" arranca en 0 placas y la tira de abajo queda vacía; el Historial conserva lo de ayer.
+- **16.20** Dar de alta en la web una placa que la cámara ya vio como "sin novedad" → llega "🗂️ Ya la viste" con la foto y la lista de ubicaciones; en la web, el aviso arriba de la ficha.
+
+### Migrar la base de placas desde WhatsApp (Prompt 3, bloque A)
+- Exportar el chat del grupo: WhatsApp → grupo → ⋮ → Más → Exportar chat → Sin archivos. Sale un .zip: no hace falta descomprimirlo.
+- No hace falta separar a mano lo que se borra: los "CANCELAR …" y "BAJAR DE BASES …" del mismo chat se detectan solos y salen en el resumen como "para dar de baja".
+- El nombre del archivo solo se usa cuando quieres forzar la operación: `CARGAR … .zip` (subir todo), `BORRAR … .txt` (todo lo que traiga se da de baja), `REACTIVAR … .txt`. Sin esas palabras = carga con detección de bajas.
+- Puedes editar el .txt antes de subirlo (quitar o agregar placas, cambiarle el nombre): el importador solo busca placas, fechas y las palabras de baja.
+- **11.9** Soltar los 3 .zip juntos en Carga masiva → un resumen: por archivo, nuevas, ya activas, dadas de baja, para dar de baja, motos y omitidos; la fecha de ingreso es la del primer mensaje de cada placa.
+- **11.10** Enviar `BORRAR … .txt` al bot → resumen "N placas para dar de baja" con [🗑 Dar de baja N] [✖ Cancelar].
+- **11.11** Un chat con "UBICAR GCV471" y después "CANCELAR GCV471" → GCV 471 sale en "para dar de baja", no en "para cargar".
+- **11.12** Líneas "PLACA  CC  número" → se carga la placa; el número queda como documento del deudor, visible solo para Admin (nunca en la app ni para operadores).
+- **11.13** Motos (ej. BEE48H) salen aparte; solo se guardan si marcas "Guardar también las motos".
+- **11.14** Cargar ~5.000 placas tarda menos de un minuto, hace copia de la base antes y manda un solo resumen a Telegram.
+- **11.15** Subir `UBICACIONES_2.zip` → las placas con ficha quedan con marca, línea, modelo, color, servicio, clase, banco, deudor con documento y sus direcciones.
+- **11.17** Ficha de una de esas placas: el banco sale con su nombre corto (RCI, GM Financial, Davivienda…) y cada dirección tiene "Ver en el mapa".
+- **11.18** Telegram como Admin: ficha → [🏠 Direcciones (N)]. Como operador: la alerta y la ficha no muestran banco, deudor, documento ni direcciones; la app NEXCAM tampoco.
+- **11.16** Después de un RGM de una de esas placas, el color sigue siendo el del chat.
 
 ### Resultados
 
 | Prueba | Fecha | Resultado | Nota |
 |---|---|---|---|
+| 16.4 | 18/11/2026 | OK | En vivo compacto, la foto se amplía |
+| 16.7 | 18/11/2026 | OK | App 0.5.4 |
+| 16.8 | 18/11/2026 | OK | App 0.5.4 |
+| 16.14 | 18/11/2026 | OK | Botones 🌙 y ⏻ visibles |
+| 16.15 | 18/11/2026 | OK | Sin placas inventadas de direcciones/cédulas; lee las placas reales escritas en el chat (TSZ716, GWV599), con buen enfoque |
+| 16.1 a 16.3, 16.5, 16.6 | 18/11/2026 | Con cambios | Pasan al Prompt 6 (16.9 a 16.13) |
 | 7.1 | | | |

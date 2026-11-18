@@ -379,3 +379,51 @@ def test_rgm_solicitar_usa_snapshot_vigente_sin_encolar_de_nuevo(cliente):
     r = cliente.post("/rgm/solicitar", data={"placa": "NOP012", "alcance": "RGM"}, follow_redirects=False)
     assert r.status_code == 303
     assert db.item_rgm_pendiente_o_en_curso("NOP012", "RGM") is None
+
+
+# --------------------------------------------------------------------- Prompt 6 punto 2: arreglo de RGM viejos
+
+def test_backfill_rgm_aplica_el_ultimo_snapshot_ok_una_sola_vez(cliente):
+    """Un snapshot RGM guardado ANTES del Prompt 2b (insertado directo,
+    sin pasar por completar_item) nunca escribió `vehiculos` -- GCT 953
+    se quedaba en "CHEVROLET / —" aunque el snapshot ya traía línea
+    TRACKER y modelo 2021. _migrar_backfill_rgm_a_vehiculos debe
+    aplicarlo retroactivamente, una sola vez (idempotente)."""
+    admin = _crear_admin("Admin Backfill Uno", "admin.backfill1")
+    _crear_placa("GCT953", admin["id"])
+    descripcion = "T. Servicio: Particular Linea: TRACKER Motor: ABC123"
+    db.crear_snapshot("GCT953", "RGM", json.dumps({
+        "estado": "OK", "vehiculo": {"marca": "CHEVROLET", "modelo": "2021",
+                                      "tipo_servicio": "Particular", "descripcion_bien": descripcion},
+    }))
+    assert db.buscar_placa("GCT953")["marca"] is None  # todavía no se aplicó (simula el bug viejo)
+
+    db._migrar_backfill_rgm_a_vehiculos()
+
+    vehiculo = db.buscar_placa("GCT953")
+    assert vehiculo["marca"] == "CHEVROLET"
+    assert vehiculo["linea"] == "TRACKER"
+    assert vehiculo["modelo"] == "2021"
+    assert vehiculo["rgm_actualizado_en"] is not None
+    logs = db.listar_logs(usuario_id=None)
+    assert sum(1 for l in logs if l["accion"] == "RGM_BACKFILL_PROMPT6") == 1
+    assert any(l["accion"] == "RGM_ACTUALIZO_VEHICULO" for l in db.listar_logs_de_placa("GCT953"))
+
+    # Una segunda llamada (ej. el servidor se reinicia otra vez) no debe
+    # volver a tocar nada ni duplicar el log centinela.
+    with db.get_connection() as conn:
+        conn.execute("UPDATE vehiculos SET marca = 'OTRA' WHERE placa = 'GCT953'")
+    db._migrar_backfill_rgm_a_vehiculos()
+    assert db.buscar_placa("GCT953")["marca"] == "OTRA"  # no se reprocesó
+    logs_despues = db.listar_logs(usuario_id=None)
+    assert sum(1 for l in logs_despues if l["accion"] == "RGM_BACKFILL_PROMPT6") == 1
+
+
+def test_backfill_rgm_ignora_snapshots_sin_estado_ok(cliente):
+    admin = _crear_admin("Admin Backfill Dos", "admin.backfill2")
+    _crear_placa("ERR789", admin["id"])
+    db.crear_snapshot("ERR789", "RGM", json.dumps({"estado": "SIN_DATOS", "vehiculo": {"marca": "FORD"}}))
+
+    db._migrar_backfill_rgm_a_vehiculos()
+
+    assert db.buscar_placa("ERR789")["marca"] is None

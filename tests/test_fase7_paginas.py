@@ -80,6 +80,49 @@ def test_ficha_vehiculo_inexistente_no_rompe(cliente):
     assert "No se encontró" in r.text
 
 
+def test_inventario_muestra_columna_vehiculo_sin_boton_de_baja_en_la_fila(cliente):
+    """Prompt 6 punto 5: el botón rojo de baja se salía de la fila --
+    ahora cada fila solo trae [Ficha] (la baja se mudó al final de la
+    ficha) y hay una columna "Vehículo" (marca y línea) entre Tipo y
+    Estado."""
+    admin = _crear_admin("Admin Inventario", "admin.inventario")
+    db.insertar_placa("JKL321", "carro", admin["id"], "Prueba")
+    with db.get_connection() as conn:
+        conn.execute("UPDATE vehiculos SET marca = 'Chevrolet', linea = 'Tracker' WHERE placa = 'JKL321'")
+    _login_web(cliente, "admin.inventario")
+
+    r = cliente.get("/")
+    assert r.status_code == 200
+    assert "Vehículo" in r.text
+    assert "Chevrolet Tracker" in r.text
+    assert "abrirModalBaja" not in r.text  # ya no hay botón de baja en la fila
+    assert "modal-baja" not in r.text  # el modal se mudó a la ficha
+
+
+def test_baja_vive_en_la_ficha_y_vuelve_a_ella_tras_confirmar(cliente):
+    admin = _crear_admin("Admin Baja Ficha", "admin.bajaficha")
+    db.insertar_placa("MNO654", "carro", admin["id"], "Prueba")
+    _login_web(cliente, "admin.bajaficha")
+
+    r_ficha = cliente.get("/vehiculos/MNO654")
+    assert r_ficha.status_code == 200
+    assert "Dar de baja este vehículo" in r_ficha.text
+    assert 'action="/vehiculos/baja"' in r_ficha.text
+
+    r_baja = cliente.post(
+        "/vehiculos/baja",
+        data={"placa": "MNO654", "confirmar": "SI"},
+        follow_redirects=False,
+    )
+    assert r_baja.status_code == 303
+    assert r_baja.headers["location"].startswith("/vehiculos/MNO654?")
+    assert db.buscar_placa("MNO654")["estado"] == "baja"
+
+    r_despues = cliente.get(r_baja.headers["location"])
+    assert "dada de baja correctamente" in r_despues.text
+    assert "Dar de baja este vehículo" not in r_despues.text  # ya no está activa: no se ofrece de nuevo
+
+
 def test_menu_nuevo_aparece_en_base(cliente):
     admin = _crear_admin("Admin Menu", "admin.menu")
     _login_web(cliente, "admin.menu")
