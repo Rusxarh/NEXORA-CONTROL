@@ -88,6 +88,16 @@ BOGOTA = timezone(timedelta(hours=-5))
 VENTANA_EVENTOS_SEGUNDOS = 60
 
 ICONO = {"exacta": "🚨", "probable": "⚠️"}
+# Prompt 5 punto 5: icono DISTINTO (y más chico) para la lista en vivo y
+# "Últimas" -- las alertas siguen usando ICONO de arriba, sin cambios.
+ICONO_VIVO = {"exacta": "🔴", "probable": "🟡"}
+
+# Prompt 5 punto 5: solo las últimas N placas en "📷 Cámara encendida"
+# (antes mostraba hasta 30, una lista larga es difícil de leer de un
+# vistazo en la calle); la cabecera sigue contando el total de la sesión.
+TG_VIVO_MAX = int(os.environ.get("TG_VIVO_MAX", "10"))
+# Prompt 5 punto 6: "🕒 Últimas" paginada, 10 por página.
+TG_ULTIMAS_POR_PAGINA = 10
 
 B = {
     "estado": "📊 Estado", "ultimas": "🕒 Últimas", "buscar": "🔍 Buscar placa",
@@ -147,6 +157,32 @@ def _esc(t) -> str:
 
 def _fmt_placa(p: str = "") -> str:
     return f"{p[:3]} {p[3:]}" if len(p or "") >= 6 else (p or "")
+
+
+_BASE_SANS_BOLD_LETRA = 0x1D5D4   # MATHEMATICAL SANS-SERIF BOLD CAPITAL A
+_BASE_SANS_BOLD_DIGITO = 0x1D7EC  # MATHEMATICAL SANS-SERIF BOLD DIGIT ZERO
+
+
+def placa_destacada(texto: str) -> str:
+    """
+    Prompt 5 punto 5: la placa en letras Unicode "negrita sans"
+    (𝗔-𝗭, 𝟬-𝟵) -- en Telegram se ven más gruesas y de otra fuente, la
+    única forma de "agrandar" texto ahí sin HTML (Telegram no deja
+    cambiar el tamaño de letra). Función ÚNICA, usada SOLO en la lista en
+    vivo y en "Últimas" (listas rápidas de leer desde lejos/en la calle):
+    en alertas y fichas la placa se queda en texto normal en negrilla
+    HTML (<b>), porque estos caracteres especiales no son "letras" de
+    verdad para copiar/pegar ni para que alguien la busque a mano.
+    """
+    letras = []
+    for c in texto or "":
+        if "A" <= c <= "Z":
+            letras.append(chr(_BASE_SANS_BOLD_LETRA + (ord(c) - ord("A"))))
+        elif "0" <= c <= "9":
+            letras.append(chr(_BASE_SANS_BOLD_DIGITO + (ord(c) - ord("0"))))
+        else:
+            letras.append(c)
+    return "".join(letras)
 
 
 def _dt_bogota(ts_ms: Optional[int] = None) -> datetime:
@@ -758,13 +794,14 @@ class BotTelegram:
             cab = f"📷 <b>Cámara encendida</b> · {actor}\nDesde {_reloj(s['inicio'])} · {n_placas} placas · {en_lista} en lista"
         if not s["placas"]:
             return f"{cab}\n\n{'No leyó ninguna placa.' if final else 'Esperando placas…'}"
+        # Prompt 5 punto 5: solo las últimas TG_VIVO_MAX (la cabecera ya
+        # cuenta el total de la sesión completa, arriba).
         filas_orden = sorted(s["placas"].values(), key=lambda d: -d["ultima_ts"])
         filas = []
-        for d in filas_orden[:30]:
-            marca = ICONO.get(d["tipo"], "▫️")
-            contador = f"  ×{d['veces']}" if d["veces"] > 1 else ""
-            filas.append(f"{marca} {_esc(_fmt_placa(d['placa']))}{contador}  {_reloj_corto(d['ultima_ts'])}")
-        mas = f"\n…y {len(filas_orden) - 30} placa(s) más." if len(filas_orden) > 30 else ""
+        for d in filas_orden[:TG_VIVO_MAX]:
+            icono = ICONO_VIVO.get(d["tipo"], "⚪")
+            filas.append(f"{icono} 🚗 {placa_destacada(_fmt_placa(d['placa']))}   {_reloj_corto(d['ultima_ts'])}")
+        mas = f"\n…y {len(filas_orden) - TG_VIVO_MAX} placa(s) más." if len(filas_orden) > TG_VIVO_MAX else ""
         return f"{cab}\n\n{chr(10).join(filas)}{mas}"
 
     def _abrir_sesion(self, device_uuid, device, operador, ts) -> Optional[dict]:
@@ -1124,16 +1161,54 @@ class BotTelegram:
             return self._texto(chat_id, _esc(str(e)))
         return self._texto(chat_id, f"Quitada <b>{_esc(_fmt_placa(placa))}</b> de la lista.", self._con_menu())
 
-    def _ultimas(self, chat_id):
-        ds = nexcam_db.avistamientos_recientes(10)
-        if not ds:
-            return self._texto(chat_id, "Todavía no hay placas leídas.")
-        texto = "\n".join(
-            f"{ICONO.get(d.get('match_type')) or ('🚨' if d['en_lista'] else '▫️')} {_hora(d['ts'])}  <b>{_esc(_fmt_placa(d['placa']))}</b>, {_esc(d.get('operador') or '')}"
-            for d in ds
-        )
-        botones = [[{"text": f"📋 {_fmt_placa(d['placa'])}", "callback_data": f"ficha:{d['placa']}"}] for d in ds[:5]]
-        return self._texto(chat_id, texto, {"reply_markup": {"inline_keyboard": botones}})
+    def _pagina_ultimas(self, pagina: int):
+        """Recalcula una página de "Últimas" desde la base (sin guardar
+        ningún estado de paginación aparte: la propia página pedida ES el
+        estado, igual que ya hace rgm_web con `pagina` en NEXCAM -> En
+        vivo). Devuelve (pagina_recortada, total_paginas, items)."""
+        total = nexcam_db.contar_avistamientos()
+        total_paginas = max(1, -(-total // TG_ULTIMAS_POR_PAGINA))
+        pagina = min(max(1, pagina), total_paginas)
+        items = nexcam_db.avistamientos_recientes(TG_ULTIMAS_POR_PAGINA, (pagina - 1) * TG_ULTIMAS_POR_PAGINA)
+        return pagina, total_paginas, items
+
+    def _texto_ultimas(self, pagina: int, total_paginas: int, items: list) -> str:
+        cabecera = f"🕒 <b>Últimas placas</b> · página {pagina} de {total_paginas}"
+        if not items:
+            return f"{cabecera}\n\nTodavía no hay placas leídas."
+        filas = [
+            f"{ICONO_VIVO.get(d.get('match_type') or ('exacta' if d['en_lista'] else None), '⚪')} 🚗 "
+            f"{placa_destacada(_fmt_placa(d['placa']))}   {_reloj_corto(d['ts'])} · {_esc(d.get('operador') or '—')}"
+            for d in items
+        ]
+        return f"{cabecera}\n\n{chr(10).join(filas)}"
+
+    def _botones_ultimas(self, pagina: int, total_paginas: int, items: list) -> dict:
+        nav = []
+        if pagina > 1:
+            nav.append({"text": "◀ Anterior", "callback_data": f"ultimas:{pagina - 1}"})
+        nav.append({"text": f"{pagina}/{total_paginas}", "callback_data": "noop"})
+        if pagina < total_paginas:
+            nav.append({"text": "Siguiente ▶", "callback_data": f"ultimas:{pagina + 1}"})
+        filas_placas, fila = [], []
+        for d in items:
+            fila.append({"text": f"📋 {_fmt_placa(d['placa'])}", "callback_data": f"ficha:{d['placa']}"})
+            if len(fila) == 2:
+                filas_placas.append(fila)
+                fila = []
+        if fila:
+            filas_placas.append(fila)
+        return {"inline_keyboard": [nav] + filas_placas}
+
+    def _ultimas(self, chat_id, pagina: int = 1):
+        """Prompt 5 punto 6: paginada, 10 por página, la más reciente
+        primero; los botones [◀ Anterior] [Siguiente ▶] EDITAN este mismo
+        mensaje (ver accion=="ultimas" en _boton_pulsado), nunca mandan
+        uno nuevo."""
+        pagina, total_paginas, items = self._pagina_ultimas(pagina)
+        texto = self._texto_ultimas(pagina, total_paginas, items)
+        extra = {"reply_markup": self._botones_ultimas(pagina, total_paginas, items)}
+        return self._texto(chat_id, texto, extra)
 
     PREGUNTA = {
         "buscar": "🔍 Escribe la placa que quieres buscar (por ejemplo ABC123).",
@@ -1340,6 +1415,30 @@ class BotTelegram:
                 conectado = rgm_cola.trabajador_conectado()
                 extra = f" {resultado['mensaje']}" if resultado.get("mensaje") else ""
                 responder(("Consulta encolada." + extra) if conectado else ("Consulta encolada, pero nadie tiene abierta la página Consulta ahora mismo." + extra))
+            return
+
+        if accion == "noop":
+            # Prompt 5 punto 6: el botón "1/4" (indicador de página) no
+            # hace nada -- solo hay que cerrar el "cargando..." del botón.
+            responder()
+            return
+
+        if accion == "ultimas":
+            # Prompt 5 punto 6: [◀ Anterior]/[Siguiente ▶] EDITAN este
+            # mismo mensaje, nunca mandan uno nuevo.
+            responder()
+            pagina = int(valor) if valor.lstrip("-").isdigit() else 1
+            pagina, total_paginas, items = self._pagina_ultimas(pagina)
+            try:
+                self._llamar("editMessageText", {
+                    "chat_id": chat_id, "message_id": q["message"]["message_id"],
+                    "text": self._texto_ultimas(pagina, total_paginas, items), "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                    "reply_markup": self._botones_ultimas(pagina, total_paginas, items),
+                })
+            except Exception as e:
+                if "not modified" not in str(e).lower():
+                    self.log(f"Telegram: no se pudo paginar Últimas - {e}")
             return
 
     # ------------------------------------------------------------ bucle de mensajes

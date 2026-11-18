@@ -450,3 +450,58 @@ def test_lectura_tardia_no_contamina_la_sesion_y_avisa_aparte(bot):
     bot.llamadas.clear()
     bot.on_evento("detection.hit", _deteccion("LMN222", device_uuid="tel-tardio", id=100, ts=ts_tardio + 1000))
     assert bot.llamadas == []
+
+
+# --------------------------------------------------------------------- Prompt 5: placa_destacada, lista en vivo, Últimas
+
+def test_placa_destacada_convierte_letras_y_numeros():
+    assert nexcam_telegram.placa_destacada("GCV 471") == "𝗚𝗖𝗩 𝟰𝟳𝟭"
+    assert nexcam_telegram.placa_destacada("") == ""
+    # letras minúsculas se quedan igual (la placa siempre llega normalizada
+    # a mayúsculas); los dígitos sí se convierten sin importar el contexto.
+    assert nexcam_telegram.placa_destacada("abc-123") == "abc-" + nexcam_telegram.placa_destacada("123")
+
+
+def test_lista_en_vivo_solo_muestra_las_ultimas_diez_placas(bot):
+    admin = _crear_usuario("Admin Tele18", "Admin", "admin.tele18", telegram_id=556310)
+    bot._vincular(556310, [bot.codigo], "Admin Tele18")
+    bot.on_evento("camera.started", {"device_uuid": "tel-vivo", "device": "HONOR ALT-NX3", "operador": "Eduardo"})
+
+    base_ts = int(time.time() * 1000)
+    for i in range(15):
+        bot.on_evento("detection.hit", _deteccion(
+            f"VVV{i:03d}", device_uuid="tel-vivo", id=i, ts=base_ts + i * 1000, en_lista=False, match_type=None))
+
+    sesion = bot.sesiones["tel-vivo"]
+    assert len(sesion["placas"]) == 15  # la cabecera sigue contando el total de la sesión completa
+    texto = bot._texto_sesion(sesion)
+    assert "15 placas" in texto
+    assert nexcam_telegram.placa_destacada("VVV 014") in texto  # la más reciente, sí aparece
+    assert nexcam_telegram.placa_destacada("VVV 000") not in texto  # la más vieja, ya no (salió al llegar la 11ª)
+    assert "…y 5 placa(s) más." in texto
+
+
+def test_ultimas_paginada_y_los_botones_editan_el_mismo_mensaje(bot):
+    admin = _crear_usuario("Admin Tele19", "Admin", "admin.tele19", telegram_id=556311)
+    bot._vincular(556311, [bot.codigo], "Admin Tele19")
+    sesion = {"usuario_id": admin["id"], "nombre": "Admin Tele19", "device_uuid": "tel-ultimas"}
+    for i in range(25):
+        nexcam_db.registrar_avistamiento(
+            sesion, f"UUU{i:03d}", f"UUU{i:03d}", "exact", 0.9, None, None, "prueba",
+            None, None, int(time.time() * 1000) + i, None, None,
+        )
+
+    bot.llamadas.clear()
+    resultado = bot._ultimas(556311)
+    primero = [c for metodo, c in bot.llamadas if metodo == "sendMessage"][-1]
+    assert "página 1 de 3" in primero["text"]
+    assert any("Siguiente" in b["text"] for fila in primero["reply_markup"]["inline_keyboard"] for b in fila)
+
+    bot._boton_pulsado({"id": "cbq1", "message": {"chat": {"id": 556311}, "message_id": resultado["message_id"]}, "data": "ultimas:2"})
+    edicion = [c for metodo, c in bot.llamadas if metodo == "editMessageText"][-1]
+    assert edicion["message_id"] == resultado["message_id"]  # edita el MISMO mensaje, no manda uno nuevo
+    assert "página 2 de 3" in edicion["text"]
+    assert sum(1 for metodo, c in bot.llamadas if metodo == "sendMessage") == 1  # sigue siendo un solo mensaje
+
+    # El botón "2/3" (indicador de página) no hace nada, pero no debe fallar.
+    bot._boton_pulsado({"id": "cbq2", "message": {"chat": {"id": 556311}, "message_id": resultado["message_id"]}, "data": "noop"})
