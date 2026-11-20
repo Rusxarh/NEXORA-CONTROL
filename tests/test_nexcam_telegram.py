@@ -485,6 +485,49 @@ def test_vigilante_de_esperas_edita_una_vez_el_mensaje_consultando(bot):
     assert bot.llamadas == []
 
 
+# --------------------------------------------------------------------- Prompt 6b punto 2: botón RGM siempre está, solo Admin
+
+def test_boton_rgm_siempre_esta_en_la_alerta_y_cambia_de_texto(bot):
+    """Antes se ocultaba si ya había un RGM de menos de 24 h; ahora
+    siempre está, con "🔄 Actualizar RGM" cuando ya hay datos y "🔎
+    Consultar RGM" cuando no."""
+    import rgm_cola
+
+    admin = _crear_usuario("Admin Tele60", "Admin", "admin.tele60", telegram_id=556600)
+    bot._vincular(556600, [bot.codigo], "Admin Tele60")
+    db.insertar_placa("BTN111", "carro", admin["id"], "Hurto")
+
+    bot.on_evento("detection.hit", _deteccion("BTN111", device_uuid="tel-btn", id=1))
+    ultimo = [c for metodo, c in bot.llamadas if metodo == "sendMessage"][-1]
+    botones_rgm = [b for fila in ultimo["reply_markup"]["inline_keyboard"] for b in fila if b["callback_data"] == "rgm:BTN111"]
+    assert len(botones_rgm) == 1 and botones_rgm[0]["text"] == "🔎 Consultar RGM"
+
+    item = rgm_cola.solicitar_consulta("BTN111", "RGM", "panel", admin["id"])["item"]
+    rgm_cola.completar_item(item["id"], {"rgm": {"estado": "OK", "vehiculo": {"marca": "Mazda"}}, "judicial": None})
+    bot.llamadas.clear()
+
+    bot.on_evento("detection.hit", _deteccion("BTN111", device_uuid="tel-btn", id=2))
+    ultimo2 = [c for metodo, c in bot.llamadas if metodo in ("editMessageText", "editMessageCaption")][-1]
+    botones_rgm2 = [b for fila in ultimo2["reply_markup"]["inline_keyboard"] for b in fila if b["callback_data"] == "rgm:BTN111"]
+    assert len(botones_rgm2) == 1 and botones_rgm2[0]["text"] == "🔄 Actualizar RGM"  # sigue ahí, ahora dice "Actualizar"
+
+
+def test_boton_rgm_no_aparece_para_operador(bot):
+    admin = _crear_usuario("Admin Tele61", "Admin", "admin.tele61", telegram_id=556601)
+    oper = _crear_usuario("Oper Tele61", "Operador", "oper.tele61", telegram_id=556602)
+    bot._vincular(556601, [bot.codigo], "Admin Tele61")
+    bot._vincular(556602, [bot.codigo], "Oper Tele61")
+    db.insertar_placa("BTN222", "carro", oper["id"], "Hurto")
+
+    bot.on_evento("detection.hit", _deteccion("BTN222", device_uuid="tel-btn2", id=1))
+
+    mensajes = {c["chat_id"]: c for metodo, c in bot.llamadas if metodo == "sendMessage"}
+    botones_admin = [b for fila in mensajes[556601]["reply_markup"]["inline_keyboard"] for b in fila]
+    botones_oper = [b for fila in mensajes[556602]["reply_markup"]["inline_keyboard"] for b in fila]
+    assert any(b["callback_data"] == "rgm:BTN222" for b in botones_admin)
+    assert not any(b["callback_data"] == "rgm:BTN222" for b in botones_oper)
+
+
 # --------------------------------------------------------------------- "0. Pendientes rápidos": instalar app
 
 def test_bot_no_arranca_bajo_pytest(bot, monkeypatch):

@@ -455,6 +455,40 @@ def test_camera_started_stopped_no_hacen_fila_detras_de_otros_eventos(cliente):
     assert posicion <= 1, f"camera.stopped se atendió en la posición {posicion} (debería ser casi inmediato, no detrás del backlog): {orden}"
 
 
+def test_retro_hits_no_hace_fila_detras_de_un_backlog(cliente):
+    """Prompt 6b punto 4 (16.20, "Ya la viste" tardaba en llegar):
+    retro.hits -- se dispara al dar de alta una placa ya vista -- también
+    tiene su propia cola de alta prioridad, igual que camera.started/
+    stopped. Mide (de forma sintética, sin red real de Telegram) cuánto
+    tarda en atenderse detrás de un backlog: antes de este cambio
+    compartía cola con detection.hit y esperaba todo el backlog; ahora no."""
+    import time as _time
+
+    import nexcam_api
+
+    orden = []
+    momentos = {}
+
+    def oyente_lento(evento, payload):
+        if evento == "detection.hit":
+            _time.sleep(0.3)
+        orden.append(evento)
+        momentos[evento] = _time.monotonic()
+
+    nexcam_api.suscribir(oyente_lento)
+
+    inicio = _time.monotonic()
+    for i in range(5):
+        nexcam_api.broadcast("detection.hit", {"placa": f"RTR{i:03d}"})
+    nexcam_api.broadcast("retro.hits", {"origen": "panel", "hits": []})
+
+    limite = _time.monotonic() + 3
+    while "retro.hits" not in orden and _time.monotonic() < limite:
+        _time.sleep(0.02)
+    tardanza = momentos["retro.hits"] - inicio
+    assert tardanza < 1.0, f"retro.hits tardó {tardanza:.2f}s (antes de este cambio habría esperado ~{0.3 * 5:.1f}s del backlog)"
+
+
 # --------------------------------------------------------------------- sin duplicados al reintentar
 
 def test_reintento_mismo_device_placa_ts_no_duplica_ni_reavisa(cliente):

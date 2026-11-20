@@ -113,7 +113,7 @@
             <input type="hidden" name="placa" value="{{ vehiculo.placa }}">
             <input type="hidden" name="alcance" value="RGM">
             <input type="hidden" name="volver" value="/vehiculos/{{ vehiculo.placa }}">
-            <button type="submit" class="btn-secondary btn-sm">Actualizar</button>
+            <button type="submit" class="btn-secondary btn-sm">{{ '🔄 Actualizar' if snapshot_rgm else '🔎 Consultar' }}</button>
           </form>
         </div>
         {% if snapshot_rgm %}
@@ -135,7 +135,7 @@
         <pre class="text-xs font-mono text-zinc-400 whitespace-pre-wrap">{{ snapshot_rgm.datos }}</pre>
         {% endif %}
         {% else %}
-        <p class="text-sm text-zinc-500">Todavía no se ha consultado RGM para esta placa.</p>
+        <p class="text-sm text-zinc-500">Sin RGM todavía · usa "🔎 Consultar" arriba.</p>
         {% endif %}
       </section>
 

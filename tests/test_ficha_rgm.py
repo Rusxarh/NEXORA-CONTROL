@@ -109,4 +109,6 @@ def test_ficha_sin_rgm_muestra_mensaje_vacio(cliente):
 
     r = cliente.get("/vehiculos/GCT955")
     assert r.status_code == 200
-    assert "Todavía no se ha consultado RGM para esta placa." in r.text
+    # Prompt 6b punto 2: mensaje vacío accionable, no una frase muerta.
+    assert "Sin RGM todavía" in r.text
+    assert "🔎 Consultar" in r.text

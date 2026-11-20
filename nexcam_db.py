@@ -150,6 +150,10 @@ CREATE TABLE IF NOT EXISTS nexcam_avistamientos (
 CREATE INDEX IF NOT EXISTS idx_nexcam_avist_placa ON nexcam_avistamientos (placa);
 CREATE INDEX IF NOT EXISTS idx_nexcam_avist_leida ON nexcam_avistamientos (leida);
 CREATE INDEX IF NOT EXISTS idx_nexcam_avist_ts    ON nexcam_avistamientos (ts);
+-- Prompt 6b punto 3: resumen_avistamientos_hoy/avistamientos_en_lista_hoy
+-- (la página "Hoy") filtran con `recibido_en LIKE 'AAAA-MM-DD%'` -- sin
+-- este índice era un recorrido completo de la tabla en cada carga.
+CREATE INDEX IF NOT EXISTS idx_nexcam_avist_recibido ON nexcam_avistamientos (recibido_en);
 
 CREATE TABLE IF NOT EXISTS nexcam_confusiones (
     leido TEXT NOT NULL,

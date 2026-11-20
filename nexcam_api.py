@@ -59,13 +59,14 @@ _cola_oyentes: "queue.Queue" = queue.Queue()
 _hilo_oyentes: Optional[threading.Thread] = None
 _hilo_oyentes_lock = threading.Lock()
 
-# Prompt 6 punto 4: "camera.started"/"camera.stopped" (la cabecera "📷
-# Cámara encendida"/"⏹️ Cámara apagada" de Telegram) tienen su PROPIA cola
-# y su PROPIO hilo -- Gabriel notaba demora al prender/apagar porque esos
-# dos eventos entraban al FIFO general y quedaban detrás de lo que ya
-# hubiera en curso (una alerta con foto a varios chats, un RGM, etc.).
-# Nunca comparten cola con detection.hit/rgm.resultado/etc.
-EVENTOS_ALTA_PRIORIDAD = {"camera.started", "camera.stopped"}
+# Prompt 6 punto 4 + Prompt 6b punto 4: estos eventos tienen su PROPIA
+# cola y su PROPIO hilo -- Gabriel notaba demora al prender/apagar la
+# cámara ("camera.started"/"camera.stopped") y al recibir "🗂️ Ya la
+# viste" ("retro.hits", que antes se mandaba al dar de alta la placa pero
+# quedaba detrás de lo que ya hubiera en curso en el FIFO general: una
+# alerta con foto a varios chats, un RGM, etc.). Nunca comparten cola con
+# detection.hit/rgm.resultado/etc.
+EVENTOS_ALTA_PRIORIDAD = {"camera.started", "camera.stopped", "retro.hits"}
 _cola_oyentes_prioritaria: "queue.Queue" = queue.Queue()
 _hilo_oyentes_prioritario: Optional[threading.Thread] = None
 _hilo_oyentes_prioritario_lock = threading.Lock()

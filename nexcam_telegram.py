@@ -570,20 +570,24 @@ class BotTelegram:
     def _con_menu(self, extra: dict = None) -> dict:
         return {**(extra or {}), "reply_markup": self._menu()}
 
-    def _botones_vista(self, v: dict) -> dict:
+    def _texto_boton_rgm(self, placa: str) -> str:
+        """Prompt 6b punto 2: el botón RGM SIEMPRE está (antes se ocultaba
+        si ya había un RGM de menos de 24 h -- Gabriel no lo encontraba
+        cuando quería forzar una actualización); el texto dice si va a
+        pedir uno nuevo o a refrescar el que ya hay."""
+        return "🔄 Actualizar RGM" if db.obtener_ultimo_snapshot_por_fuente(placa, "RGM") else "🔎 Consultar RGM"
+
+    def _botones_vista(self, v: dict, es_admin: bool) -> dict:
         # Prompt 2: se quita el botón Mapa -- la ubicación ya va como
         # enlace "📍 Ver ubicación" en el propio texto del mensaje.
         fila = [{"text": "📋 Ficha", "callback_data": f"ficha:{v['placa']}"}]
         if v.get("snapshot") and v.get("vehiculo"):
             fila.append({"text": "🔢 Foto de la placa", "callback_data": f"placa:{v['id']}"})
         filas = [fila]
-        # FASE 6: pedir la consulta nunca es sensible (el resultado sí; se
-        # filtra en _on_rgm_resultado), pero el botón solo se ofrece
-        # "cuando no hay datos" (pedido explícito): si ya hay un snapshot
-        # RGM para esta placa, no tiene sentido mostrarlo de nuevo aquí
-        # (la ficha y la respuesta de rgm.resultado ya lo cubren).
-        if not db.obtener_ultimo_snapshot_por_fuente(v["placa"], "RGM"):
-            filas.append([{"text": "🔎 Consultar RGM", "callback_data": f"rgm:{v['placa']}"}])
+        # Prompt 6b punto 2: el botón RGM es solo de Admin (un Operador no
+        # ve deudor/acreedor en el resultado -- pedirlo tampoco le sirve).
+        if es_admin:
+            filas.append([{"text": self._texto_boton_rgm(v["placa"]), "callback_data": f"rgm:{v['placa']}"}])
         return {"inline_keyboard": filas}
 
     def _foto_principal(self, v: dict) -> Optional[Path]:
@@ -714,27 +718,30 @@ class BotTelegram:
             texto = _armar(filas_ubicacion)
         return texto
 
-    def _botones_alerta(self, estado: dict) -> dict:
+    def _botones_alerta(self, estado: dict, es_admin: bool) -> dict:
         fila = [{"text": "📋 Ficha", "callback_data": f"ficha:{estado['placa']}"}]
         if estado.get("avistamiento_id") is not None:
             fila.append({"text": "🔢 Placa", "callback_data": f"placa:{estado['avistamiento_id']}"})
         filas = [fila]
-        # El botón RGM solo se ofrece cuando todavía no hay datos (pedido
-        # explícito del Prompt 2): si ya hay un snapshot < 24 h, _on_rgm_resultado
-        # ya respondió con los datos, mostrarlo de nuevo no aporta nada.
-        if not db.obtener_ultimo_snapshot_por_fuente(estado["placa"], "RGM"):
-            filas.append([{"text": "🔎 RGM", "callback_data": f"rgm:{estado['placa']}"}])
+        # Prompt 6b punto 2: el botón RGM SIEMPRE está en la alerta (antes
+        # se ocultaba si ya había un RGM de menos de 24 h: Gabriel no lo
+        # encontraba cuando quería forzar una actualización) y es solo de
+        # Admin (un Operador no ve el resultado, pedirlo tampoco le sirve).
+        if es_admin:
+            filas.append([{"text": self._texto_boton_rgm(estado["placa"]), "callback_data": f"rgm:{estado['placa']}"}])
         return {"inline_keyboard": filas}
 
     def _enviar_ficha(self, chats: list, placa: str, *, foto: Optional[Path] = None, leida: Optional[str] = None,
-                       lectura_actual: Optional[dict] = None, botones: Optional[dict] = None,
+                       lectura_actual: Optional[dict] = None, botones_fn: Optional[callable] = None,
                        aun_en_silencio: bool = False) -> list:
         """Manda la ficha única a varios chats -- a diferencia de
-        _a_todos (mismo texto para todos), acá el texto se arma POR CHAT
+        _a_todos (mismo texto para todos), acá el texto SE ARMA POR CHAT
         porque acreedor/deudor solo se ven si ese chat es de un Admin
-        activo. Devuelve la misma forma que _a_todos:
-        [{"chat_id","message_id"}], para poder seguir editando después
-        (ver _refrescar_texto_estado)."""
+        activo. `botones_fn(es_admin)` (Prompt 6b punto 2: el botón RGM
+        también es solo de Admin) arma el teclado por chat, igual que el
+        texto; si no se da, no hay teclado. Devuelve la misma forma que
+        _a_todos: [{"chat_id","message_id"}], para poder seguir editando
+        después (ver _refrescar_texto_estado)."""
         if not self.activo or (self.cfg["silencio"] and not aun_en_silencio):
             return []
         if not chats:
@@ -746,7 +753,7 @@ class BotTelegram:
             es_admin = bool(usuario and usuario["rol"] == "Admin" and usuario["estado"] == "activo")
             texto = self._texto_ficha_telegram(placa, es_admin=es_admin, leida=leida,
                                                 lectura_actual=lectura_actual, limite=limite)
-            extra = {"reply_markup": botones} if botones else None
+            extra = {"reply_markup": botones_fn(es_admin)} if botones_fn else None
             try:
                 m = self._enviar(c["id"], texto, foto, extra)
                 enviados.append({"chat_id": c["id"], "message_id": m.get("message_id") if m else None})
@@ -760,11 +767,11 @@ class BotTelegram:
         mensajes -- Prompt 6 punto 1: cuando el RGM pedido desde el botón
         de una alerta termina, esto es lo que la actualiza (nunca se
         manda ni se pega texto aparte; una repetición de la misma lectura
-        -- _editar_alerta -- también pasa por acá)."""
+        -- _editar_alerta -- también pasa por acá). El teclado (con o sin
+        el botón RGM) se arma POR CHAT, Prompt 6b punto 2."""
         leida = estado.get("leida") if estado.get("tipo") == "probable" else None
         lectura_actual = {"ts": estado.get("ultima_ts"), "confianza": estado.get("confianza"),
                            "operador": estado.get("operador")}
-        teclado = self._botones_alerta(estado)
         for m in estado.get("mensajes") or []:
             if not m.get("message_id"):
                 continue
@@ -775,7 +782,7 @@ class BotTelegram:
                                                 lectura_actual=lectura_actual, limite=limite)
             try:
                 cuerpo = {"chat_id": m["chat_id"], "message_id": m["message_id"], "parse_mode": "HTML",
-                          "reply_markup": teclado}
+                          "reply_markup": self._botones_alerta(estado, es_admin)}
                 if estado.get("con_foto"):
                     cuerpo["caption"] = texto
                     self._llamar("editMessageCaption", cuerpo)
@@ -800,8 +807,8 @@ class BotTelegram:
         estado["con_foto"] = bool(foto)
         leida = estado["leida"] if tipo == "probable" else None
         lectura_actual = {"ts": estado["ultima_ts"], "confianza": estado["confianza"], "operador": estado["operador"]}
-        enviados = self._enviar_ficha(self.cfg["chats"], placa, foto=foto, leida=leida,
-                                       lectura_actual=lectura_actual, botones=self._botones_alerta(estado))
+        enviados = self._enviar_ficha(self.cfg["chats"], placa, foto=foto, leida=leida, lectura_actual=lectura_actual,
+                                       botones_fn=lambda es_admin: self._botones_alerta(estado, es_admin))
         estado["mensajes"] = enviados
         return estado
 
@@ -832,7 +839,16 @@ class BotTelegram:
             lineas.append(f"🚨 EN LISTA · {_esc(motivo)}")
         lineas.append(f"🕘 Vista el {_hora(p.get('ts'))} (llegó con retraso)")
         estado_botones = {"placa": placa, "avistamiento_id": p.get("id")}
-        self._a_todos("\n".join(lineas), extra={"reply_markup": self._botones_alerta(estado_botones)})
+        texto = "\n".join(lineas)
+        if not self.activo or self.cfg["silencio"]:
+            return
+        for c in self.cfg["chats"]:
+            usuario = self._usuario_de_chat(c["id"])
+            es_admin = bool(usuario and usuario["rol"] == "Admin" and usuario["estado"] == "activo")
+            try:
+                self._enviar(c["id"], texto, extra={"reply_markup": self._botones_alerta(estado_botones, es_admin)})
+            except Exception as e:
+                self.log(f"Telegram: no se pudo avisar la alerta tardía de {placa} a {c.get('nombre') or c['id']} - {e}")
 
     def _alerta_placa(self, p: dict):
         """
@@ -1087,7 +1103,7 @@ class BotTelegram:
                 texto = self._texto_ficha_telegram(placa, es_admin=True, titulo=titulo, limite=limite)
                 for c in chats_admin:
                     try:
-                        self._enviar(c["id"], texto, foto, extra={"reply_markup": self._botones_vista(v0)})
+                        self._enviar(c["id"], texto, foto, extra={"reply_markup": self._botones_vista(v0, True)})
                     except Exception as e:
                         self.log(f"Telegram: no se pudo avisar 'ya la viste' de {placa} a {c['id']} - {e}")
             if len(hits) > 10:
@@ -1255,7 +1271,7 @@ class BotTelegram:
         v0 = {**vistas["vistas"][0], "placa": placa} if vistas and vistas["vistas"] else {"placa": placa}
         foto = self._foto_principal(v0)
         texto = self._texto_ficha_telegram(placa, es_admin=es_admin, limite=1024 if foto else None)
-        return self._enviar(chat_id, texto, foto=foto, extra={"reply_markup": self._botones_vista(v0)})
+        return self._enviar(chat_id, texto, foto=foto, extra={"reply_markup": self._botones_vista(v0, es_admin)})
 
     def _resumen_carga(self, resumen: dict) -> str:
         lineas = [f"📥 <b>Lista cargada</b>: {len(resumen['insertadas']) + len(resumen['duplicadas'])} placas "
@@ -1740,12 +1756,14 @@ class BotTelegram:
                     self._mostrar_ultimas_vivo_pagina(chat_id, message_id, pagina)
                 return
         finally:
-            # Fase 16.13 ("menos de 1 s"): se mide en vez de asumirse.
+            # Prompt 6b punto 3: log de tiempos SIEMPRE (no solo si se pasa
+            # de 1 s) -- Gabriel mide de verdad contando 10 toques reales
+            # en su PC; "TIEMPO_BOTON" para poder filtrarlo fácil en la
+            # consola (findstr/grep). ack = answerCallbackQuery (debe ser
+            # ~0); total = hasta que termina de editar/mandar el mensaje.
             duracion_ack = t_ack - t0
             duracion_total = time.monotonic() - t0
-            if duracion_total > 1.0:
-                self.log(f"Telegram: botón {accion!r} tardó {duracion_total:.2f} s en total "
-                         f"(ack en {duracion_ack:.2f} s) -- revisar.")
+            self.log(f"TIEMPO_BOTON accion={accion!r} ack={duracion_ack:.3f}s total={duracion_total:.3f}s")
 
     # ------------------------------------------------------------ bucle de mensajes
 
