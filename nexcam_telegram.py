@@ -28,14 +28,15 @@ para revisar):
   sin usuario), consumidos por un hilo propio cada 60 s.
 
 FASE 6 (RGM/Judicial reales, vía rgm_cola.py) + Prompt 5 punto 1: el RGM
-AUTOMÁTICO (origen "camara"/"estudio" en rgm_cola) queda SILENCIOSO --
-ya guardó el snapshot y actualizó la ficha, no manda nada a Telegram
-(antes mandaba un mensaje por cada detección de cámara). Solo una
-consulta PEDIDA explícitamente (botón "🔎 RGM"/"⚖️ Procesos judiciales",
-o "Consultar" en la página Consulta) manda un mensaje al terminar: al
-chat que la pidió si fue por Telegram (rastreado en
-self._chat_por_item_rgm por item_id de rgm_cola), o a los chats de Admin
-si fue desde la web. REGLA DE SEGURIDAD (obligatoria): los datos del
+AUTOMÁTICO (cámara/estudio) queda SILENCIOSO -- ya guardó el snapshot y
+actualizó la ficha, no manda nada a Telegram (antes mandaba un mensaje
+por cada detección de cámara). Solo una consulta PEDIDA explícitamente
+(botón "🔎 RGM"/"⚖️ Procesos judiciales", o "Consultar" en la página
+Consulta) manda un mensaje al terminar: a quien la pidió por Telegram
+-- Prompt 7 bloque A: rastreado en la tabla rgm_avisos (database.py),
+no en memoria, para sobrevivir a un reinicio de NEXORA entre el pedido
+y el resultado --, o a los chats de Admin si fue desde la web. REGLA DE
+SEGURIDAD (obligatoria): los datos del
 deudor/garante de RGM y CUALQUIER dato de Judicial (radicado, procesos)
 SOLO se muestran a chats vinculados a un usuario Admin activo; a un chat
 de Operador o sin usuario asignado se le muestra únicamente el dato del
@@ -308,12 +309,6 @@ class BotTelegram:
         # espera de ser atendidos por _trabajador_updates -- getUpdates
         # (_bucle) nunca espera a que se vacíe.
         self._cola_updates = queue.Queue()
-        # item_id de rgm_cola -> {"chat_id", "estado_alerta"} de quien lo pidió con
-        # el botón 🔎 RGM (Prompt 5); "estado_alerta" (Prompt 6 punto 1) es el
-        # `estado` de la alerta en vivo que tenía el botón, o None si se pidió
-        # desde una ficha/buscar -- decide si el resultado EDITA esa alerta o
-        # manda un mensaje nuevo.
-        self._chat_por_item_rgm = {}
         self._lock = threading.Lock()
         self._hilo_bucle = None
         self._hilo_eventos = None
@@ -1112,23 +1107,26 @@ class BotTelegram:
         if evento == "rgm.resultado":
             return self._on_rgm_resultado(p)
         if evento == "rgm.error":
-            # Prompt 5 punto 1: mismo criterio que rgm.resultado -- un
-            # error de una consulta AUTOMÁTICA (cámara/estudio) se queda
-            # silencioso (ya quedó anotado en rgm_cola.error para la
-            # tabla "Últimas 20"); solo una PEDIDA explícitamente avisa.
+            # Prompt 7 bloque A, punto 4: igual que rgm.resultado -- el
+            # silencio de un ítem automático aplica SOLO si nadie lo pidió
+            # (p["avisos"], de la base); "panel" sigue avisando a Admin.
+            # Incluye [🔁 Reintentar] (mismo callback que pedir de nuevo).
             origen = p.get("origen")
-            if origen in ("camara", "estudio"):
-                return
             placa = p.get("placa")
-            item_id = p.get("item_id")
-            if origen == "telegram":
-                chat_solicitante = (self._chat_por_item_rgm.pop(item_id, None) or {}).get("chat_id")
-                chats = [chat_solicitante] if chat_solicitante else [c["id"] for c in self._chats_admin()]
-            else:
+            avisos = p.get("avisos") or []
+            if origen == "panel":
                 chats = [c["id"] for c in self._chats_admin()]
+            elif avisos:
+                chats = [a["chat_id"] for a in avisos]
+            else:
+                return
+            accion_retry = "rgm" if p.get("alcance") != "JUDICIAL" else "rgm_judicial"
+            boton_reintentar = {"reply_markup": {"inline_keyboard": [[
+                {"text": "🔁 Reintentar", "callback_data": f"{accion_retry}:{placa}"}]]}}
             for chat_id in chats:
                 try:
-                    self._texto(chat_id, f"⚠️ No se pudo consultar RGM de <b>{_esc(_fmt_placa(placa or ''))}</b>: {_esc(p.get('error'))}")
+                    self._texto(chat_id, f"⚠️ No se pudo consultar RGM de <b>{_esc(_fmt_placa(placa or ''))}</b>: {_esc(p.get('error'))}",
+                                boton_reintentar)
                 except Exception as e:
                     self.log(f"Telegram: no se pudo avisar rgm.error a {chat_id} - {e}")
             return
@@ -1147,50 +1145,62 @@ class BotTelegram:
 
     def _on_rgm_resultado(self, p: dict):
         """
-        FASE 6 + Prompt 5 punto 1: RGM AUTOMÁTICO (origen "camara"/
-        "estudio") queda SILENCIOSO -- ya se guardó el snapshot y
-        rgm_cola actualizó la ficha, no hace falta avisar nada. Solo una
-        consulta PEDIDA explícitamente (botón 🔎 RGM en Telegram, o
-        "Consultar" en la página Consulta) avisa al terminar.
+        FASE 6 + Prompt 5 punto 1: RGM AUTOMÁTICO (cámara/estudio) queda
+        SILENCIOSO -- ya se guardó el snapshot y rgm_cola actualizó la
+        ficha, no hace falta avisar nada. Solo una consulta PEDIDA
+        explícitamente (botón 🔎 RGM en Telegram, o "Consultar" en la
+        página Consulta) avisa al terminar.
 
-        Prompt 6 punto 1: si el RGM se pidió con el botón 🔎 RGM de una
-        alerta EN VIVO (`info_pedido["estado_alerta"]`, rastreado en
-        _boton_pulsado), el resultado EDITA esa misma alerta con el
-        formato único -- nunca se manda ni se pega texto aparte. En
-        cualquier otro caso (ficha/buscar/⚖️ Judicial/web) se manda un
-        mensaje nuevo, al chat que lo pidió (Telegram) o a los chats de
-        Admin (web/"panel"). REGLA DE SEGURIDAD de siempre: el texto se
-        arma DISTINTO por chat según si está vinculado a un usuario Admin
-        activo.
+        Prompt 7 bloque A, punto 3: el silencio se decide con
+        `p["avisos"]` (de rgm_avisos, persistido en la base por
+        rgm_cola.solicitar_consulta), NO con `origen` -- ese era el bug
+        real: un ítem que la cámara encoló automáticamente sigue teniendo
+        origen="camara" para siempre, aunque alguien lo haya pedido
+        DESPUÉS por Telegram; antes, _on_rgm_resultado se quedaba callado
+        solo por mirar `origen`, sin fijarse si alguien esperaba el
+        resultado.
+
+        Prompt 6 punto 1: si quien pidió tenía el botón sobre una alerta
+        EN VIVO (`aviso["alerta_message_id"]`), el resultado EDITA esa
+        misma alerta -- nunca se manda ni se pega texto aparte. En
+        cualquier otro caso se manda un mensaje nuevo. REGLA DE SEGURIDAD
+        de siempre: el texto se arma DISTINTO por chat según si está
+        vinculado a un usuario Admin activo.
         """
         origen = p.get("origen")
-        if origen in ("camara", "estudio"):
-            return
         placa = p.get("placa")
+        item_id = p.get("item_id")
         resultado = p.get("resultado") or {}
         rgm_resultado = resultado.get("rgm")
         judicial_resultado = resultado.get("judicial")
         if rgm_resultado is None and judicial_resultado is None:
             return
+
+        avisos = p.get("avisos") or []
+        if origen == "panel":
+            destinos = [{"chat_id": c["id"], "estado_alerta": None} for c in self._chats_admin()]
+        elif avisos:
+            destinos = [
+                {"chat_id": a["chat_id"],
+                 "estado_alerta": self._estado_alerta_por_mensaje(a["alerta_chat_id"], a["alerta_message_id"])
+                 if a.get("alerta_message_id") else None}
+                for a in avisos
+            ]
+        else:
+            return  # automático (cámara/estudio) y nadie lo pidió: silencio
+
         if not self.activo or self.cfg["silencio"]:
             return
 
-        item_id = p.get("item_id")
-        info_pedido = self._chat_por_item_rgm.pop(item_id, None) if origen == "telegram" else None
-        estado_alerta = (info_pedido or {}).get("estado_alerta")
+        for destino in destinos:
+            chat_id = destino["chat_id"]
+            estado_alerta = destino["estado_alerta"]
+            if rgm_resultado is not None and judicial_resultado is None and estado_alerta is not None:
+                self._refrescar_texto_estado(estado_alerta)
+                db.registrar_diagnostico_rgm("aviso enviado (editó alerta)", item_id, placa, f"chat_id={chat_id}")
+                continue
 
-        if rgm_resultado is not None and judicial_resultado is None and estado_alerta is not None:
-            self._refrescar_texto_estado(estado_alerta)
-            return
-
-        if origen == "telegram":
-            chat_solicitante = (info_pedido or {}).get("chat_id")
-            chats_destino = [{"id": chat_solicitante}] if chat_solicitante else self._chats_admin()
-        else:  # "panel" (o cualquier otro origen pedido explícitamente): a los chats de Admin
-            chats_destino = self._chats_admin()
-
-        for destino in chats_destino:
-            usuario = self._usuario_de_chat(destino["id"])
+            usuario = self._usuario_de_chat(chat_id)
             es_admin = bool(usuario and usuario["rol"] == "Admin" and usuario["estado"] == "activo")
 
             textos = []
@@ -1204,9 +1214,11 @@ class BotTelegram:
             if rgm_resultado is not None and judicial_resultado is None and es_admin:
                 botones.append({"text": "⚖️ Procesos judiciales (en prueba)", "callback_data": f"rgm_judicial:{placa}"})
             try:
-                self._texto(destino["id"], texto, {"reply_markup": {"inline_keyboard": [botones]}})
+                self._texto(chat_id, texto, {"reply_markup": {"inline_keyboard": [botones]}})
+                db.registrar_diagnostico_rgm("aviso enviado", item_id, placa, f"chat_id={chat_id}")
             except Exception as e:
-                self.log(f"Telegram: no se pudo avisar rgm.resultado a {destino['id']} - {e}")
+                self.log(f"Telegram: no se pudo avisar rgm.resultado a {chat_id} - {e}")
+                db.registrar_diagnostico_rgm("aviso fallido", item_id, placa, f"chat_id={chat_id}: {e}")
 
     def _texto_resultado_judicial(self, placa: str, resultado: dict, es_admin: bool) -> str:
         if not es_admin:
@@ -1675,7 +1687,14 @@ class BotTelegram:
                 # mensaje nuevo (el botón ⚖️ no vive en la alerta original).
                 message_id = (q.get("message") or {}).get("message_id")
                 estado_alerta = self._estado_alerta_por_mensaje(chat_id, message_id) if accion == "rgm" else None
-                resultado = rgm_cola.solicitar_consulta(placa, alcance, "telegram", usuario["id"])
+                # Prompt 7 bloque A: quién pidió esto se guarda EN LA BASE
+                # (rgm_avisos), no en un diccionario en memoria -- sobrevive
+                # a un reinicio de NEXORA entre el pedido y el resultado.
+                resultado = rgm_cola.solicitar_consulta(
+                    placa, alcance, "telegram", usuario["id"], chat_id=chat_id,
+                    alerta_chat_id=chat_id if estado_alerta is not None else None,
+                    alerta_message_id=message_id if estado_alerta is not None else None,
+                )
                 if resultado["accion"] == "SNAPSHOT_VIGENTE":
                     # Prompt 5 punto 1: ya hay dato vigente -- rgm.resultado NUNCA
                     # va a llegar para este caso (no se encoló nada), así que el
@@ -1690,10 +1709,19 @@ class BotTelegram:
                                 placa, json.loads(resultado["snapshot"]["datos"]), es_admin))
                     except Exception as e:
                         self.log(f"Telegram: no se pudo mostrar el snapshot vigente de {placa} - {e}")
-                elif resultado["accion"] == "YA_EN_COLA":
-                    self._chat_por_item_rgm[resultado["item"]["id"]] = {"chat_id": chat_id, "estado_alerta": estado_alerta}
                 else:
-                    self._chat_por_item_rgm[resultado["item"]["id"]] = {"chat_id": chat_id, "estado_alerta": estado_alerta}
+                    # YA_EN_COLA o ENCOLADA: Prompt 7 bloque A, punto 2 --
+                    # respuesta inmediata con el puesto en la cola; su
+                    # message_id se guarda para poder editarlo a los 3 min
+                    # (ver _vigilar_esperas_rgm) si sigue sin resultado.
+                    puesto = resultado.get("puesto") or 0
+                    puesto_txt = f" (puesto {puesto} en la cola)" if puesto else ""
+                    try:
+                        m = self._texto(chat_id, f"🔎 Consultando {_esc(_fmt_placa(placa))}…{puesto_txt}")
+                        if resultado.get("aviso_id") and m and m.get("message_id"):
+                            db.actualizar_mensaje_espera_rgm(resultado["aviso_id"], m["message_id"])
+                    except Exception as e:
+                        self.log(f"Telegram: no se pudo responder el pedido de RGM de {placa} - {e}")
                 return
 
             if accion == "noop":
@@ -1856,6 +1884,44 @@ class BotTelegram:
         self._hilo_eventos.start()
         self._hilo_inactivas = threading.Thread(target=self._vigilar_sesiones_inactivas, daemon=True, name="nexcam-telegram-inactivas")
         self._hilo_inactivas.start()
+        self._hilo_esperas_rgm = threading.Thread(target=self._vigilar_esperas_rgm, daemon=True, name="nexcam-telegram-esperas-rgm")
+        self._hilo_esperas_rgm.start()
+
+    def _revisar_esperas_rgm_una_vez(self):
+        """Un ciclo de _vigilar_esperas_rgm, aparte para poder probarlo
+        sin depender del `while` + `time.sleep(30)` real."""
+        import rgm_cola
+
+        for aviso in db.avisos_con_espera_vencida():
+            if not aviso.get("mensaje_espera_id"):
+                db.marcar_aviso_espera_notificado(aviso["id"])
+                continue
+            puesto = db.posicion_en_cola_rgm(aviso["item_id"])
+            conectado_txt = "" if rgm_cola.trabajador_conectado() else " ¿Está abierta Consulta en la PC?"
+            texto = f"⏳ Sigue en cola{f' (puesto {puesto})' if puesto else ''}.{conectado_txt}"
+            try:
+                self._llamar("editMessageText", {
+                    "chat_id": aviso["chat_id"], "message_id": aviso["mensaje_espera_id"], "text": texto,
+                })
+            except Exception as e:
+                if "not modified" not in str(e).lower():
+                    self.log(f"Telegram: no se pudo avisar la espera del aviso {aviso['id']} - {e}")
+            db.marcar_aviso_espera_notificado(aviso["id"])
+
+    def _vigilar_esperas_rgm(self):
+        """
+        Prompt 7 bloque A, punto 5: a los MINUTOS_AVISO_ESPERA_RGM de
+        pedir un RGM/Judicial sin resultado, edita UNA vez el "🔎
+        Consultando…" a "⏳ Sigue en cola (puesto N). ¿Está abierta
+        Consulta en la PC?" -- nunca manda un mensaje nuevo, y nunca se
+        repite (avisado_espera en rgm_avisos).
+        """
+        while not self.detenido:
+            time.sleep(30)
+            try:
+                self._revisar_esperas_rgm_una_vez()
+            except Exception as e:
+                self.log(f"Telegram: error en el vigilante de esperas RGM: {e}")
 
     def detener(self):
         self.detenido = True

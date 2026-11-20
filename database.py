@@ -67,6 +67,18 @@ VIGENCIA_SNAPSHOT_RGM_HORAS = 24
 # JavaScript (2 min) para no competir con un reintento que sí sigue vivo.
 MINUTOS_ABANDONO_ITEM_RGM = 4
 
+# Prompt 7 bloque A: prioridad explícita de rgm_cola (antes el orden era
+# un FIFO puro por `id`, sin distinguir quién la pidió -- un ítem de
+# cámara/estudio (automático) encolado antes dejaba esperando detrás a un
+# pedido de Telegram/panel). Número más bajo = se atiende primero.
+PRIORIDAD_TELEGRAM = 0
+PRIORIDAD_PANEL = 1
+PRIORIDAD_AUTOMATICA = 2  # camara/estudio
+PRIORIDAD_POR_ORIGEN = {"telegram": PRIORIDAD_TELEGRAM, "panel": PRIORIDAD_PANEL,
+                         "camara": PRIORIDAD_AUTOMATICA, "estudio": PRIORIDAD_AUTOMATICA}
+# A los 3 min de pedirla sin resultado, se avisa una vez "sigue en cola".
+MINUTOS_AVISO_ESPERA_RGM = 3
+
 # Un snapshot se considera "vigente" (ACTUALIZADA) si tiene menos de este
 # número de días; más viejo que esto es PENDIENTE de actualizar. La Etapa
 # 4.6 no definió ningún umbral de vigencia, así que se documenta aquí como
@@ -236,6 +248,44 @@ CREATE TABLE IF NOT EXISTS rgm_cola (
     FOREIGN KEY (solicitado_por) REFERENCES usuarios (id)
 );
 CREATE INDEX IF NOT EXISTS idx_rgm_cola_estado ON rgm_cola (placa, alcance, estado);
+
+-- Prompt 7 bloque A: quién pidió cada consulta (reemplaza el diccionario
+-- en memoria _chat_por_item_rgm de nexcam_telegram.py -- si NEXORA se
+-- reinicia entre el pedido y el resultado, esto sigue en la base). Un
+-- mismo item_id puede tener VARIOS avisos (cámara lo encoló, Telegram
+-- también lo pidió). alerta_chat_id/alerta_message_id identifican el
+-- mensaje de una alerta EN VIVO para poder editarla al terminar (Prompt 6
+-- punto 1); si están vacíos, o ya no existen en memoria (reinicio de
+-- por medio), se manda un mensaje nuevo. mensaje_espera_id es el "🔎
+-- Consultando…" que se edita a los MINUTOS_AVISO_ESPERA_RGM si no hay
+-- resultado.
+CREATE TABLE IF NOT EXISTS rgm_avisos (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id            INTEGER NOT NULL,
+    chat_id            INTEGER NOT NULL,
+    usuario_id         INTEGER NOT NULL,
+    alerta_chat_id     INTEGER,
+    alerta_message_id  INTEGER,
+    mensaje_espera_id  INTEGER,
+    avisado_espera     INTEGER NOT NULL DEFAULT 0,
+    creado_en          TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    FOREIGN KEY (item_id) REFERENCES rgm_cola (id),
+    FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
+);
+CREATE INDEX IF NOT EXISTS idx_rgm_avisos_item ON rgm_avisos (item_id);
+
+-- Prompt 7 bloque A: diagnóstico de cada paso de una consulta (pedido,
+-- reservado, resultado, aviso) con su hora -- página pequeña "Consulta
+-- -> Diagnóstico" (últimos 50), nunca Telegram.
+CREATE TABLE IF NOT EXISTS rgm_diagnostico (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id    INTEGER,
+    placa      TEXT,
+    paso       TEXT NOT NULL,
+    detalle    TEXT,
+    creado_en  TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_rgm_diagnostico_creado ON rgm_diagnostico (creado_en);
 
 -- Índices para las búsquedas más frecuentes
 CREATE INDEX IF NOT EXISTS idx_vehiculos_placa  ON vehiculos (placa);
@@ -465,6 +515,21 @@ def _migrar_rgm_cola_alcance(conn):
     conn.execute("DROP TABLE rgm_cola")
 
 
+def _migrar_prioridad_rgm_cola(conn):
+    """
+    Prompt 7 bloque A: agrega `prioridad` a rgm_cola (antes el orden era
+    un FIFO puro por `id`). Los ítems ya existentes se backfillean según
+    su `origen` (PENDIENTE o no: no importa para items ya terminados,
+    pero se hace parejo igual).
+    """
+    columnas = {fila["name"] for fila in conn.execute("PRAGMA table_info(rgm_cola)")}
+    if "prioridad" in columnas:
+        return
+    conn.execute(f"ALTER TABLE rgm_cola ADD COLUMN prioridad INTEGER NOT NULL DEFAULT {PRIORIDAD_AUTOMATICA}")
+    for origen, prioridad in PRIORIDAD_POR_ORIGEN.items():
+        conn.execute("UPDATE rgm_cola SET prioridad = ? WHERE origen = ?", (prioridad, origen))
+
+
 def _migrar_backfill_rgm_a_vehiculos():
     """
     Prompt 6 punto 2 (NEXCAM-PROMPTS-Y-PRUEBAS.md): el Prompt 2b agregó la
@@ -565,6 +630,7 @@ def inicializar_db():
         _migrar_codigo_operativo(conn)
         _migrar_columnas_vehiculo_nexcam(conn)
         _migrar_columnas_vehiculo_rgm(conn)
+        _migrar_prioridad_rgm_cola(conn)
     _migrar_backfill_rgm_a_vehiculos()
     print(f"Base de datos inicializada en: {DB_PATH}")
 
@@ -1260,11 +1326,36 @@ def crear_item_rgm_cola(placa: str, alcance: str, origen: str, solicitado_por: i
         raise ValorInvalidoError(f"Origen de consulta RGM inválido: {origen}")
     with get_connection() as conn:
         cur = conn.execute(
-            """INSERT INTO rgm_cola (placa, alcance, origen, avistamiento_id, solicitado_por, nombre_judicial, encadenar_judicial)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (placa.strip().upper(), alcance, origen, avistamiento_id, solicitado_por, nombre_judicial, int(encadenar_judicial)),
+            """INSERT INTO rgm_cola (placa, alcance, origen, avistamiento_id, solicitado_por, nombre_judicial, encadenar_judicial, prioridad)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (placa.strip().upper(), alcance, origen, avistamiento_id, solicitado_por, nombre_judicial,
+             int(encadenar_judicial), PRIORIDAD_POR_ORIGEN.get(origen, PRIORIDAD_AUTOMATICA)),
         )
         return cur.lastrowid
+
+
+def subir_prioridad_rgm(item_id: int, prioridad: int):
+    """Prompt 7 bloque A, punto 2: un pedido de Telegram/panel sobre un
+    ítem YA encolado automáticamente (cámara/estudio) sube su prioridad,
+    en vez de quedarse esperando detrás en el FIFO -- solo sube, nunca
+    baja (si ya tenía mejor prioridad que la pedida, no se toca)."""
+    with get_connection() as conn:
+        conn.execute("UPDATE rgm_cola SET prioridad = ? WHERE id = ? AND prioridad > ?", (prioridad, item_id, prioridad))
+
+
+def posicion_en_cola_rgm(item_id: int) -> int:
+    """Puesto de `item_id` entre los PENDIENTE (1 = el próximo que se
+    reserva). 0 si ya está EN_CURSO o ya no está pendiente."""
+    with get_connection() as conn:
+        item = conn.execute("SELECT prioridad, id, estado FROM rgm_cola WHERE id = ?", (item_id,)).fetchone()
+        if item is None or item["estado"] != "PENDIENTE":
+            return 0
+        fila = conn.execute(
+            """SELECT COUNT(*) AS n FROM rgm_cola
+               WHERE estado = 'PENDIENTE' AND (prioridad < ? OR (prioridad = ? AND id <= ?))""",
+            (item["prioridad"], item["prioridad"], item["id"]),
+        ).fetchone()
+        return fila["n"]
 
 
 def item_rgm_pendiente_o_en_curso(placa: str, alcance: str):
@@ -1309,7 +1400,7 @@ def reservar_siguiente_item_rgm():
                 conn.execute("UPDATE rgm_cola SET estado = 'PENDIENTE', reservado_en = NULL WHERE id = ?", (colgado["id"],))
 
         fila = conn.execute(
-            "SELECT id FROM rgm_cola WHERE estado = 'PENDIENTE' ORDER BY id ASC LIMIT 1"
+            "SELECT id FROM rgm_cola WHERE estado = 'PENDIENTE' ORDER BY prioridad ASC, id ASC LIMIT 1"
         ).fetchone()
         if fila is None:
             return None
@@ -1356,7 +1447,91 @@ def listar_items_rgm_activos():
             """SELECT c.*, u.nombre AS solicitado_por_nombre FROM rgm_cola c
                LEFT JOIN usuarios u ON u.id = c.solicitado_por
                WHERE c.estado IN ('PENDIENTE', 'EN_CURSO')
-               ORDER BY c.id ASC"""
+               ORDER BY c.prioridad ASC, c.id ASC"""
+        ).fetchall()
+        return [dict(f) for f in filas]
+
+
+# ---------------------------------------------------------------------------
+# Avisos RGM (Prompt 7 bloque A): quién pidió cada consulta por Telegram,
+# para poder avisarle al terminar aunque NEXORA se reinicie de por medio.
+# ---------------------------------------------------------------------------
+
+def crear_aviso_rgm(item_id: int, chat_id: int, usuario_id: int, alerta_chat_id: int = None,
+                     alerta_message_id: int = None, mensaje_espera_id: int = None) -> int:
+    with get_connection() as conn:
+        cur = conn.execute(
+            """INSERT INTO rgm_avisos (item_id, chat_id, usuario_id, alerta_chat_id, alerta_message_id, mensaje_espera_id)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (item_id, chat_id, usuario_id, alerta_chat_id, alerta_message_id, mensaje_espera_id),
+        )
+        return cur.lastrowid
+
+
+def listar_avisos_rgm(item_id: int) -> list:
+    with get_connection() as conn:
+        return [dict(f) for f in conn.execute("SELECT * FROM rgm_avisos WHERE item_id = ?", (item_id,)).fetchall()]
+
+
+def copiar_avisos_rgm(item_id_origen: int, item_id_destino: int):
+    """"Judicial sola" sin snapshot RGM reciente encadena una RGM primero
+    (ver rgm_cola.solicitar_consulta): los avisos de quien pidió el
+    Judicial deben seguir hasta que el Judicial encadenado termine, no
+    quedarse colgados en el ítem RGM intermedio."""
+    with get_connection() as conn:
+        for aviso in conn.execute("SELECT * FROM rgm_avisos WHERE item_id = ?", (item_id_origen,)).fetchall():
+            conn.execute(
+                """INSERT INTO rgm_avisos (item_id, chat_id, usuario_id, alerta_chat_id, alerta_message_id)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (item_id_destino, aviso["chat_id"], aviso["usuario_id"], aviso["alerta_chat_id"], aviso["alerta_message_id"]),
+            )
+
+
+def avisos_con_espera_vencida(minutos: int = MINUTOS_AVISO_ESPERA_RGM) -> list:
+    """Avisos de ítems que SIGUEN pendientes/en curso, pedidos hace más de
+    `minutos` y que todavía no recibieron el aviso único de "sigue en
+    cola" (Prompt 7 bloque A, punto 5)."""
+    limite = (datetime.now() - timedelta(minutes=minutos)).strftime("%Y-%m-%d %H:%M:%S")
+    with get_connection() as conn:
+        filas = conn.execute(
+            """SELECT a.* FROM rgm_avisos a
+               JOIN rgm_cola c ON c.id = a.item_id
+               WHERE a.avisado_espera = 0 AND a.creado_en < ? AND c.estado IN ('PENDIENTE', 'EN_CURSO')""",
+            (limite,),
+        ).fetchall()
+        return [dict(f) for f in filas]
+
+
+def marcar_aviso_espera_notificado(aviso_id: int):
+    with get_connection() as conn:
+        conn.execute("UPDATE rgm_avisos SET avisado_espera = 1 WHERE id = ?", (aviso_id,))
+
+
+def actualizar_mensaje_espera_rgm(aviso_id: int, mensaje_espera_id: int):
+    """El "🔎 Consultando…" se manda DESPUÉS de crear_aviso_rgm (hace
+    falta el id del ítem/puesto en la cola para su texto); esto guarda su
+    message_id ya mandado, para poder editarlo a los 3 min si hace falta."""
+    with get_connection() as conn:
+        conn.execute("UPDATE rgm_avisos SET mensaje_espera_id = ? WHERE id = ?", (mensaje_espera_id, aviso_id))
+
+
+# ---------------------------------------------------------------------------
+# Diagnóstico RGM (Prompt 7 bloque A, punto 6): archivo-de-pasos en la
+# base (nunca Telegram), para la página "Consulta -> Diagnóstico".
+# ---------------------------------------------------------------------------
+
+def registrar_diagnostico_rgm(paso: str, item_id: int = None, placa: str = None, detalle: str = None):
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO rgm_diagnostico (item_id, placa, paso, detalle) VALUES (?, ?, ?, ?)",
+            (item_id, placa, paso, detalle),
+        )
+
+
+def listar_diagnostico_rgm(limite: int = 50) -> list:
+    with get_connection() as conn:
+        filas = conn.execute(
+            "SELECT * FROM rgm_diagnostico ORDER BY id DESC LIMIT ?", (limite,)
         ).fetchall()
         return [dict(f) for f in filas]
 

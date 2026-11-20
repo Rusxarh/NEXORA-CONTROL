@@ -40,6 +40,18 @@ Decisiones de esta fase:
   _actualizar_vehiculo_desde_rgm SOBRESCRIBE estas columnas (antes solo
   completaba si estaban vacías); el color nunca llega del RGM, así que
   nunca se toca.
+- Prompt 7 bloque A: un ítem puede tener VARIOS solicitantes (cámara lo
+  encoló, alguien lo pidió después por Telegram) -- quién lo pidió por
+  Telegram vive en la tabla rgm_avisos (database.py), nunca en memoria,
+  para sobrevivir a un reinicio de NEXORA entre el pedido y el resultado.
+  El bug real que esto corrige: antes, _on_rgm_resultado (nexcam_telegram.py)
+  decidía el silencio automático mirando SOLO el `origen` con el que el
+  ítem se creó -- un ítem de cámara seguía "siendo de cámara" para
+  siempre, aunque alguien lo pidiera después por Telegram, y nunca le
+  avisaba. Ahora se decide con los avisos reales (quién espera), no con
+  el origen de creación. Pedir sobre un ítem YA encolado también sube su
+  prioridad (`prioridad` en rgm_cola, antes un FIFO puro por `id`) a la
+  de quien pide, para no esperar detrás de algo de menor prioridad.
 """
 
 import json
@@ -87,17 +99,46 @@ def _nombre_de_snapshot_rgm(snapshot: dict) -> Optional[str]:
     return nombre or None
 
 
+def _registrar_aviso_si_corresponde(item_id: int, origen: str, usuario_id: int, chat_id: Optional[int],
+                                     alerta_chat_id: Optional[int], alerta_message_id: Optional[int]):
+    """Prompt 7 bloque A, punto 1: guarda EN LA BASE quién pidió esta
+    consulta (reemplaza el diccionario en memoria _chat_por_item_rgm de
+    nexcam_telegram.py -- sobrevive a un reinicio de NEXORA) y sube la
+    prioridad del ítem a la de quien pide, si era más baja (un ítem de
+    cámara/estudio que alguien pide por Telegram ya no debe esperar
+    detrás del resto). Solo aplica a origen="telegram" (el único con un
+    chat_id real detrás); "panel" sigue avisando a todos los Admin al
+    terminar, sin necesitar esto."""
+    if chat_id is None:
+        return None
+    aviso_id = db.crear_aviso_rgm(item_id, chat_id, usuario_id, alerta_chat_id, alerta_message_id)
+    db.subir_prioridad_rgm(item_id, db.PRIORIDAD_POR_ORIGEN.get(origen, db.PRIORIDAD_TELEGRAM))
+    return aviso_id
+
+
 def solicitar_consulta(placa: str, alcance: str, origen: str, usuario_id: int, avistamiento_id: int = None,
-                        _encadenado: bool = False) -> dict:
+                        _encadenado: bool = False, chat_id: Optional[int] = None,
+                        alerta_chat_id: Optional[int] = None, alerta_message_id: Optional[int] = None) -> dict:
     """
     Punto de entrada único para pedir una consulta RGM/Judicial real.
-    Devuelve {"accion": "SNAPSHOT_VIGENTE" | "YA_EN_COLA" | "ENCOLADA", ...}.
+    Devuelve {"accion": "SNAPSHOT_VIGENTE" | "YA_EN_COLA" | "ENCOLADA", ...};
+    en YA_EN_COLA/ENCOLADA, además "puesto" (posición en la cola, 1 = el
+    próximo; 0 si ya está EN_CURSO).
+
+    `chat_id` (solo origen="telegram"): quién pidió esta consulta puntual
+    -- se guarda en rgm_avisos (ver _registrar_aviso_si_corresponde) para
+    poder avisarle al terminar aunque el ítem ya estuviera encolado por
+    otra razón (cámara, otro chat) o NEXORA se reinicie de por medio.
+    `alerta_chat_id`/`alerta_message_id`: si el botón se pulsó sobre una
+    alerta EN VIVO, identifican qué mensaje editar al terminar (Prompt 6
+    punto 1); None si se pidió desde una ficha/buscar/web.
 
     alcance="JUDICIAL": usa el nombre de un snapshot RGM de menos de 24 h
     si existe; si no, encola "RGM" con encadenar_judicial=True (al
     completarse esa RGM, esta misma función se vuelve a llamar sola con
-    "JUDICIAL" -- ver completar_item) y devuelve esa consulta RGM con un
-    "mensaje" explicando que primero consulta RGM.
+    "JUDICIAL" -- ver completar_item, que copia los avisos del ítem RGM
+    al Judicial encadenado) y devuelve esa consulta RGM con un "mensaje"
+    explicando que primero consulta RGM.
     """
     placa = placa.strip().upper()
 
@@ -105,17 +146,22 @@ def solicitar_consulta(placa: str, alcance: str, origen: str, usuario_id: int, a
         snapshot_rgm = db.obtener_ultimo_snapshot_por_fuente(placa, "RGM")
         nombre = _nombre_de_snapshot_rgm(snapshot_rgm) if snapshot_rgm and _snapshot_vigente(snapshot_rgm) else None
         if not nombre:
-            resultado = solicitar_consulta(placa, "RGM", origen, usuario_id, avistamiento_id, _encadenado=True)
+            resultado = solicitar_consulta(placa, "RGM", origen, usuario_id, avistamiento_id, _encadenado=True,
+                                            chat_id=chat_id, alerta_chat_id=alerta_chat_id, alerta_message_id=alerta_message_id)
             resultado["mensaje"] = "Primero consulto RGM para obtener el nombre."
             return resultado
 
         existente = db.item_rgm_pendiente_o_en_curso(placa, "JUDICIAL")
         if existente:
-            return {"accion": "YA_EN_COLA", "item": existente}
+            aviso_id = _registrar_aviso_si_corresponde(existente["id"], origen, usuario_id, chat_id, alerta_chat_id, alerta_message_id)
+            db.registrar_diagnostico_rgm("pedido (ya en cola)", existente["id"], placa, f"alcance=JUDICIAL origen={origen}")
+            return {"accion": "YA_EN_COLA", "item": existente, "puesto": db.posicion_en_cola_rgm(existente["id"]), "aviso_id": aviso_id}
         item_id = db.crear_item_rgm_cola(placa, "JUDICIAL", origen, usuario_id, avistamiento_id, nombre_judicial=nombre)
+        aviso_id = _registrar_aviso_si_corresponde(item_id, origen, usuario_id, chat_id, alerta_chat_id, alerta_message_id)
         item = db.obtener_item_rgm(item_id)
+        db.registrar_diagnostico_rgm("pedido", item_id, placa, f"alcance=JUDICIAL origen={origen}")
         _emitir("rgm.solicitud", {"id": item_id, "placa": placa, "alcance": "JUDICIAL"})
-        return {"accion": "ENCOLADA", "item": item}
+        return {"accion": "ENCOLADA", "item": item, "puesto": db.posicion_en_cola_rgm(item_id), "aviso_id": aviso_id}
 
     if alcance == "COMPLETO":
         snap_rgm = db.obtener_ultimo_snapshot_por_fuente(placa, "RGM")
@@ -129,17 +175,25 @@ def solicitar_consulta(placa: str, alcance: str, origen: str, usuario_id: int, a
 
     existente = db.item_rgm_pendiente_o_en_curso(placa, alcance)
     if existente:
-        return {"accion": "YA_EN_COLA", "item": existente}
+        aviso_id = _registrar_aviso_si_corresponde(existente["id"], origen, usuario_id, chat_id, alerta_chat_id, alerta_message_id)
+        db.registrar_diagnostico_rgm("pedido (ya en cola)", existente["id"], placa, f"alcance={alcance} origen={origen}")
+        return {"accion": "YA_EN_COLA", "item": existente, "puesto": db.posicion_en_cola_rgm(existente["id"]), "aviso_id": aviso_id}
 
     item_id = db.crear_item_rgm_cola(placa, alcance, origen, usuario_id, avistamiento_id, encadenar_judicial=_encadenado)
+    aviso_id = _registrar_aviso_si_corresponde(item_id, origen, usuario_id, chat_id, alerta_chat_id, alerta_message_id)
     item = db.obtener_item_rgm(item_id)
+    db.registrar_diagnostico_rgm("pedido", item_id, placa, f"alcance={alcance} origen={origen}")
     _emitir("rgm.solicitud", {"id": item_id, "placa": placa, "alcance": alcance})
-    return {"accion": "ENCOLADA", "item": item}
+    return {"accion": "ENCOLADA", "item": item, "puesto": db.posicion_en_cola_rgm(item_id), "aviso_id": aviso_id}
 
 
 def reservar_siguiente() -> Optional[dict]:
     """Llamado SOLO por la página 'Consulta' mientras atiende la cola."""
-    return db.reservar_siguiente_item_rgm()
+    item = db.reservar_siguiente_item_rgm()
+    if item:
+        db.registrar_diagnostico_rgm("reservado por Consulta", item["id"], item["placa"],
+                                      f"intento {item['intentos']}")
+    return item
 
 
 def _extraer_campo_descripcion_bien(descripcion: Optional[str], etiqueta: str) -> Optional[str]:
@@ -239,6 +293,15 @@ def completar_item(item_id: int, resultado: dict) -> dict:
     snapshot, marca el ítem OK, completa marca/modelo si corresponde
     (solo si vino `rgm`), encadena Judicial si esta RGM lo tenía pendiente,
     y avisa por SSE/Telegram.
+
+    Prompt 7 bloque A, punto 3: el payload de "rgm.resultado" incluye
+    "avisos" (quién lo pidió, de rgm_avisos) -- nexcam_telegram.py decide
+    con eso a quién avisar, YA NO con `origen` (el bug real: un ítem
+    encolado por la cámara sigue teniendo origen="camara" aunque alguien
+    lo haya pedido después por Telegram, y _on_rgm_resultado se quedaba
+    callado por eso). Si el Judicial queda encadenado, los avisos del
+    ítem RGM se copian al nuevo ítem Judicial: quien pidió "Judicial" no
+    debe perder su aviso solo porque primero hizo falta una RGM.
     """
     item = db.obtener_item_rgm(item_id)
     if item is None:
@@ -256,18 +319,23 @@ def completar_item(item_id: int, resultado: dict) -> dict:
         db.crear_snapshot(item["placa"], "JUDICIAL", json.dumps(judicial_resultado, ensure_ascii=False))
 
     db.marcar_item_rgm_completado(item_id)
+    db.registrar_diagnostico_rgm("resultado recibido", item_id, item["placa"],
+                                  f"rgm={'si' if rgm_resultado is not None else 'no'} judicial={'si' if judicial_resultado is not None else 'no'}")
 
     encadenado = None
     if item["alcance"] == "RGM" and item["encadenar_judicial"] and rgm_resultado is not None:
         nombre = ((rgm_resultado.get("deudor_garante") or {}).get("nombre") or "").strip()
         if nombre:
             encadenado = solicitar_consulta(item["placa"], "JUDICIAL", item["origen"], item["solicitado_por"], item["avistamiento_id"])
+            if encadenado and encadenado.get("item"):
+                db.copiar_avisos_rgm(item_id, encadenado["item"]["id"])
 
+    avisos = db.listar_avisos_rgm(item_id)
     item_final = db.obtener_item_rgm(item_id)
     _emitir("rgm.resultado", {
         "item_id": item_id, "placa": item["placa"], "alcance": item["alcance"], "origen": item["origen"],
         "avistamiento_id": item["avistamiento_id"], "solicitado_por": item["solicitado_por"],
-        "resultado": resultado, "diferencias": diferencias,
+        "resultado": resultado, "diferencias": diferencias, "avisos": avisos,
     })
     return {"item": item_final, "diferencias": diferencias, "encadenado": encadenado}
 
@@ -275,6 +343,8 @@ def completar_item(item_id: int, resultado: dict) -> dict:
 def marcar_error(item_id: int, mensaje: str):
     db.marcar_item_rgm_error(item_id, mensaje)
     item = db.obtener_item_rgm(item_id)
+    db.registrar_diagnostico_rgm("error", item_id, item["placa"] if item else None, mensaje)
     if item and item["estado"] == "ERROR":
+        avisos = db.listar_avisos_rgm(item_id)
         _emitir("rgm.error", {"item_id": item_id, "placa": item["placa"], "alcance": item["alcance"],
-                               "origen": item["origen"], "error": mensaje})
+                               "origen": item["origen"], "error": mensaje, "avisos": avisos})

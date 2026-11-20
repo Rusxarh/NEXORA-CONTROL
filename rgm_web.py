@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, Form, Request
 import database as db
 import rgm_cola
 import usuarios
+from templates import templates
 
 router = APIRouter()
 
@@ -87,3 +88,23 @@ def rgm_solicitar(placa: str = Form(...), alcance: str = Form("RGM"), volver: st
         mensaje = f"Consulta de {etiqueta} encolada para {placa_normalizada}.{extra} ¿Hay alguien atendiendo la cola? {conectado}."
 
     return usuarios.redirigir_con_mensaje(destino, mensaje, "info")
+
+
+# ---------------------------------------------------------------------------
+# Diagnóstico (Prompt 7 bloque A, punto 6): página pequeña, solo Admin, con
+# los últimos pasos de cada consulta (pedido -> reservado -> resultado ->
+# aviso) -- nunca se manda nada de esto por Telegram.
+# ---------------------------------------------------------------------------
+
+@router.get("/consulta/diagnostico")
+def consulta_diagnostico(request: Request, usuario_actual: dict = Depends(usuarios.requerir_admin)):
+    return templates.TemplateResponse(
+        request,
+        "consulta_diagnostico.html",
+        {
+            "request": request,
+            "usuario_actual": usuario_actual,
+            "ruta_activa": "consulta",
+            "pasos": db.listar_diagnostico_rgm(50),
+        },
+    )

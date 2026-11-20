@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block titulo %}Consulta · Diagnóstico · NEXORA{% endblock %}
+
+{% block contenido %}
+<div class="max-w-3xl mx-auto space-y-6">
+
+  <p class="text-xs text-zinc-500">
+    <a href="/consulta" class="hover:text-zinc-300 transition">Consulta</a> / <span class="text-zinc-300">Diagnóstico</span>
+  </p>
+
+  <section class="card">
+    <h2 class="text-sm font-semibold text-zinc-100 mb-1">Diagnóstico de RGM/Judicial</h2>
+    <p class="text-xs text-zinc-500 mb-4">
+      Los últimos {{ pasos | length }} pasos de las consultas (pedido → reservado por Consulta →
+      resultado recibido → aviso enviado). Solo para depurar; nunca se manda nada de esto por Telegram.
+    </p>
+
+    {% if not pasos %}
+    <p class="text-sm text-zinc-500">Todavía no hay nada registrado.</p>
+    {% else %}
+    <div class="overflow-x-auto -mx-5">
+      <table class="table-shell">
+        <thead>
+          <tr class="table-head-row">
+            <th class="table-head-cell">Hora</th>
+            <th class="table-head-cell">Placa</th>
+            <th class="table-head-cell">Ítem</th>
+            <th class="table-head-cell">Paso</th>
+            <th class="table-head-cell">Detalle</th>
+          </tr>
+        </thead>
+        <tbody class="table-body">
+          {% for p in pasos %}
+          <tr class="table-row">
+            <td class="table-cell text-zinc-400 whitespace-nowrap">{{ p.creado_en | fecha_co }}</td>
+            <td class="table-cell font-mono text-zinc-100">{{ p.placa or '—' }}</td>
+            <td class="table-cell text-zinc-400">{{ p.item_id or '—' }}</td>
+            <td class="table-cell text-zinc-300">{{ p.paso }}</td>
+            <td class="table-cell text-zinc-400">{{ p.detalle or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

@@ -165,7 +165,10 @@
   <section class="card">
     <div class="flex items-center justify-between gap-2 mb-2">
       <p class="label-field mb-0">Últimas 20</p>
-      <a href="/consulta{{ '?q=' + q if buscado else '' }}" class="btn-secondary btn-sm">🔄 Actualizar</a>
+      <div class="flex gap-2">
+        <a href="/consulta/diagnostico" class="btn-secondary btn-sm">🩺 Diagnóstico</a>
+        <a href="/consulta{{ '?q=' + q if buscado else '' }}" class="btn-secondary btn-sm">🔄 Actualizar</a>
+      </div>
     </div>
     <div class="overflow-x-auto -mx-5">
       <table class="table-shell">

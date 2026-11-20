@@ -8,6 +8,7 @@ propias de NEXORA-CONTROL.
 """
 
 import json
+import time
 from datetime import datetime, timedelta
 
 import database as db
@@ -381,6 +382,19 @@ def test_rgm_solicitar_usa_snapshot_vigente_sin_encolar_de_nuevo(cliente):
     assert db.item_rgm_pendiente_o_en_curso("NOP012", "RGM") is None
 
 
+def test_consulta_diagnostico_muestra_los_pasos(cliente):
+    admin = _crear_admin("Admin P7A Diag", "admin.p7adiag")
+    _crear_placa("DGW777", admin["id"])
+    _login_web(cliente, "admin.p7adiag")
+
+    cliente.post("/rgm/solicitar", data={"placa": "DGW777", "alcance": "RGM"})
+
+    r = cliente.get("/consulta/diagnostico")
+    assert r.status_code == 200
+    assert "DGW777" in r.text
+    assert "pedido" in r.text
+
+
 # --------------------------------------------------------------------- Prompt 6 punto 2: arreglo de RGM viejos
 
 def test_backfill_rgm_aplica_el_ultimo_snapshot_ok_una_sola_vez(cliente):
@@ -427,3 +441,151 @@ def test_backfill_rgm_ignora_snapshots_sin_estado_ok(cliente):
     db._migrar_backfill_rgm_a_vehiculos()
 
     assert db.buscar_placa("ERR789")["marca"] is None
+
+
+# --------------------------------------------------------------------- Prompt 7 bloque A: RGM a pedido que no responde
+
+def test_pedido_de_telegram_sobre_item_automatico_sube_su_prioridad(cliente):
+    """El bug real: la cámara encola GCT953 (origen "camara", prioridad
+    automática); si alguien lo pide por Telegram DESPUÉS, debe pasar a
+    atenderse antes que otro ítem automático más viejo, no quedarse
+    esperando detrás en el FIFO."""
+    admin = _crear_admin("Admin P7A Uno", "admin.p7a1")
+    _crear_placa("VIE111", admin["id"])
+    _crear_placa("NUE222", admin["id"])
+
+    viejo = rgm_cola.solicitar_consulta("VIE111", "RGM", "camara", admin["id"])["item"]
+    nuevo = rgm_cola.solicitar_consulta("NUE222", "RGM", "camara", admin["id"])["item"]
+    assert db.obtener_item_rgm(viejo["id"])["prioridad"] == db.PRIORIDAD_AUTOMATICA
+
+    # Alguien pide por Telegram el NUEVO (el segundo, más joven) -- debe
+    # saltar delante del viejo en la cola real.
+    resultado = rgm_cola.solicitar_consulta("NUE222", "RGM", "telegram", admin["id"], chat_id=999111)
+    assert resultado["accion"] == "YA_EN_COLA"
+    assert db.obtener_item_rgm(nuevo["id"])["prioridad"] == db.PRIORIDAD_TELEGRAM
+
+    primero_atendido = rgm_cola.reservar_siguiente()
+    assert primero_atendido["placa"] == "NUE222"  # el pedido por Telegram, no el más viejo
+
+
+def test_resultado_automatico_pedido_despues_por_telegram_si_avisa(cliente):
+    """EL bug de fondo (Prompt 7 bloque A): un ítem con origen="camara"
+    que alguien pidió DESPUÉS por Telegram debe avisarle al terminar --
+    antes, _on_rgm_resultado se quedaba callado solo por mirar `origen`
+    (ver nexcam_telegram.py), sin fijarse en quién esperaba. Esta prueba
+    es sobre rgm_cola/database: confirma que el AVISO queda persistido y
+    que completar_item lo incluye en el payload que emite, sin importar
+    el origen original del ítem."""
+    admin = _crear_admin("Admin P7A Dos", "admin.p7a2")
+    _crear_placa("AUT333", admin["id"])
+
+    item = rgm_cola.solicitar_consulta("AUT333", "RGM", "camara", admin["id"])["item"]
+    assert db.listar_avisos_rgm(item["id"]) == []  # nadie lo ha pedido todavía
+
+    resultado = rgm_cola.solicitar_consulta("AUT333", "RGM", "telegram", admin["id"], chat_id=777222)
+    assert resultado["accion"] == "YA_EN_COLA"
+    avisos = db.listar_avisos_rgm(item["id"])
+    assert len(avisos) == 1 and avisos[0]["chat_id"] == 777222
+
+    capturado = {}
+    import nexcam_api
+
+    nexcam_api.suscribir(lambda evento, payload: capturado.update(payload) if evento == "rgm.resultado" else None)
+    salida = rgm_cola.completar_item(item["id"], {"rgm": {"estado": "OK", "vehiculo": {"marca": "Kia"}}, "judicial": None})
+    assert salida["diferencias"].get("marca", {}).get("despues") == "Kia"
+
+    limite = time.time() + 3
+    while not capturado and time.time() < limite:
+        time.sleep(0.02)
+    assert capturado.get("origen") == "camara"  # el origen del ítem no cambió...
+    assert any(a["chat_id"] == 777222 for a in capturado.get("avisos") or [])  # ...pero el aviso SÍ llegó
+
+
+def test_posicion_en_cola_y_puesto_al_pedir(cliente):
+    admin = _crear_admin("Admin P7A Tres", "admin.p7a3")
+    for i in range(3):
+        _crear_placa(f"POS{i:03d}", admin["id"])
+    items = [rgm_cola.solicitar_consulta(f"POS{i:03d}", "RGM", "panel", admin["id"])["item"] for i in range(3)]
+
+    assert db.posicion_en_cola_rgm(items[0]["id"]) == 1
+    assert db.posicion_en_cola_rgm(items[1]["id"]) == 2
+    assert db.posicion_en_cola_rgm(items[2]["id"]) == 3
+
+    rgm_cola.reservar_siguiente()  # items[0] pasa a EN_CURSO
+    assert db.posicion_en_cola_rgm(items[0]["id"]) == 0
+    assert db.posicion_en_cola_rgm(items[1]["id"]) == 1
+
+
+def test_aviso_sobrevive_a_un_reinicio_de_nexora(cliente):
+    """El pedido queda en la base (rgm_avisos), no en memoria: "reiniciar
+    NEXORA" se simula aquí simplemente leyendo los avisos desde database.py
+    sin pasar por ningún objeto de nexcam_telegram.py."""
+    admin = _crear_admin("Admin P7A Cuatro", "admin.p7a4")
+    _crear_placa("RST444", admin["id"])
+
+    resultado = rgm_cola.solicitar_consulta("RST444", "RGM", "telegram", admin["id"], chat_id=555666)
+    item_id = resultado["item"]["id"]
+
+    # "reinicio": nada en memoria de nexcam_telegram.py sobrevive, pero
+    # rgm_avisos sigue ahí con el chat_id real.
+    avisos_tras_reinicio = db.listar_avisos_rgm(item_id)
+    assert len(avisos_tras_reinicio) == 1
+    assert avisos_tras_reinicio[0]["chat_id"] == 555666
+
+    rgm_cola.completar_item(item_id, {"rgm": {"estado": "OK", "vehiculo": {"marca": "Renault"}}, "judicial": None})
+    assert db.obtener_item_rgm(item_id)["estado"] == "OK"
+
+
+def test_dos_pedidos_de_la_misma_placa_una_sola_consulta_y_dos_avisos(cliente):
+    admin = _crear_admin("Admin P7A Siete", "admin.p7a7")
+    _crear_placa("DUP777", admin["id"])
+
+    r1 = rgm_cola.solicitar_consulta("DUP777", "RGM", "telegram", admin["id"], chat_id=111111)
+    r2 = rgm_cola.solicitar_consulta("DUP777", "RGM", "telegram", admin["id"], chat_id=222222)
+    assert r1["accion"] == "ENCOLADA"
+    assert r2["accion"] == "YA_EN_COLA"
+    assert r1["item"]["id"] == r2["item"]["id"]  # una sola consulta real
+
+    avisos = db.listar_avisos_rgm(r1["item"]["id"])
+    assert {a["chat_id"] for a in avisos} == {111111, 222222}  # dos avisos distintos
+
+    capturado = {}
+    import nexcam_api
+
+    nexcam_api.suscribir(lambda evento, payload: capturado.update(payload) if evento == "rgm.resultado" else None)
+    rgm_cola.completar_item(r1["item"]["id"], {"rgm": {"estado": "OK", "vehiculo": {"marca": "Toyota"}}, "judicial": None})
+
+    limite = time.time() + 3
+    while not capturado and time.time() < limite:
+        time.sleep(0.02)
+    assert {a["chat_id"] for a in capturado.get("avisos") or []} == {111111, 222222}
+
+
+def test_judicial_encadenado_copia_los_avisos_del_item_rgm(cliente):
+    admin = _crear_admin("Admin P7A Cinco", "admin.p7a5")
+    _crear_placa("JUD555", admin["id"])
+
+    r = rgm_cola.solicitar_consulta("JUD555", "JUDICIAL", "telegram", admin["id"], chat_id=444555)
+    assert r["accion"] == "ENCOLADA"
+    assert r["item"]["alcance"] == "RGM"  # encadena: primero pide RGM
+
+    salida = rgm_cola.completar_item(r["item"]["id"], {"rgm": {"deudor_garante": {"nombre": "Pedro Gómez"}}, "judicial": None})
+    assert salida["encadenado"]["accion"] == "ENCOLADA"
+    item_judicial_id = salida["encadenado"]["item"]["id"]
+
+    avisos_judicial = db.listar_avisos_rgm(item_judicial_id)
+    assert len(avisos_judicial) == 1 and avisos_judicial[0]["chat_id"] == 444555
+
+
+def test_diagnostico_registra_cada_paso(cliente):
+    admin = _crear_admin("Admin P7A Seis", "admin.p7a6")
+    _crear_placa("DIA666", admin["id"])
+
+    item = rgm_cola.solicitar_consulta("DIA666", "RGM", "panel", admin["id"])["item"]
+    rgm_cola.reservar_siguiente()
+    rgm_cola.completar_item(item["id"], {"rgm": {"estado": "OK"}, "judicial": None})
+
+    pasos = [p["paso"] for p in db.listar_diagnostico_rgm(50) if p["item_id"] == item["id"]]
+    assert "pedido" in pasos
+    assert "reservado por Consulta" in pasos
+    assert "resultado recibido" in pasos

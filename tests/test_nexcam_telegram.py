@@ -10,7 +10,7 @@ pendiente como hueco de prueba explícito (ver reporte de la FASE 3).
 
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -253,8 +253,12 @@ def test_rgm_resultado_telegram_responde_solo_al_chat_que_pidio_y_filtra_por_rol
 
     db.insertar_placa("ABC123", "carro", oper["id"], None)
     bot._boton_pulsado({"id": "cbq1", "message": {"chat": {"id": 556001}, "message_id": 1}, "data": "rgm:ABC123"})
-    item_id = next(iter(bot._chat_por_item_rgm))
-    assert bot._chat_por_item_rgm[item_id] == {"chat_id": 556001, "estado_alerta": None}
+    # Prompt 7 bloque A: quién pidió esto ahora vive en rgm_avisos (no en
+    # un diccionario en memoria), para sobrevivir a un reinicio de NEXORA.
+    item = db.item_rgm_pendiente_o_en_curso("ABC123", "RGM")
+    item_id = item["id"]
+    avisos = db.listar_avisos_rgm(item_id)
+    assert len(avisos) == 1 and avisos[0]["chat_id"] == 556001 and avisos[0]["alerta_message_id"] is None
 
     # completar_item (no crear_snapshot a mano) deja tanto el snapshot
     # como "Mazda" en `vehiculos`, que es de donde la ficha única lee
@@ -269,14 +273,14 @@ def test_rgm_resultado_telegram_responde_solo_al_chat_que_pidio_y_filtra_por_rol
     })
     bot.on_evento("rgm.resultado", {
         "item_id": item_id, "placa": "ABC123", "alcance": "RGM", "origen": "telegram", "avistamiento_id": None,
-        "resultado": {"rgm": {"estado": "OK"}, "judicial": None},
+        "resultado": {"rgm": {"estado": "OK"}, "judicial": None}, "avisos": avisos,
     })
 
     por_chat = {c["chat_id"]: c["text"] for metodo, c in bot.llamadas if metodo == "sendMessage"}
     assert 555997 not in por_chat  # solo le llega a quien lo pidió, no a todos los Admin
     assert "Juan Pérez" not in por_chat[556001]  # pero filtrado: Operador no ve al deudor
     assert "Mazda" in por_chat[556001]
-    assert item_id not in bot._chat_por_item_rgm  # se consume, no queda colgado
+    assert db.obtener_item_rgm(item_id)["estado"] == "OK"  # terminado: el vigilante de esperas ya no lo mira
 
 
 def test_rgm_snapshot_vigente_responde_de_una_vez_por_boton(bot, monkeypatch):
@@ -355,14 +359,18 @@ def test_rgm_a_pedido_desde_una_alerta_edita_esa_alerta_no_manda_mensaje_nuevo(b
         "id": "cbq-alr", "message": {"chat": {"id": 556304}, "message_id": message_id},
         "data": "rgm:ALR222",
     })
-    item_id = next(iter(bot._chat_por_item_rgm))
-    assert bot._chat_por_item_rgm[item_id]["estado_alerta"] is estado  # sí la encontró
+    item = db.item_rgm_pendiente_o_en_curso("ALR222", "RGM")
+    item_id = item["id"]
+    avisos = db.listar_avisos_rgm(item_id)
+    assert len(avisos) == 1
+    assert avisos[0]["alerta_chat_id"] == 556304 and avisos[0]["alerta_message_id"] == message_id  # sí la encontró
     bot.llamadas.clear()
 
     rgm_cola.completar_item(item_id, {"rgm": {"estado": "OK", "vehiculo": {"marca": "Mazda", "modelo": "2019"}},
                                        "judicial": None})
     bot.on_evento("rgm.resultado", {
         "item_id": item_id, "placa": "ALR222", "alcance": "RGM", "origen": "telegram", "avistamiento_id": None,
+        "avisos": avisos,
         "resultado": {"rgm": {"estado": "OK"}, "judicial": None},
     })
 
@@ -396,6 +404,85 @@ def test_ficha_unica_recorta_ubicaciones_si_no_cabe_en_el_pie_de_foto(bot):
     assert len(texto_limitado) <= 1024
     assert "🚗 <b>LIM 333</b>" in texto_limitado  # las líneas fijas de arriba se conservan
     assert "🚨 En lista: Hurto" in texto_limitado
+
+
+# --------------------------------------------------------------------- Prompt 7 bloque A: RGM a pedido que no responde
+
+def test_boton_responde_consultando_con_puesto_en_la_cola(bot):
+    admin = _crear_usuario("Admin Tele50", "Admin", "admin.tele50", telegram_id=556500)
+    bot._vincular(556500, [bot.codigo], "Admin Tele50")
+    db.insertar_placa("CON111", "carro", admin["id"], None)
+    bot.llamadas.clear()
+
+    bot._boton_pulsado({"id": "cbq-con", "message": {"chat": {"id": 556500}, "message_id": 1}, "data": "rgm:CON111"})
+
+    textos = [c["text"] for metodo, c in bot.llamadas if metodo == "sendMessage"]
+    assert any("Consultando" in t and "CON 111" in t and "puesto" in t for t in textos)
+
+
+def test_rgm_error_avisa_a_quien_lo_pidio_con_boton_reintentar(bot):
+    admin = _crear_usuario("Admin Tele51", "Admin", "admin.tele51", telegram_id=556501)
+    oper = _crear_usuario("Oper Tele51", "Operador", "oper.tele51", telegram_id=556502)
+    bot._vincular(556501, [bot.codigo], "Admin Tele51")
+    bot._vincular(556502, [bot.codigo], "Oper Tele51")
+    db.insertar_placa("ERR111", "carro", oper["id"], None)
+
+    # El Operador lo pide (pedir no es sensible); el ítem queda con SU aviso.
+    bot._boton_pulsado({"id": "cbq-err1", "message": {"chat": {"id": 556502}, "message_id": 1}, "data": "rgm:ERR111"})
+    item = db.item_rgm_pendiente_o_en_curso("ERR111", "RGM")
+    avisos = db.listar_avisos_rgm(item["id"])
+    bot.llamadas.clear()
+
+    bot.on_evento("rgm.error", {
+        "item_id": item["id"], "placa": "ERR111", "alcance": "RGM", "origen": "telegram",
+        "error": "timeout de prueba", "avisos": avisos,
+    })
+
+    por_chat = {c["chat_id"]: (c["text"], c.get("reply_markup")) for metodo, c in bot.llamadas if metodo == "sendMessage"}
+    assert 556501 not in por_chat  # solo le llega al Operador que lo pidió
+    texto, teclado = por_chat[556502]
+    assert "No se pudo consultar RGM" in texto and "ERR 111" in texto
+    assert teclado["inline_keyboard"][0][0]["callback_data"] == "rgm:ERR111"
+
+
+def test_rgm_error_automatico_sin_nadie_pendiente_queda_silencioso(bot):
+    admin = _crear_usuario("Admin Tele52", "Admin", "admin.tele52", telegram_id=556503)
+    bot._vincular(556503, [bot.codigo], "Admin Tele52")
+    bot.llamadas.clear()
+
+    bot.on_evento("rgm.error", {
+        "item_id": 999, "placa": "AUT999", "alcance": "RGM", "origen": "camara",
+        "error": "timeout", "avisos": [],
+    })
+
+    assert bot.llamadas == []
+
+
+def test_vigilante_de_esperas_edita_una_vez_el_mensaje_consultando(bot):
+    admin = _crear_usuario("Admin Tele53", "Admin", "admin.tele53", telegram_id=556504)
+    bot._vincular(556504, [bot.codigo], "Admin Tele53")
+    db.insertar_placa("ESP111", "carro", admin["id"], None)
+    bot._boton_pulsado({"id": "cbq-esp", "message": {"chat": {"id": 556504}, "message_id": 1}, "data": "rgm:ESP111"})
+    item = db.item_rgm_pendiente_o_en_curso("ESP111", "RGM")
+    aviso = db.listar_avisos_rgm(item["id"])[0]
+    assert aviso["mensaje_espera_id"] is not None
+    # Lo envejece más de MINUTOS_AVISO_ESPERA_RGM para que la vencida lo recoja.
+    vieja = (datetime.now() - timedelta(minutes=db.MINUTOS_AVISO_ESPERA_RGM + 1)).strftime("%Y-%m-%d %H:%M:%S")
+    with db.get_connection() as conn:
+        conn.execute("UPDATE rgm_avisos SET creado_en = ? WHERE id = ?", (vieja, aviso["id"]))
+    bot.llamadas.clear()
+
+    bot._revisar_esperas_rgm_una_vez()
+
+    ediciones = [c for metodo, c in bot.llamadas if metodo == "editMessageText"]
+    assert len(ediciones) == 1
+    assert "Sigue en cola" in ediciones[0]["text"]
+    assert ediciones[0]["message_id"] == aviso["mensaje_espera_id"]
+
+    # Una segunda pasada no debe volver a editar (avisado_espera=1 ya).
+    bot.llamadas.clear()
+    bot._revisar_esperas_rgm_una_vez()
+    assert bot.llamadas == []
 
 
 # --------------------------------------------------------------------- "0. Pendientes rápidos": instalar app
