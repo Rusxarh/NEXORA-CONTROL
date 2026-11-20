@@ -198,17 +198,24 @@ def test_rgm_resultado_panel_solo_a_chats_admin(bot):
     """Prompt 5 punto 1: una consulta pedida desde la web ("panel") avisa
     a los chats de Admin; un chat de Operador ni siquiera recibe mensaje
     (antes SÍ le llegaba una versión recortada -- ya no, origen "panel"
-    nunca se dirige a un Operador)."""
+    nunca se dirige a un Operador). Prompt 6 punto 1: el texto se arma con
+    la ficha única, leída de `vehiculos`/snapshots_placa (no del payload
+    del evento) -- igual que en la vida real, donde rgm_cola.completar_item
+    ya dejó el snapshot guardado ANTES de emitir "rgm.resultado"."""
     admin = _crear_usuario("Admin Tele9", "Admin", "admin.tele9", telegram_id=555999)
     oper = _crear_usuario("Oper Tele2", "Operador", "oper.tele2", telegram_id=556000)
     bot._vincular(555999, [bot.codigo], "Admin Tele9")
     bot._vincular(556000, [bot.codigo], "Oper Tele2")
+    db.insertar_placa("ABC123", "carro", admin["id"], None)
+    db.crear_snapshot("ABC123", "RGM", json.dumps({
+        "estado": "OK", "deudor_garante": {"nombre": "Juan Pérez", "numero_identificacion": "999888777"},
+        "vehiculo": {"marca": "Mazda"},
+    }))
     bot.llamadas.clear()
 
     bot.on_evento("rgm.resultado", {
         "item_id": 1, "placa": "ABC123", "alcance": "RGM", "origen": "panel", "avistamiento_id": None,
-        "resultado": {"rgm": {"estado": "OK", "deudor_garante": {"nombre": "Juan Pérez", "numero_identificacion": "999888777"},
-                              "vehiculo": {"marca": "Mazda"}}, "judicial": None},
+        "resultado": {"rgm": {"estado": "OK"}, "judicial": None},
     })
 
     por_chat = {c["chat_id"]: c["text"] for metodo, c in bot.llamadas if metodo == "sendMessage"}
@@ -244,14 +251,25 @@ def test_rgm_resultado_telegram_responde_solo_al_chat_que_pidio_y_filtra_por_rol
     bot._vincular(556001, [bot.codigo], "Oper Tele2b")
     bot.llamadas.clear()
 
+    db.insertar_placa("ABC123", "carro", oper["id"], None)
     bot._boton_pulsado({"id": "cbq1", "message": {"chat": {"id": 556001}, "message_id": 1}, "data": "rgm:ABC123"})
     item_id = next(iter(bot._chat_por_item_rgm))
-    assert bot._chat_por_item_rgm[item_id] == 556001
+    assert bot._chat_por_item_rgm[item_id] == {"chat_id": 556001, "estado_alerta": None}
 
+    # completar_item (no crear_snapshot a mano) deja tanto el snapshot
+    # como "Mazda" en `vehiculos`, que es de donde la ficha única lee
+    # el vehículo (Prompt 6 punto 1/2). Este bot de prueba no está
+    # suscrito a nexcam_api (no se llamó bot.arrancar()), así que hay que
+    # simular la llegada del evento aparte, como hace el resto del archivo.
+    import rgm_cola
+
+    rgm_cola.completar_item(item_id, {
+        "rgm": {"estado": "OK", "deudor_garante": {"nombre": "Juan Pérez"}, "vehiculo": {"marca": "Mazda"}},
+        "judicial": None,
+    })
     bot.on_evento("rgm.resultado", {
         "item_id": item_id, "placa": "ABC123", "alcance": "RGM", "origen": "telegram", "avistamiento_id": None,
-        "resultado": {"rgm": {"estado": "OK", "deudor_garante": {"nombre": "Juan Pérez"},
-                              "vehiculo": {"marca": "Mazda"}}, "judicial": None},
+        "resultado": {"rgm": {"estado": "OK"}, "judicial": None},
     })
 
     por_chat = {c["chat_id"]: c["text"] for metodo, c in bot.llamadas if metodo == "sendMessage"}
@@ -264,19 +282,102 @@ def test_rgm_resultado_telegram_responde_solo_al_chat_que_pidio_y_filtra_por_rol
 def test_rgm_snapshot_vigente_responde_de_una_vez_por_boton(bot, monkeypatch):
     """SNAPSHOT_VIGENTE nunca pasa por la cola -- rgm.resultado NUNCA
     llegaría para este caso, así que el botón manda el resultado ahí
-    mismo, sin esperar nada."""
+    mismo, sin esperar nada. El snapshot se deja con completar_item (el
+    camino real: también deja "Kia" en `vehiculos`, que es de donde la
+    ficha única del Prompt 6 lee el vehículo)."""
     import rgm_cola
 
     admin = _crear_usuario("Admin Tele9d", "Admin", "admin.tele9d", telegram_id=555996)
     bot._vincular(555996, [bot.codigo], "Admin Tele9d")
     db.insertar_placa("SNV111", "carro", admin["id"], None)
-    db.crear_snapshot("SNV111", "RGM", json.dumps({"estado": "OK", "vehiculo": {"marca": "Kia", "modelo": "2022"}}))
+    item = rgm_cola.solicitar_consulta("SNV111", "RGM", "panel", admin["id"])["item"]
+    rgm_cola.completar_item(item["id"], {"rgm": {"estado": "OK", "vehiculo": {"marca": "Kia", "modelo": "2022"}}, "judicial": None})
     bot.llamadas.clear()
 
     bot._boton_pulsado({"id": "cbq2", "message": {"chat": {"id": 555996}, "message_id": 1}, "data": "rgm:SNV111"})
 
     textos = [c["text"] for metodo, c in bot.llamadas if metodo == "sendMessage"]
     assert any("Kia" in t for t in textos)
+
+
+# --------------------------------------------------------------------- Prompt 6 punto 1: ficha única
+
+def test_ficha_unica_motivo_vacio_dice_ubicar_no_sin_motivo(bot):
+    admin = _crear_usuario("Admin Tele15", "Admin", "admin.tele15", telegram_id=556303)
+    bot._vincular(556303, [bot.codigo], "Admin Tele15")
+    db.insertar_placa("UBC111", "carro", admin["id"], None)  # sin observaciones/motivo
+    bot.llamadas.clear()
+
+    bot._buscar(556303, "UBC111")
+
+    texto = bot.llamadas[-1][1]["text"]
+    assert "🚨 En lista: UBICAR" in texto
+    assert "sin motivo" not in texto
+
+
+def test_rgm_a_pedido_desde_una_alerta_edita_esa_alerta_no_manda_mensaje_nuevo(bot):
+    """Prompt 6 punto 1: si el botón 🔎 RGM se pulsó sobre una alerta EN
+    VIVO, el resultado EDITA esa misma alerta (editMessageText/Caption);
+    no se manda ningún sendMessage nuevo con los datos del RGM."""
+    import rgm_cola
+
+    admin = _crear_usuario("Admin Tele16", "Admin", "admin.tele16", telegram_id=556304)
+    bot._vincular(556304, [bot.codigo], "Admin Tele16")
+    db.insertar_placa("ALR222", "carro", admin["id"], "Hurto")
+
+    bot.on_evento("detection.hit", _deteccion("ALR222", device_uuid="tel-alr", id=20))
+    # detection.hit pasa primero por _lectura_en_vivo, que abre una sesión
+    # de cámara (en_vivo=True por defecto): la alerta queda en
+    # sesiones["tel-alr"]["alertas"], no en _alertas_sin_sesion.
+    estado = bot.sesiones["tel-alr"]["alertas"]["ALR222"]
+    message_id = estado["mensajes"][0]["message_id"]
+    bot.llamadas.clear()
+
+    bot._boton_pulsado({
+        "id": "cbq-alr", "message": {"chat": {"id": 556304}, "message_id": message_id},
+        "data": "rgm:ALR222",
+    })
+    item_id = next(iter(bot._chat_por_item_rgm))
+    assert bot._chat_por_item_rgm[item_id]["estado_alerta"] is estado  # sí la encontró
+    bot.llamadas.clear()
+
+    rgm_cola.completar_item(item_id, {"rgm": {"estado": "OK", "vehiculo": {"marca": "Mazda", "modelo": "2019"}},
+                                       "judicial": None})
+    bot.on_evento("rgm.resultado", {
+        "item_id": item_id, "placa": "ALR222", "alcance": "RGM", "origen": "telegram", "avistamiento_id": None,
+        "resultado": {"rgm": {"estado": "OK"}, "judicial": None},
+    })
+
+    nuevos_mensajes = [c for metodo, c in bot.llamadas if metodo == "sendMessage"]
+    ediciones = [(metodo, c) for metodo, c in bot.llamadas if metodo in ("editMessageText", "editMessageCaption")]
+    assert nuevos_mensajes == []  # nada nuevo: se editó la alerta
+    assert len(ediciones) == 1
+    assert ediciones[0][1]["message_id"] == message_id
+    assert "Mazda" in ediciones[0][1].get("text") or "Mazda" in ediciones[0][1].get("caption", "")
+
+
+def test_ficha_unica_recorta_ubicaciones_si_no_cabe_en_el_pie_de_foto(bot):
+    """Prompt 6 punto 1: el límite de 1024 caracteres del pie de foto se
+    respeta recortando la lista de Ubicaciones primero, nunca las líneas
+    fijas de arriba (placa, en lista, vehículo, etc.). El tope de 8 filas
+    ya ayuda, pero un operador con nombre largo puede igual pasarse de
+    1024 -- es justo lo que esto fuerza."""
+    admin = _crear_usuario("Admin Tele17", "Admin", "admin.tele17", telegram_id=556305)
+    db.insertar_placa("LIM333", "carro", admin["id"], "Hurto")
+    operador_largo = "Eduardo Alejandro Camacho Restrepo Villamizar"
+    sesion = {"usuario_id": admin["id"], "nombre": operador_largo, "device_uuid": "tel-lim"}
+    for i in range(10):
+        nexcam_db.registrar_avistamiento(
+            sesion, "LIM333", "LIM333", "exact", 0.9, None, None, "prueba",
+            4.6 + i * 0.001, -74.1, int(datetime.now().timestamp() * 1000) + i, None, None,
+        )
+
+    texto_sin_limite = bot._texto_ficha_telegram("LIM333", es_admin=False)
+    texto_limitado = bot._texto_ficha_telegram("LIM333", es_admin=False, limite=1024)
+    assert len(texto_sin_limite) > 1024  # de verdad hacía falta recortar
+    assert len(texto_limitado) <= 1024
+    assert "🚗 <b>LIM 333</b>" in texto_limitado  # las líneas fijas de arriba se conservan
+    assert "🚨 En lista: Hurto" in texto_limitado
 
 
 # --------------------------------------------------------------------- "0. Pendientes rápidos": instalar app
@@ -363,7 +464,11 @@ def test_alerta_unica_por_placa_edita_en_vez_de_repetir(bot):
     assert all(m[0] != "sendLocation" for m in bot.llamadas)
 
 
-def test_alerta_trae_fecha_de_ingreso_y_telefono(bot):
+def test_alerta_trae_fecha_de_ingreso_y_operador(bot):
+    """Prompt 6 punto 1: la alerta usa el formato único -- "📅 Ingreso:"
+    (ya no "📅 En la lista desde:") y la línea de la lectura actual trae
+    al operador, pero YA NO el modelo del teléfono (no está en el
+    formato único; el teléfono sigue viéndose en "📷 Cámara encendida")."""
     admin = _crear_usuario("Admin Tele13", "Admin", "admin.tele13", telegram_id=556301)
     bot._vincular(556301, [bot.codigo], "Admin Tele13")
     db.insertar_placa("STU222", "carro", admin["id"], "Hurto")
@@ -374,8 +479,8 @@ def test_alerta_trae_fecha_de_ingreso_y_telefono(bot):
     # Sin snapshot/vehiculo en el payload, _foto_principal no encuentra
     # ninguna foto real: la alerta sale por sendMessage (texto), no sendPhoto.
     ultimo = [c for metodo, c in bot.llamadas if metodo == "sendMessage"][-1]
-    assert "📅 En la lista desde" in ultimo["text"]
-    assert "HONOR ALT-NX3" in ultimo["text"]
+    assert "📅 Ingreso:" in ultimo["text"]
+    assert "👤 Eduardo" in ultimo["text"]
 
 
 def test_camara_encendida_muestra_nombre_real_del_telefono(bot):

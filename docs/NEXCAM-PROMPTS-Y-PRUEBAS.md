@@ -1,6 +1,6 @@
 # NEXCAM en NEXORA: prompts para Claude Code y plan de pruebas
 
-Actualizado: 18/11/2026, 3:40 a. m.
+Actualizado: 20/11/2026
 
 ## Cómo empezar
 
@@ -20,6 +20,8 @@ Orden de trabajo:
 | 4 | Prompt 4 (en NEXDOC) | Fase 15 |
 | 1b | Prompt 5 (después de los 0, 2 y 2b; antes del 3) | Fase 16 |
 | 1c | Prompt 6 (antes del 3) + apps 0.5.4 y 0.5.5 | Fase 16 (16.9 a 16.20) |
+| 1d | Prompt 7 (RGM a pedido + acceso desde internet) | Fase 17 |
+| 1e | Prompt 8 (RGM y Judicial en segundo plano, todo en NEXORA) | Fase 18 |
 
 ### Regla para todos los reportes de Claude Code
 
@@ -731,6 +733,175 @@ ficha web con datos bajo la placa; arreglo de RGM viejos aplicado una sola vez;
 el botón responde sin pasar por la cola de alertas.
 ```
 
+## Prompt 7: RGM a pedido que no responde + NEXORA accesible desde internet
+
+Resultado de las pruebas del 18/11/2026: todo OK salvo que el 🔎 RGM pedido desde Telegram a veces no responde (hay latido de Consulta, pero el resultado nunca llega al chat). Y ya toca abrir NEXORA para entrar desde cualquier red.
+
+Diagnóstico ya hecho por Claude (chat) leyendo `rgm_cola.py` y `nexcam_telegram.py` en `nexcam` (3e3105e):
+- Si la cámara ya había encolado esa placa (origen "camara"), el botón 🔎 RGM recibe `YA_EN_COLA` y solo guarda el chat en `_chat_por_item_rgm`. Al terminar, `_on_rgm_resultado` hace `return` porque el ítem tiene origen "camara" (RGM silencioso del Prompt 5) ANTES de mirar si alguien lo pidió. Resultado: nadie recibe nada.
+- `_chat_por_item_rgm` vive en memoria: si NEXORA se reinicia entre el pedido y el resultado, se pierde quién lo pidió.
+- Un ítem de cámara o de estudio tiene prioridad baja: el pedido de Telegram queda esperando detrás de otros.
+
+```text
+Rama nexcam, sin preguntar (CLAUDE.md), DESPUÉS de terminar el Prompt 6. Commit por
+bloque, push al final, reporte con "Pruebas para tu visto bueno".
+
+A) RGM PEDIDO SIEMPRE RESPONDE
+1. Guarda en la base quién pidió cada consulta: tabla rgm_avisos (item_id, chat_id,
+   usuario_id, creado_en) o columnas en rgm_cola (migración aditiva). Reemplaza el
+   diccionario en memoria _chat_por_item_rgm. Un ítem puede tener VARIOS
+   solicitantes (cámara + Telegram + web).
+2. YA_EN_COLA: agrega al solicitante a ese ítem y SUBE su prioridad a la de
+   Telegram (si estaba como cámara/estudio). Respuesta inmediata en el chat:
+   "🔎 Consultando GCT 953… (puesto N en la cola)".
+3. _on_rgm_resultado: el silencio de cámara/estudio aplica SOLO si el ítem no tiene
+   solicitantes. Si tiene, se avisa a cada uno con el formato del Prompt 6 punto 1
+   (editando la alerta si se pidió desde una alerta), sensibles solo a Admin.
+4. rgm.error también se avisa a los solicitantes ("No se pudo consultar RGM de
+   GCT 953: <motivo>. [🔁 Reintentar]").
+5. Si a los 3 min de pedirlo no hay resultado: el bot edita "🔎 Consultando…" a
+   "⏳ Sigue en cola (puesto N). ¿Está abierta Consulta en la PC?" — una sola vez.
+6. Log de diagnóstico (archivo, no Telegram) de cada paso: pedido → reservado por
+   Consulta → resultado recibido → aviso enviado/fallido, con tiempos. Página
+   pequeña "Consulta → Diagnóstico" que muestre los últimos 50.
+Pruebas: botón 🔎 RGM sobre una placa que la cámara ya encoló → llega el mensaje;
+reiniciar NEXORA entre pedido y resultado → igual llega; error → aviso; dos
+pedidos de la misma placa → una sola consulta y dos avisos.
+
+B) NEXORA DESDE CUALQUIER RED (con Cloudflare Tunnel; Gabriel confirma y compra el dominio antes de este bloque)
+NEXORA sigue corriendo en la PC de Gabriel (la base y el Connector RGM viven ahí).
+Se publica con Cloudflare Tunnel: sin abrir puertos del router, HTTPS automático y
+una dirección fija https://<dominio> (variable NEXORA_URL_PUBLICA en .env; el
+dominio lo pone Gabriel).
+1. Configuración en .env (ignorado por git): NEXORA_URL_PUBLICA, NEXORA_ENTORNO
+   (local|publico). Nada de dominios ni tokens en el código.
+2. Seguridad antes de exponer (obligatorio con NEXORA_ENTORNO=publico):
+   - Cookie de sesión secure=True, httponly, samesite=lax; respeta X-Forwarded-Proto
+     de Cloudflare (uvicorn --proxy-headers, forwarded_allow_ips=127.0.0.1).
+   - /docs, /redoc y /openapi.json apagados.
+   - Límite de intentos de login: 5 fallos por usuario o IP en 15 min → bloqueo de
+     15 min y aviso "🔐 Intentos fallidos de entrar como <usuario> desde <IP>" al
+     Telegram de los Admin. Igual para /api/auth/login de la app.
+   - Cabeceras: HSTS, X-Content-Type-Options, X-Frame-Options DENY,
+     Referrer-Policy. Tamaño máximo de subida (fotos 5 MB, PDFs 20 MB).
+   - Fotos, oficios y PDFs nunca por URL pública directa: siempre detrás de sesión.
+   - La página Consulta (la que atiende la cola con el Connector) solo funciona
+     desde la propia PC (localhost/IP local): desde internet muestra "Consulta solo
+     se atiende en la PC de la oficina". El resto de la web sí.
+   - Revisa todas las rutas: ninguna sin requerir_admin salvo login, /api/* de la
+     app (Bearer + dispositivo) y /app/nexcam.apk (enlace con ?k=).
+   - Reporta la lista de rutas públicas que quedan.
+3. Script `publicar-nexora.ps1` (en la raíz de NEXORA-CONTROL), que Gabriel corre
+   una vez, con explicación en español en cada paso:
+   - Instala cloudflared con winget si falta.
+   - `cloudflared tunnel login` (abre el navegador: Gabriel elige su dominio).
+   - Crea el túnel "nexora", el registro DNS del dominio y el config.yml en
+     %USERPROFILE%\.cloudflared (fuera del repo) apuntando a http://localhost:8000.
+   - Lo instala como servicio de Windows (arranca solo con la PC).
+   - Al final prueba https://<dominio>/api/health (crea esa ruta simple) y lo
+     escribe en .env como NEXORA_URL_PUBLICA.
+   - iniciar-nexora.bat sigue igual (NEXORA en el puerto 8000); el túnel es aparte.
+4. App NEXCAM y Telegram:
+   - El enlace de vinculación, el de la app y los botones "Abrir en la web" de
+     Telegram usan NEXORA_URL_PUBLICA cuando existe.
+   - Reporta a Gabriel la línea exacta para app/.env:
+     EXPO_PUBLIC_API_URL=https://<dominio> (Claude chat compila la app con eso).
+5. Documento corto `docs/ACCESO-REMOTO.md`: cómo entrar desde el teléfono, qué hacer
+   si la PC se apaga (nada funciona hasta que vuelva), cómo revocar el túnel.
+Pruebas: con NEXORA_ENTORNO=publico, cookie secure, /docs 404, 6 logins malos →
+bloqueo + aviso, Consulta desde IP no local → mensaje, /api/health responde.
+```
+
+## Prompt 8: RGM y Judicial en segundo plano, todo dentro de NEXORA
+
+Resultado de la grabación de Gabriel (20/11/2026, placa de prueba LRY517) y de la revisión del código del Connector (rama `alcance-rgm`, d16b13f):
+- **Consulta no se actualiza sola:** la cola y "Últimas 20" quedan en "Pendiente" hasta pulsar Actualizar, aunque el RGM ya terminó.
+- **Judicial solo avanza si la pestaña del portal está al frente.** En segundo plano se queda en el modal ("Se han encontrado varios registros…"). Causa probable: el navegador frena las pestañas ocultas (requestAnimationFrame y temporizadores), y el portal (Vue) no termina de cerrar el modal ni de pintar la tabla.
+- **Demandante perdido:** `extraerSujetosProcesales()` (judicial.js) no reconoce roles con barra ni en minúscula ("Demandante/accionante:", "Demandado/indiciado/causante:"). Por eso salen "Sujetos procesales no disponibles" o "JARAMILLO Defensor Privado: …", y falta el banco demandante, que es justo lo que se necesita.
+- **SELECCIONAR no abre el proceso:** la pestaña Judicial se cierra o la consulta deja de ser "la activa en el motor" cuando la cola sigue, y el detalle nunca llega.
+- **"Último resultado guardado" en Consulta sigue en JSON crudo.**
+
+```text
+Dos repos, sin preguntar (CLAUDE.md), DESPUÉS del Prompt 7 bloque A:
+- Connector: C:\Users\Rus\Documents\NEXORA\nexora-connector-rgm-v0.1, rama
+  alcance-rgm (NO toques ni borres el git stash que hay ahí).
+- NEXORA-CONTROL, rama nexcam.
+Commit por punto, push de las dos ramas al final, reporte con "Pruebas para tu
+visto bueno". Las pruebas automáticas NUNCA consultan los portales reales: usa
+respuestas grabadas con datos ficticios.
+
+Meta de Gabriel: pedir RGM y Judicial desde NEXORA y ver todo en NEXORA, sin que se
+abra, active ni cambie de pestaña nada. Los portales trabajan en segundo plano.
+
+1) JUDICIAL SIN PESTAÑA (investiga primero, luego implementa):
+   - Con la pestaña del portal abierta a mano, registra en un archivo de
+     diagnóstico (no en el repo) qué peticiones de red hace la página
+     consultaprocesos.ramajudicial.gov.co al buscar por nombre, al abrir un proceso,
+     sus sujetos y sus actuaciones. Probablemente es una API JSON
+     (…:448/api/v2/Procesos/Consulta/NombreRazonSocial, /Proceso/Detalle/{id},
+     /Proceso/Sujetos/{id}, /Proceso/Actuaciones/{id}); confírmalo.
+   - Si es una API pública sin captcha: el service worker del Connector la llama
+     directo con fetch (host_permissions), sin pestaña. Respeta: máx. 1 petición
+     cada 1,5 s, paginación completa, reintentos con espera, User-Agent normal.
+     Sin abrir pestañas ya no hay modal que cerrar.
+   - Si no se puede (captcha, bloqueo): plan B = pestaña en una ventana aparte NO
+     minimizada que nunca toma el foco, y desactivar el freno de pestañas ocultas
+     donde se pueda; repórtalo con lo que viste.
+   - Devuelve por proceso: radicado, id interno, despacho, departamento, fecha de
+     radicación, fecha de última actuación, privado sí/no, y sujetos [{rol, nombre}]
+     con el rol COMPLETO ("Demandante/accionante").
+
+2) SUJETOS PROCESALES BIEN LEÍDOS (aunque siga habiendo DOM en algún caso):
+   - Corrige extraerSujetosProcesales: roles con "/" y palabras en minúscula después
+     de la barra, "Defensor Privado", "Defensor Público", "Apoderado", "Tercero",
+     etc. Mejor aún: tomar el rol del elemento en negrilla de la celda y el nombre
+     del texto que lo sigue. Pruebas con el texto real de formato (nombres ficticios).
+
+3) SELECCIONAR UN PROCESO EN CUALQUIER MOMENTO:
+   - Desde NEXORA (Consulta y ficha del vehículo), "Ver proceso" trae detalle,
+     sujetos y actuaciones de ese radicado aunque la consulta ya haya terminado y la
+     cola siga con otras placas (por la API del punto 1 o reabriendo en segundo
+     plano). Se guarda como snapshot y se muestra en NEXORA; nunca abre el portal
+     al frente.
+
+4) RGM EN SEGUNDO PLANO:
+   - Investiga igual las peticiones de garantiasmobiliarias.com.co (ASP.NET). Si se
+     puede consultar por fetch (ViewState) sin captcha ni sesión especial, hazlo sin
+     pestaña. Si no, la pestaña RGM se abre inactiva en una ventana aparte y nunca
+     se activa (quita el "activarMientrasExtrae"), y verifica que la extracción
+     termina con la pestaña oculta (si el freno la detiene, reporta y deja la
+     opción más estable).
+
+5) NEXORA EN TIEMPO REAL (página Consulta y ficha):
+   - La cola, "Últimas 20", el Estado y el resultado se actualizan solos con los
+     eventos que ya existen (SSE rgm.solicitud / rgm.resultado / rgm.error y los
+     estados del Connector), sin pulsar Actualizar: Pendiente → En curso → OK/Error
+     en el momento.
+   - "Último resultado guardado" como tabla (mismo componente de la ficha del
+     Prompt 5/6), JSON solo en "Ver datos originales".
+
+6) PROCESOS JUDICIALES LEGIBLES Y ÚTILES (Consulta y ficha, solo Admin):
+   - Cada proceso en una tarjeta: radicado · despacho (ciudad) · radicado el
+     <fecha> · última actuación <fecha> · Demandante(s) · Demandado(s) · otros.
+   - Marca arriba, en verde, "🏦 Demanda la financiera" los procesos donde el
+     demandante coincide con el acreedor del RGM de esa placa (nombre normalizado:
+     sin "S.A.", "SA", "BIC", "COMPAÑÍA DE FINANCIAMIENTO", tildes ni puntos; ej.
+     BANCO FINANDINA SA BIC = BANCO FINANDINA S.A. BIC). Ordena: esos primero,
+     luego por fecha de última actuación (más reciente arriba).
+   - Procesos privados: una línea "🔒 Proceso privado · <despacho>", sin botón.
+     Radicados repetidos se muestran una vez.
+   - Botón "Ver proceso" (punto 3) en lugar de "SELECCIONAR". Las actuaciones se
+     muestran debajo, la más reciente arriba.
+   - Telegram (Admin), botón ⚖️ Procesos: mismo resumen, con los de la financiera
+     primero.
+
+Pruebas: respuestas grabadas de la API judicial (ficticias) → lista correcta con
+demandantes; parser con "Demandante/accionante:" y "Defensor Privado:"; coincidencia
+acreedor ↔ demandante; Ver proceso después de terminada la consulta; Consulta se
+actualiza sola (evento SSE simulado); ninguna llamada a chrome.tabs.update con
+active:true en todo el Connector.
+```
+
 ---
 
 ## Plan de pruebas
@@ -843,6 +1014,29 @@ Antes de cada tanda: reiniciar NEXORA (cerrar la ventana y abrir `iniciar-nexora
 - **16.18** Tocar ⏻ en la app → en menos de 2 s el mensaje de Telegram cambia a "⏹️ Cámara apagada"; al encender, igual.
 - **16.19** App 0.5.5: al día siguiente (o cambiando la fecha del teléfono a mañana), "Hoy" arranca en 0 placas y la tira de abajo queda vacía; el Historial conserva lo de ayer.
 - **16.20** Dar de alta en la web una placa que la cámara ya vio como "sin novedad" → llega "🗂️ Ya la viste" con la foto y la lista de ubicaciones; en la web, el aviso arriba de la ficha.
+
+**Fase 17: RGM a pedido y acceso desde internet (Prompt 7)**
+- **17.1** Con la cámara viendo una placa de la lista (se encola sola), pulsar 🔎 RGM en su alerta → llega "Consultando… (puesto N)" y luego la alerta se reordena con los datos.
+- **17.2** Pedir 🔎 RGM, cerrar y abrir NEXORA antes de que termine → igual llega el resultado.
+- **17.3** Cerrar Consulta y pedir 🔎 RGM → a los 3 min "⏳ Sigue en cola… ¿Está abierta Consulta en la PC?".
+- **17.4** Consulta → Diagnóstico muestra pedido, reservado, resultado y aviso con sus horas.
+- **17.5** Correr `publicar-nexora.ps1` → al final dice que https://<dominio>/api/health responde.
+- **17.6** Desde el teléfono con datos móviles (sin Wi-Fi de la casa): abrir https://<dominio>, entrar con tu usuario y ver Hoy, Vehículos y NEXCAM.
+- **17.7** La página Consulta abierta desde el teléfono dice "Consulta solo se atiende en la PC de la oficina".
+- **17.8** 6 contraseñas malas seguidas → bloqueo de 15 min y aviso 🔐 en Telegram.
+- **17.9** App NEXCAM compilada con la dirección nueva: con datos móviles inicia sesión, lee placas y llegan las alertas.
+- **17.10** Apagar la PC → la app muestra "Sin conexión" y guarda las lecturas; al prender la PC, se envían solas.
+
+**Fase 18: RGM y Judicial en segundo plano (Prompt 8)**
+Antes: recargar el Connector en `brave://extensions` y reiniciar NEXORA.
+- **18.1** Consulta → LRY517 → RGM: no se abre ni se activa ninguna pestaña; el estado pasa solo de Pendiente a OK, sin pulsar Actualizar.
+- **18.2** Judicial de LRY517 con NEXORA al frente todo el tiempo: llega el listado sin tocar el portal.
+- **18.3** Cada proceso muestra demandante y demandado; arriba, en verde, "🏦 Demanda la financiera" el que coincide con el acreedor del RGM.
+- **18.4** "Ver proceso" en uno de ellos (aunque la cola ya siguió con otra placa) → aparecen detalle y actuaciones en NEXORA.
+- **18.5** "Último resultado guardado" se ve como tabla, no JSON.
+- **18.6** El proceso privado sale como "🔒 Proceso privado" y no se repite.
+- **18.7** Telegram ⚖️ Procesos (Admin): mismo resumen, la financiera primero.
+- **18.8** Dejar Brave minimizado 10 min con varias placas en cola → todas terminan.
 
 ### Migrar la base de placas desde WhatsApp (Prompt 3, bloque A)
 - Exportar el chat del grupo: WhatsApp → grupo → ⋮ → Más → Exportar chat → Sin archivos. Sale un .zip: no hace falta descomprimirlo.

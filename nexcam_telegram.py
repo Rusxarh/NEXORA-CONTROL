@@ -251,6 +251,25 @@ def _vehiculo_txt(v: Optional[dict]) -> str:
     return ", ".join(x for x in (v.get("marca"), v.get("linea"), v.get("color"), v.get("modelo")) if x)
 
 
+def _titulo(texto: Optional[str]) -> Optional[str]:
+    """Mayúscula inicial de cada palabra ("CHEVROLET TRACKER" ->
+    "Chevrolet Tracker"): el RGM entrega marca/línea/tipo_servicio en
+    mayúsculas y el Prompt 6 punto 1 pide no mostrarlas así en Telegram."""
+    return " ".join(p.capitalize() for p in texto.split()) if texto else texto
+
+
+def _resumen_vehiculo_ficha(vehiculo: Optional[dict]) -> str:
+    """"Chevrolet Tracker · 2021 · Particular · gris" -- Prompt 6 punto 1:
+    marca+línea juntas, después modelo/servicio/color separados por "·",
+    omitiendo lo que no haya. Lee directo de `vehiculos` (la misma tabla
+    que el RGM sobrescribe), no de un snapshot."""
+    if not vehiculo:
+        return ""
+    marca_linea = " ".join(x for x in (_titulo(vehiculo.get("marca")), _titulo(vehiculo.get("linea"))) if x)
+    partes = [marca_linea, vehiculo.get("modelo"), _titulo(vehiculo.get("tipo_servicio")), vehiculo.get("color")]
+    return " · ".join(x for x in partes if x)
+
+
 PATRON_AGREGAR = re.compile(r"^\s*([A-Za-z]{3})[\s-]?(\d{3})\b\s*(.*)$")
 PATRON_PLACA_SOLA = re.compile(r"^[A-Za-z]{3}[\s-]?\d{3}$")
 
@@ -279,7 +298,12 @@ class BotTelegram:
         self.esperando = {}   # chat_id -> {"que": ..., "hasta": datetime}
         self.sesiones = {}    # device_uuid -> sesión de cámara en vivo
         self._alertas_sin_sesion = {}  # (device_uuid, placa) -> estado de alerta (Prompt 2, sin sesión de cámara)
-        self._chat_por_item_rgm = {}  # item_id de rgm_cola -> chat_id que lo pidió con el botón 🔎 RGM (Prompt 5)
+        # item_id de rgm_cola -> {"chat_id", "estado_alerta"} de quien lo pidió con
+        # el botón 🔎 RGM (Prompt 5); "estado_alerta" (Prompt 6 punto 1) es el
+        # `estado` de la alerta en vivo que tenía el botón, o None si se pidió
+        # desde una ficha/buscar -- decide si el resultado EDITA esa alerta o
+        # manda un mensaje nuevo.
+        self._chat_por_item_rgm = {}
         self._lock = threading.Lock()
         self._hilo_bucle = None
         self._hilo_eventos = None
@@ -604,30 +628,109 @@ class BotTelegram:
             lineas.append(f"…y {n - 6} más (ver en el panel).")
         return "\n".join(lineas)
 
-    # ------------------------------------------------------------ alerta por placa (Prompt 2)
+    # ------------------------------------------------------------ ficha única de Telegram (Prompt 6 punto 1)
 
-    def _texto_alerta(self, estado: dict) -> str:
-        placa = estado["placa"]
+    def _texto_ficha_telegram(self, placa: str, *, es_admin: bool, leida: Optional[str] = None,
+                               lectura_actual: Optional[dict] = None, limite: Optional[int] = None) -> str:
+        """
+        Formato ÚNICO compartido por la alerta en vivo, la respuesta del
+        🔎 RGM (a pedido), el botón 📋 Ficha y /buscar -- antes cada uno
+        armaba su propio texto (y el RGM a pedido se pegaba al final de
+        la alerta, duplicando "Consulta hecha."/"En tu lista: …"/
+        "Vista N veces. Última: …"/"Antes:", que la lista de Ubicaciones
+        de abajo ya cubre).
+
+        `leida` (solo para una alerta "posible"): lo que la cámara leyó,
+        cuando difiere de la placa de la lista. `lectura_actual`: dict
+        {"ts","confianza","operador"} de la lectura que disparó una
+        alerta EN VIVO -- agrega la línea "🕘 fecha · confianza NN % ·
+        👤 operador" antes de Ubicaciones (además de que esa misma visita
+        también aparece dentro de la lista, con su fecha completa).
+        `limite`: si el texto final no cabe (pie de foto, 1024
+        caracteres), se recorta la lista de Ubicaciones primero, nunca
+        las líneas fijas de arriba.
+        """
+        vehiculo = db.buscar_placa(placa)
         lineas = [f"🚗 <b>{_esc(_fmt_placa(placa))}</b>"]
-        if estado["tipo"] == "probable":
-            lineas.append(f"⚠️ POSIBLE · leyó {_esc(estado.get('leida') or '')}")
+        if leida:
+            lineas.append(f"⚠️ POSIBLE · leyó {_esc(leida)}")
+        elif vehiculo and vehiculo["estado"] == "activo":
+            motivo = (vehiculo.get("observaciones") or "").strip() or "UBICAR"
+            lineas.append(f"🚨 En lista: {_esc(motivo)}")
+        elif vehiculo:
+            lineas.append("Estuvo en la lista (dada de baja).")
         else:
-            lineas.append(f"🚨 EN LISTA · {_esc(estado.get('motivo') or 'en lista')}")
-        if estado.get("vehiculo_txt"):
-            lineas.append(_esc(estado["vehiculo_txt"]))
-        if estado.get("fecha_ingreso_ms") is not None:
-            lineas.append(f"📅 En la lista desde: {_hora(estado['fecha_ingreso_ms'])}")
-        if estado["total_historico"] <= 1:
-            lineas.append("👁 Primera vez que se ve")
-        else:
-            antes = f" · antes: {_hora(estado['antes_ts'])}" if estado.get("antes_ts") is not None else ""
-            lineas.append(f"👁 Vista {estado['total_historico']} veces{antes}")
-        conf = f"{round(estado['confianza'] * 100)} %" if estado.get("confianza") is not None else "—"
-        lineas.append(f"🕘 {_hora(estado['ultima_ts'])} · confianza {conf}")
-        lineas.append(f"👤 {_esc(estado.get('operador') or '—')} · {_esc(estado.get('device') or 'Teléfono')}")
-        if estado.get("lat") is not None and estado.get("lng") is not None:
-            lineas.append(f'📍 <a href="{_url_mapa(estado["lat"], estado["lng"])}">Ver ubicación</a>')
-        return "\n".join(lineas)
+            lineas.append("No está en la lista.")
+
+        fecha_ingreso_ms = _ms_de_texto_local(vehiculo.get("fecha_ingreso")) if vehiculo else None
+        if fecha_ingreso_ms is not None:
+            lineas.append(f"📅 Ingreso: {_hora(fecha_ingreso_ms)}")
+
+        resumen_vehiculo = _resumen_vehiculo_ficha(vehiculo)
+        if resumen_vehiculo:
+            lineas.append(f"🚙 {_esc(resumen_vehiculo)}")
+
+        serie_motor = []
+        if vehiculo and vehiculo.get("numero_serie"):
+            serie_motor.append(f"Serie/VIN: {_esc(vehiculo['numero_serie'])}")
+        if vehiculo and vehiculo.get("motor"):
+            serie_motor.append(f"Motor: {_esc(vehiculo['motor'])}")
+        if serie_motor:
+            lineas.append(f"🔩 {' · '.join(serie_motor)}")
+
+        if es_admin:
+            snap_rgm = db.obtener_ultimo_snapshot_por_fuente(placa, "RGM")
+            datos_rgm = None
+            if snap_rgm:
+                try:
+                    datos_rgm = json.loads(snap_rgm["datos"])
+                except Exception:
+                    datos_rgm = None
+            if datos_rgm:
+                acreedor = (datos_rgm.get("acreedor") or {}).get("razon_social")
+                if acreedor:
+                    lineas.append(f"🏦 Acreedor: {_esc(acreedor)}")
+                deudor = datos_rgm.get("deudor_garante") or {}
+                if deudor.get("nombre"):
+                    partes = [deudor["nombre"]]
+                    documento = " ".join(x for x in (deudor.get("tipo_identificacion"), deudor.get("numero_identificacion")) if x)
+                    if documento:
+                        partes.append(documento)
+                    if deudor.get("ciudad"):
+                        partes.append(deudor["ciudad"])
+                    lineas.append(f"👤 Deudor: {_esc(' · '.join(partes))}")
+
+        if vehiculo and vehiculo.get("rgm_actualizado_en"):
+            lineas.append(f"📄 RGM del {_hora(_ms_de_texto_local(vehiculo['rgm_actualizado_en']))}")
+
+        if lectura_actual:
+            conf = f"{round(lectura_actual['confianza'] * 100)} %" if lectura_actual.get("confianza") is not None else "—"
+            lineas.append(f"🕘 {_hora(lectura_actual.get('ts'))} · confianza {conf} · 👤 {_esc(lectura_actual.get('operador') or '—')}")
+
+        vistas = nexcam_db.vistas_de([placa]).get(placa)
+        todas = vistas["vistas"] if vistas else []
+        filas_ubicacion = []
+        for v in todas[:8]:
+            enlace = f' · <a href="{_url_mapa(v["lat"], v["lng"])}">Ver</a>' if _tiene_gps(v) else ""
+            filas_ubicacion.append(f"• {_hora(v.get('ts'))} · {_esc(v.get('operador') or '—')}{enlace}")
+
+        def _armar(filas_ub):
+            bloque = []
+            if todas:
+                bloque.append(f"🗺️ Ubicaciones ({len(todas)})")
+                bloque.extend(filas_ub)
+                ocultas = len(todas) - len(filas_ub)
+                if ocultas > 0:
+                    bloque.append(f"… y {ocultas} más en la web.")
+            return "\n".join(lineas + bloque)
+
+        texto = _armar(filas_ubicacion)
+        # Prompt 6 punto 1: si no cabe en el pie de foto (1024), se
+        # recorta la lista de Ubicaciones primero, nunca las líneas fijas.
+        while limite and len(texto) > limite and filas_ubicacion:
+            filas_ubicacion.pop()
+            texto = _armar(filas_ubicacion)
+        return texto
 
     def _botones_alerta(self, estado: dict) -> dict:
         fila = [{"text": "📋 Ficha", "callback_data": f"ficha:{estado['placa']}"}]
@@ -641,51 +744,53 @@ class BotTelegram:
             filas.append([{"text": "🔎 RGM", "callback_data": f"rgm:{estado['placa']}"}])
         return {"inline_keyboard": filas}
 
-    def _crear_alerta(self, p: dict) -> dict:
-        placa = p["placa"]
-        tipo = "probable" if p.get("match_type") == "probable" else "exacta"
-        vehiculo = db.buscar_placa(placa)
-        vistas = nexcam_db.vistas_de([placa]).get(placa)
-        total_vistas = vistas["vistas"] if vistas else []
-        total_historico = len(total_vistas) or 1
-        # La vista [0] es la que se acaba de insertar (esta misma lectura):
-        # "antes" es la que quedó justo detrás, fija mientras dure esta
-        # racha (no se recalcula en cada edición, para no perder de vista
-        # cuándo fue la vez anterior a HOY).
-        antes_ts = total_vistas[1]["ts"] if len(total_vistas) > 1 else None
-        estado = {
-            "placa": placa, "tipo": tipo, "leida": p.get("leida"),
-            "motivo": p.get("motivo") or (vehiculo.get("observaciones") if vehiculo else None),
-            "vehiculo_txt": _vehiculo_txt(vehiculo),
-            "fecha_ingreso_ms": _ms_de_texto_local(vehiculo.get("fecha_ingreso")) if vehiculo else None,
-            "total_historico": total_historico, "antes_ts": antes_ts,
-            "ultima_ts": p.get("ts") or int(time.time() * 1000),
-            "confianza": p.get("confidence"), "operador": p.get("operador"), "device": p.get("device"),
-            "lat": p.get("lat"), "lng": p.get("lng"),
-            "avistamiento_id": p.get("id"), "ultima_actividad": time.time(),
-        }
-        foto = self._foto_principal(p)
-        estado["con_foto"] = bool(foto)
-        enviados = self._a_todos(self._texto_alerta(estado), foto=foto, extra={"reply_markup": self._botones_alerta(estado)})
-        estado["mensajes"] = enviados
-        return estado
+    def _enviar_ficha(self, chats: list, placa: str, *, foto: Optional[Path] = None, leida: Optional[str] = None,
+                       lectura_actual: Optional[dict] = None, botones: Optional[dict] = None,
+                       aun_en_silencio: bool = False) -> list:
+        """Manda la ficha única a varios chats -- a diferencia de
+        _a_todos (mismo texto para todos), acá el texto se arma POR CHAT
+        porque acreedor/deudor solo se ven si ese chat es de un Admin
+        activo. Devuelve la misma forma que _a_todos:
+        [{"chat_id","message_id"}], para poder seguir editando después
+        (ver _refrescar_texto_estado)."""
+        if not self.activo or (self.cfg["silencio"] and not aun_en_silencio):
+            return []
+        if not chats:
+            return []
+        limite = 1024 if foto else None
+        enviados = []
+        for c in chats:
+            usuario = self._usuario_de_chat(c["id"])
+            es_admin = bool(usuario and usuario["rol"] == "Admin" and usuario["estado"] == "activo")
+            texto = self._texto_ficha_telegram(placa, es_admin=es_admin, leida=leida,
+                                                lectura_actual=lectura_actual, limite=limite)
+            extra = {"reply_markup": botones} if botones else None
+            try:
+                m = self._enviar(c["id"], texto, foto, extra)
+                enviados.append({"chat_id": c["id"], "message_id": m.get("message_id") if m else None})
+            except Exception as e:
+                self.log(f"Telegram: no se pudo avisar a {c.get('nombre') or c['id']} - {e}")
+        return enviados
 
-    def _editar_alerta(self, estado: dict, p: dict):
-        estado["tipo"] = "probable" if p.get("match_type") == "probable" else "exacta"
-        estado["leida"] = p.get("leida") or estado.get("leida")
-        estado["total_historico"] += 1
-        estado["ultima_ts"] = p.get("ts") or int(time.time() * 1000)
-        estado["confianza"] = p.get("confidence")
-        if p.get("lat") is not None and p.get("lng") is not None:
-            estado["lat"], estado["lng"] = p["lat"], p["lng"]
-        estado["ultima_actividad"] = time.time()
-        if p.get("id") is not None:
-            estado["avistamiento_id"] = p["id"]  # el botón "Placa" siempre apunta a la foto más reciente
-        texto = self._texto_alerta(estado)
+    def _refrescar_texto_estado(self, estado: dict):
+        """Vuelve a armar el texto de una alerta EN VIVO con los datos
+        ACTUALES de la placa (incluido el RGM si ya llegó) y edita sus
+        mensajes -- Prompt 6 punto 1: cuando el RGM pedido desde el botón
+        de una alerta termina, esto es lo que la actualiza (nunca se
+        manda ni se pega texto aparte; una repetición de la misma lectura
+        -- _editar_alerta -- también pasa por acá)."""
+        leida = estado.get("leida") if estado.get("tipo") == "probable" else None
+        lectura_actual = {"ts": estado.get("ultima_ts"), "confianza": estado.get("confianza"),
+                           "operador": estado.get("operador")}
         teclado = self._botones_alerta(estado)
         for m in estado.get("mensajes") or []:
             if not m.get("message_id"):
                 continue
+            usuario = self._usuario_de_chat(m["chat_id"])
+            es_admin = bool(usuario and usuario["rol"] == "Admin" and usuario["estado"] == "activo")
+            limite = 1024 if estado.get("con_foto") else None
+            texto = self._texto_ficha_telegram(estado["placa"], es_admin=es_admin, leida=leida,
+                                                lectura_actual=lectura_actual, limite=limite)
             try:
                 cuerpo = {"chat_id": m["chat_id"], "message_id": m["message_id"], "parse_mode": "HTML",
                           "reply_markup": teclado}
@@ -699,6 +804,35 @@ class BotTelegram:
             except Exception as e:
                 if "not modified" not in str(e).lower():
                     self.log(f"Telegram: no se pudo actualizar la alerta de {estado['placa']} - {e}")
+
+    def _crear_alerta(self, p: dict) -> dict:
+        placa = p["placa"]
+        tipo = "probable" if p.get("match_type") == "probable" else "exacta"
+        estado = {
+            "placa": placa, "tipo": tipo, "leida": p.get("leida"),
+            "ultima_ts": p.get("ts") or int(time.time() * 1000),
+            "confianza": p.get("confidence"), "operador": p.get("operador"), "device": p.get("device"),
+            "avistamiento_id": p.get("id"), "ultima_actividad": time.time(),
+        }
+        foto = self._foto_principal(p)
+        estado["con_foto"] = bool(foto)
+        leida = estado["leida"] if tipo == "probable" else None
+        lectura_actual = {"ts": estado["ultima_ts"], "confianza": estado["confianza"], "operador": estado["operador"]}
+        enviados = self._enviar_ficha(self.cfg["chats"], placa, foto=foto, leida=leida,
+                                       lectura_actual=lectura_actual, botones=self._botones_alerta(estado))
+        estado["mensajes"] = enviados
+        return estado
+
+    def _editar_alerta(self, estado: dict, p: dict):
+        estado["tipo"] = "probable" if p.get("match_type") == "probable" else "exacta"
+        estado["leida"] = p.get("leida") or estado.get("leida")
+        estado["ultima_ts"] = p.get("ts") or int(time.time() * 1000)
+        estado["confianza"] = p.get("confidence")
+        estado["operador"] = p.get("operador") or estado.get("operador")
+        estado["ultima_actividad"] = time.time()
+        if p.get("id") is not None:
+            estado["avistamiento_id"] = p["id"]  # el botón "Placa" siempre apunta a la foto más reciente
+        self._refrescar_texto_estado(estado)
 
     def _alerta_tardia(self, p: dict):
         """Aviso independiente para una lectura que llegó de la cola del
@@ -938,7 +1072,7 @@ class BotTelegram:
             placa = p.get("placa")
             item_id = p.get("item_id")
             if origen == "telegram":
-                chat_solicitante = self._chat_por_item_rgm.pop(item_id, None)
+                chat_solicitante = (self._chat_por_item_rgm.pop(item_id, None) or {}).get("chat_id")
                 chats = [chat_solicitante] if chat_solicitante else [c["id"] for c in self._chats_admin()]
             else:
                 chats = [c["id"] for c in self._chats_admin()]
@@ -965,14 +1099,19 @@ class BotTelegram:
         """
         FASE 6 + Prompt 5 punto 1: RGM AUTOMÁTICO (origen "camara"/
         "estudio") queda SILENCIOSO -- ya se guardó el snapshot y
-        rgm_cola actualizó la ficha, no hace falta avisar nada (antes
-        esto mandaba un mensaje por cada detección de cámara, 20 seguidos
-        en la prueba real). Solo una consulta PEDIDA explícitamente
-        (botón 🔎 RGM en Telegram, o "Consultar" en la página Consulta)
-        manda un mensaje al terminar: al chat que la pidió si fue por
-        Telegram, o a los chats de Admin si fue desde la web ("panel").
-        REGLA DE SEGURIDAD de siempre: el texto se arma DISTINTO por chat
-        según si está vinculado a un usuario Admin activo.
+        rgm_cola actualizó la ficha, no hace falta avisar nada. Solo una
+        consulta PEDIDA explícitamente (botón 🔎 RGM en Telegram, o
+        "Consultar" en la página Consulta) avisa al terminar.
+
+        Prompt 6 punto 1: si el RGM se pidió con el botón 🔎 RGM de una
+        alerta EN VIVO (`info_pedido["estado_alerta"]`, rastreado en
+        _boton_pulsado), el resultado EDITA esa misma alerta con el
+        formato único -- nunca se manda ni se pega texto aparte. En
+        cualquier otro caso (ficha/buscar/⚖️ Judicial/web) se manda un
+        mensaje nuevo, al chat que lo pidió (Telegram) o a los chats de
+        Admin (web/"panel"). REGLA DE SEGURIDAD de siempre: el texto se
+        arma DISTINTO por chat según si está vinculado a un usuario Admin
+        activo.
         """
         origen = p.get("origen")
         if origen in ("camara", "estudio"):
@@ -987,19 +1126,26 @@ class BotTelegram:
             return
 
         item_id = p.get("item_id")
+        info_pedido = self._chat_por_item_rgm.pop(item_id, None) if origen == "telegram" else None
+        estado_alerta = (info_pedido or {}).get("estado_alerta")
+
+        if rgm_resultado is not None and judicial_resultado is None and estado_alerta is not None:
+            self._refrescar_texto_estado(estado_alerta)
+            return
+
         if origen == "telegram":
-            chat_solicitante = self._chat_por_item_rgm.pop(item_id, None)
-            chats_destino = [{"chat_id": chat_solicitante}] if chat_solicitante else [{"chat_id": c["id"]} for c in self._chats_admin()]
+            chat_solicitante = (info_pedido or {}).get("chat_id")
+            chats_destino = [{"id": chat_solicitante}] if chat_solicitante else self._chats_admin()
         else:  # "panel" (o cualquier otro origen pedido explícitamente): a los chats de Admin
-            chats_destino = [{"chat_id": c["id"]} for c in self._chats_admin()]
+            chats_destino = self._chats_admin()
 
         for destino in chats_destino:
-            usuario = self._usuario_de_chat(destino["chat_id"])
+            usuario = self._usuario_de_chat(destino["id"])
             es_admin = bool(usuario and usuario["rol"] == "Admin" and usuario["estado"] == "activo")
 
             textos = []
             if rgm_resultado is not None:
-                textos.append(self._texto_resultado_rgm(placa, rgm_resultado, es_admin))
+                textos.append(self._texto_ficha_telegram(placa, es_admin=es_admin))
             if judicial_resultado is not None:
                 textos.append(self._texto_resultado_judicial(placa, judicial_resultado, es_admin))
             texto = "\n\n".join(textos)
@@ -1008,56 +1154,9 @@ class BotTelegram:
             if rgm_resultado is not None and judicial_resultado is None and es_admin:
                 botones.append({"text": "⚖️ Procesos judiciales (en prueba)", "callback_data": f"rgm_judicial:{placa}"})
             try:
-                self._texto(destino["chat_id"], texto, {"reply_markup": {"inline_keyboard": [botones]}})
+                self._texto(destino["id"], texto, {"reply_markup": {"inline_keyboard": [botones]}})
             except Exception as e:
-                self.log(f"Telegram: no se pudo avisar rgm.resultado a {destino['chat_id']} - {e}")
-
-    def _texto_resultado_rgm(self, placa: str, resultado: dict, es_admin: bool, fecha_consulta_ms: Optional[int] = None) -> str:
-        """
-        Prompt 5 punto 1: formato nuevo con TODO lo que trae el RGM
-        (reusa rgm_cola._datos_vehiculo_desde_rgm, la MISMA extracción
-        que ya completa `vehiculos`, para no duplicar el parseo de
-        descripcion_bien aquí). `fecha_consulta_ms` es opcional: lo usa
-        _buscar() para mostrar la fecha real del snapshot en vez de
-        "ahora" (que es lo correcto cuando el resultado SÍ acaba de
-        llegar, por eso es el valor por defecto).
-        """
-        import rgm_cola
-
-        datos = rgm_cola._datos_vehiculo_desde_rgm(resultado.get("vehiculo") or {})
-        deudor = resultado.get("deudor_garante") or {}
-        if not datos and not deudor.get("nombre"):
-            return f"📄 RGM sin datos para {_esc(_fmt_placa(placa))}."
-
-        fecha = _hora(fecha_consulta_ms)
-        nombre_veh = " · ".join(x for x in (datos.get("marca"), datos.get("linea"), datos.get("modelo"), datos.get("tipo_servicio")) if x)
-        lineas = [f"🚗 <b>{_esc(_fmt_placa(placa))}</b> · RGM del {fecha}"]
-        lineas.append(_esc(nombre_veh) if nombre_veh else "Sin datos del vehículo.")
-        serie_motor = []
-        if datos.get("numero_serie"):
-            serie_motor.append(f"Serie/VIN: {_esc(datos['numero_serie'])}")
-        if datos.get("motor"):
-            serie_motor.append(f"Motor: {_esc(datos['motor'])}")
-        if serie_motor:
-            lineas.append(" · ".join(serie_motor))
-
-        if not es_admin:
-            lineas.append("Consulta hecha.")
-            return "\n".join(lineas)
-
-        acreedor = (resultado.get("acreedor") or {}).get("razon_social")
-        if acreedor:
-            lineas.append(f"🏦 Acreedor: {_esc(acreedor)}")
-        if deudor.get("nombre"):
-            partes = [deudor["nombre"]]
-            documento = " ".join(x for x in (deudor.get("tipo_identificacion"), deudor.get("numero_identificacion")) if x)
-            if documento:
-                partes.append(documento)
-            if deudor.get("ciudad"):
-                partes.append(deudor["ciudad"])
-            lineas.append(f"👤 Deudor: {_esc(' · '.join(partes))}")
-        lineas.append("Verifica en el portal antes de actuar (dato en prueba).")
-        return "\n".join(lineas)
+                self.log(f"Telegram: no se pudo avisar rgm.resultado a {destino['id']} - {e}")
 
     def _texto_resultado_judicial(self, placa: str, resultado: dict, es_admin: bool) -> str:
         if not es_admin:
@@ -1081,38 +1180,20 @@ class BotTelegram:
     # ------------------------------------------------------------ acciones del usuario
 
     def _buscar(self, chat_id, placa_raw: str):
+        """Botón 📋 Ficha y /buscar: Prompt 6 punto 1, mismo formato único
+        que la alerta y la respuesta del 🔎 RGM (armado por
+        _texto_ficha_telegram), sin "Consulta hecha"/"En tu lista"/
+        "Vista N veces"/"Antes" (la lista de Ubicaciones ya lo cubre)."""
         placa = nexcam_db.normalizar_placa(placa_raw)
         if not nexcam_db.RE_PLACA_NEXCAM.match(placa):
             return self._texto(chat_id, "Escribe una placa de 3 letras y 3 números, como ABC123.", self._con_menu())
-        lista = db.buscar_placa(placa)
+        usuario = self._usuario_de_chat(chat_id)
+        es_admin = bool(usuario and usuario["rol"] == "Admin" and usuario["estado"] == "activo")
         vistas = nexcam_db.vistas_de([placa]).get(placa)
-        en_lista_txt = (
-            f"🚨 En lista: {_esc(lista['observaciones'] or 'sin motivo')}" if lista and lista["estado"] == "activo"
-            else "Estuvo en la lista (dada de baja)." if lista else "No está en la lista."
-        )
-        cab = [f"🚗 <b>{_esc(_fmt_placa(placa))}</b>", en_lista_txt]
-        veh = _vehiculo_txt(lista)
-        if veh:
-            cab.append(_esc(veh))
-        fecha_ingreso_ms = _ms_de_texto_local(lista.get("fecha_ingreso")) if lista else None
-        if fecha_ingreso_ms is not None:
-            cab.append(f"📅 En la lista desde: {_hora(fecha_ingreso_ms)}")
-        # Datos RGM si hay (Prompt 2, punto 5): sensibles solo a chats de
-        # un usuario Admin activo -- misma regla que _on_rgm_resultado.
-        snap_rgm = db.obtener_ultimo_snapshot_por_fuente(placa, "RGM")
-        if snap_rgm:
-            usuario = self._usuario_de_chat(chat_id)
-            es_admin = bool(usuario and usuario["rol"] == "Admin" and usuario["estado"] == "activo")
-            try:
-                fecha_snap_ms = _ms_de_texto_local(snap_rgm.get("creado_en"))
-                cab.append(self._texto_resultado_rgm(placa, json.loads(snap_rgm["datos"]), es_admin, fecha_snap_ms))
-            except Exception:
-                pass
-        if not vistas or not vistas["vistas"]:
-            return self._texto(chat_id, "\n".join(cab + ["Ninguna cámara la ha visto."]))
-        v0 = {**vistas["vistas"][0], "placa": placa}
-        h = {**(lista or {}), "placa": placa, "tipo": vistas["tipo"], "vistas": vistas["vistas"], "motivo": lista["observaciones"] if lista else None}
-        return self._enviar(chat_id, self._texto_ya_vista(h, "\n".join(cab)), foto=self._foto_principal(v0), extra={"reply_markup": self._botones_vista(v0)})
+        v0 = {**vistas["vistas"][0], "placa": placa} if vistas and vistas["vistas"] else {"placa": placa}
+        foto = self._foto_principal(v0)
+        texto = self._texto_ficha_telegram(placa, es_admin=es_admin, limite=1024 if foto else None)
+        return self._enviar(chat_id, texto, foto=foto, extra={"reply_markup": self._botones_vista(v0)})
 
     def _resumen_carga(self, resumen: dict) -> str:
         lineas = [f"📥 <b>Lista cargada</b>: {len(resumen['insertadas']) + len(resumen['duplicadas'])} placas "
@@ -1345,6 +1426,23 @@ class BotTelegram:
             texto = crudo.decode("latin-1")
         return self._cargar(chat_id, usuario["id"], texto)
 
+    def _estado_alerta_por_mensaje(self, chat_id, message_id) -> Optional[dict]:
+        """Encuentra, si existe, el `estado` de una alerta EN VIVO que
+        tenga ese (chat_id, message_id) entre sus mensajes enviados --
+        para saber si el botón 🔎 RGM se pulsó sobre una alerta (Prompt 6
+        punto 1: se EDITA) o sobre otra cosa (ficha/buscar: se manda un
+        mensaje nuevo)."""
+        if message_id is None:
+            return None
+        estados = list(self._alertas_sin_sesion.values())
+        for s in self.sesiones.values():
+            estados.extend(s["alertas"].values())
+        for estado in estados:
+            for m in estado.get("mensajes") or []:
+                if m.get("chat_id") == chat_id and m.get("message_id") == message_id:
+                    return estado
+        return None
+
     def _boton_pulsado(self, q: dict):
         chat_id = (q.get("message") or {}).get("chat", {}).get("id")
         if not self._autorizado(chat_id):
@@ -1391,6 +1489,12 @@ class BotTelegram:
             alcance = "RGM" if accion == "rgm" else "JUDICIAL"
             placa = nexcam_db.normalizar_placa(valor)
             es_admin = usuario["rol"] == "Admin" and usuario["estado"] == "activo"
+            # Prompt 6 punto 1: si el botón vive en una alerta EN VIVO, el
+            # resultado la EDITA (nunca manda un mensaje aparte). Solo se
+            # rastrea para "rgm" puro -- "rgm_judicial" siempre manda un
+            # mensaje nuevo (el botón ⚖️ no vive en la alerta original).
+            message_id = (q.get("message") or {}).get("message_id")
+            estado_alerta = self._estado_alerta_por_mensaje(chat_id, message_id) if accion == "rgm" else None
             resultado = rgm_cola.solicitar_consulta(placa, alcance, "telegram", usuario["id"])
             if resultado["accion"] == "SNAPSHOT_VIGENTE":
                 # Prompt 5 punto 1: ya hay dato vigente -- rgm.resultado NUNCA
@@ -1398,10 +1502,10 @@ class BotTelegram:
                 # mensaje con los datos se manda aquí mismo, de una vez.
                 responder(f"Ya hay una consulta de {alcance} reciente para esa placa.")
                 try:
-                    if alcance == "RGM":
-                        self._texto(chat_id, self._texto_resultado_rgm(
-                            placa, json.loads(resultado["snapshot"]["datos"]), es_admin,
-                            _ms_de_texto_local(resultado["snapshot"].get("creado_en"))))
+                    if alcance == "RGM" and estado_alerta is not None:
+                        self._refrescar_texto_estado(estado_alerta)
+                    elif alcance == "RGM":
+                        self._texto(chat_id, self._texto_ficha_telegram(placa, es_admin=es_admin))
                     else:
                         self._texto(chat_id, self._texto_resultado_judicial(
                             placa, json.loads(resultado["snapshot"]["datos"]), es_admin))
@@ -1409,9 +1513,9 @@ class BotTelegram:
                     self.log(f"Telegram: no se pudo mostrar el snapshot vigente de {placa} - {e}")
             elif resultado["accion"] == "YA_EN_COLA":
                 responder(f"Ya hay una consulta de {alcance} en curso para esa placa.")
-                self._chat_por_item_rgm[resultado["item"]["id"]] = chat_id
+                self._chat_por_item_rgm[resultado["item"]["id"]] = {"chat_id": chat_id, "estado_alerta": estado_alerta}
             else:
-                self._chat_por_item_rgm[resultado["item"]["id"]] = chat_id
+                self._chat_por_item_rgm[resultado["item"]["id"]] = {"chat_id": chat_id, "estado_alerta": estado_alerta}
                 conectado = rgm_cola.trabajador_conectado()
                 extra = f" {resultado['mensaje']}" if resultado.get("mensaje") else ""
                 responder(("Consulta encolada." + extra) if conectado else ("Consulta encolada, pero nadie tiene abierta la página Consulta ahora mismo." + extra))

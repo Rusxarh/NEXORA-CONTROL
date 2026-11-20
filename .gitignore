@@ -4,6 +4,13 @@
 *.sqlite
 *.sqlite3
 
+# Copias de respaldo de la base real que las migraciones aditivas crean
+# antes de tocar datos en volumen (regla de CLAUDE.md) -- *.db ya las
+# cubriria si conservaran esa extension, pero llevan su propio sufijo
+# (ej. MasterPlacas.antes-backfill-rgm-prompt6.bak) y SI se versionarian
+# sin esta regla aparte.
+*.bak
+
 # Bytecode Python compilado (regenerable, no es codigo fuente)
 __pycache__/
 *.pyc
