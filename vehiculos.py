@@ -45,6 +45,29 @@ router = APIRouter()
 PATRON_PLACA = re.compile(r"^[A-Za-z0-9\-]{5,10}$")
 
 
+def _avisar_si_ya_vista(placas: list, origen: str):
+    """
+    Prompt 6 punto 7: "Ya la viste" completo -- cuando entra a la lista
+    una placa que la cámara ya vio antes (también en lecturas "sin
+    novedad": nexcam_db.vistas_de busca en TODAS, sin filtrar por
+    en_lista), se avisa por el mismo camino que ya usaba la carga masiva
+    (evento retro.hits -> nexcam_telegram, formato único del punto 1,
+    solo a chats de Admin). Reutilizada por la alta individual (web y
+    Telegram); la carga masiva usa su propio guardar_cruce_lista_dia
+    porque además deja la fila para la pestaña "Ya vistas" del panel.
+    Nunca debe romper el alta en sí.
+    """
+    try:
+        import nexcam_api
+        import nexcam_db
+
+        vistas = nexcam_db.vistas_de(placas)
+        if vistas:
+            nexcam_api.broadcast("retro.hits", {"origen": origen, "hits": list(vistas.values())})
+    except Exception:
+        pass
+
+
 def normalizar_y_validar_placa(placa: str) -> str:
     """Pone la placa en mayúsculas y valida su formato. Lanza
     db.ValorInvalidoError si no cumple el patrón esperado."""
@@ -198,6 +221,7 @@ def alta_vehiculo(
         db.insertar_placa(placa, tipo_vehiculo, usuario_actual["id"], observaciones)
         mensaje = f"La placa {placa} fue registrada correctamente."
         tipo = "exito"
+        _avisar_si_ya_vista([placa], origen="panel")
     except db.PlacaDuplicadaError as e:
         mensaje, tipo = str(e), "error"
     except db.ValorInvalidoError as e:

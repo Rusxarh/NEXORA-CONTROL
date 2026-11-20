@@ -207,18 +207,25 @@
       <table class="table-shell">
         <thead>
           <tr class="table-head-row">
+            <th class="table-head-cell">Foto</th>
             <th class="table-head-cell">Placa</th>
             <th class="table-head-cell">Coincidencia</th>
             <th class="table-head-cell">Veces vista</th>
+            <th class="table-head-cell">Última vez</th>
             <th class="table-head-cell text-right">Acción</th>
           </tr>
         </thead>
         <tbody class="table-body">
           {% for placa, info in ultimo_cruce.ya_vistas.items() %}
+          {% set ultima = info.vistas[0] %}
           <tr class="table-row">
+            <td class="table-cell">
+              {% if ultima.vehiculo %}<a href="{{ ultima.vehiculo }}" target="_blank"><img src="{{ ultima.vehiculo }}" class="h-10 w-14 object-cover rounded border border-zinc-700"></a>{% else %}<div class="foto-vacia h-10 w-14 text-[10px]">Sin foto</div>{% endif %}
+            </td>
             <td class="table-cell font-mono font-semibold text-zinc-100">{{ placa }}</td>
             <td class="table-cell">{% if info.tipo == 'exacta' %}<span class="badge-success">Exacta</span>{% else %}<span class="badge-warning">Probable</span>{% endif %}</td>
             <td class="table-cell text-zinc-300">{{ info.vistas | length }}</td>
+            <td class="table-cell text-zinc-400 whitespace-nowrap">{{ ultima.recibido_en | fecha_co }}</td>
             <td class="table-cell text-right"><a href="/nexcam?tab=buscar&q={{ placa }}" class="btn-secondary btn-sm">👁 Ver ficha</a></td>
           </tr>
           {% endfor %}

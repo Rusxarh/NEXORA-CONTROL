@@ -422,6 +422,39 @@ def test_broadcast_no_bloquea_la_peticion_y_reparte_en_orden(cliente):
     assert recibidos == placas
 
 
+def test_camera_started_stopped_no_hacen_fila_detras_de_otros_eventos(cliente):
+    """Prompt 6 punto 4: Gabriel notaba demora al prender/apagar la
+    cámara en Telegram. camera.started/camera.stopped tienen su PROPIA
+    cola y su PROPIO hilo (EVENTOS_ALTA_PRIORIDAD): no se quedan atrás de
+    un backlog de detection.hit (alertas con foto a varios chats, p.ej.)
+    que ya estuviera encolado delante."""
+    import time
+
+    import nexcam_api
+
+    orden = []
+
+    def oyente_lento(evento, payload):
+        if evento == "detection.hit":
+            time.sleep(0.3)  # simula una alerta con foto a varios chats
+        orden.append(evento)
+
+    nexcam_api.suscribir(oyente_lento)
+
+    # Encola primero un backlog de detection.hit lentos, y DESPUÉS
+    # camera.stopped: si compartieran cola, camera.stopped llegaría al
+    # final; con la cola de alta prioridad, se atiende casi de inmediato.
+    for i in range(5):
+        nexcam_api.broadcast("detection.hit", {"placa": f"PRI{i:03d}"})
+    nexcam_api.broadcast("camera.stopped", {"device_uuid": "tel-prioridad"})
+
+    limite = time.monotonic() + 3
+    while "camera.stopped" not in orden and time.monotonic() < limite:
+        time.sleep(0.02)
+    posicion = orden.index("camera.stopped")
+    assert posicion <= 1, f"camera.stopped se atendió en la posición {posicion} (debería ser casi inmediato, no detrás del backlog): {orden}"
+
+
 # --------------------------------------------------------------------- sin duplicados al reintentar
 
 def test_reintento_mismo_device_placa_ts_no_duplica_ni_reavisa(cliente):

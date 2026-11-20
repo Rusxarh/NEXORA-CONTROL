@@ -300,6 +300,24 @@ def test_rgm_snapshot_vigente_responde_de_una_vez_por_boton(bot, monkeypatch):
     assert any("Kia" in t for t in textos)
 
 
+# --------------------------------------------------------------------- Prompt 6 punto 4: botón responde al instante
+
+def test_boton_responde_answerCallbackQuery_antes_de_cualquier_otra_llamada(bot):
+    """Prompt 6 punto 4: answerCallbackQuery se manda INMEDIATO, antes de
+    calcular nada -- debe ser SIEMPRE la primera llamada de red del
+    botón, sin importar cuánto tarde lo que sigue (una consulta a
+    rgm_cola, una foto, etc.)."""
+    admin = _crear_usuario("Admin Tele23", "Admin", "admin.tele23", telegram_id=556320)
+    bot._vincular(556320, [bot.codigo], "Admin Tele23")
+    db.insertar_placa("ACK111", "carro", admin["id"], "Hurto")
+    bot.llamadas.clear()
+
+    bot._boton_pulsado({"id": "cbq-ack", "message": {"chat": {"id": 556320}, "message_id": 1}, "data": "ficha:ACK111"})
+
+    assert bot.llamadas[0][0] == "answerCallbackQuery"
+    assert bot.llamadas[0][1]["callback_query_id"] == "cbq-ack"
+
+
 # --------------------------------------------------------------------- Prompt 6 punto 1: ficha única
 
 def test_ficha_unica_motivo_vacio_dice_ubicar_no_sin_motivo(bot):
@@ -508,6 +526,136 @@ def test_camera_state_false_cierra_con_camara_apagada_no_senal_perdida(bot):
     assert "Se perdió la señal" not in ultimo["text"]
 
 
+# --------------------------------------------------------------------- Prompt 6 punto 7: Ya la viste completo
+
+def test_retro_hits_usa_ficha_unica_y_solo_avisa_a_chats_admin(bot):
+    """Prompt 6 punto 7: "Ya la viste" ahora usa el formato único del
+    punto 1 (con 🗺️ Ubicaciones) y SOLO avisa a chats de Admin -- antes
+    iba a todos con _a_todos()."""
+    admin = _crear_usuario("Admin Tele41", "Admin", "admin.tele41", telegram_id=556401)
+    oper = _crear_usuario("Oper Tele41", "Operador", "oper.tele41", telegram_id=556402)
+    bot._vincular(556401, [bot.codigo], "Admin Tele41")
+    bot._vincular(556402, [bot.codigo], "Oper Tele41")
+    db.insertar_placa("YLV111", "carro", admin["id"], "Hurto")
+    sesion = {"usuario_id": admin["id"], "nombre": "Eduardo", "device_uuid": "tel-ylv"}
+    nexcam_db.registrar_avistamiento(
+        sesion, "YLV111", "YLV111", "exact", 0.9, None, None, "prueba",
+        4.6, -74.1, int(time.time() * 1000), None, None,
+    )
+    bot.llamadas.clear()
+
+    vistas = nexcam_db.vistas_de(["YLV111"])["YLV111"]
+    bot.on_evento("retro.hits", {"origen": "panel", "hits": [vistas]})
+
+    por_chat = {c["chat_id"]: c["text"] for metodo, c in bot.llamadas if metodo == "sendMessage"}
+    assert 556402 not in por_chat  # el Operador no recibe nada
+    assert "🗂️ <b>Ya la viste: YLV 111</b>" in por_chat[556401]
+    assert "🗺️ Ubicaciones (1)" in por_chat[556401]
+
+
+def test_retro_hits_maximo_10_por_carga_y_resto_en_la_web(bot):
+    admin = _crear_usuario("Admin Tele42", "Admin", "admin.tele42", telegram_id=556403)
+    bot._vincular(556403, [bot.codigo], "Admin Tele42")
+    hits = []
+    for i in range(13):
+        placa = f"MUC{i:03d}"
+        db.insertar_placa(placa, "carro", admin["id"], None)
+        sesion = {"usuario_id": admin["id"], "nombre": "Eduardo", "device_uuid": "tel-muc"}
+        nexcam_db.registrar_avistamiento(
+            sesion, placa, placa, "exact", 0.9, None, None, "prueba",
+            None, None, int(time.time() * 1000) + i, None, None,
+        )
+        hits.append(nexcam_db.vistas_de([placa])[placa])
+    bot.llamadas.clear()
+
+    bot.on_evento("retro.hits", {"origen": "panel", "hits": hits})
+
+    mensajes = [c["text"] for metodo, c in bot.llamadas if metodo == "sendMessage"]
+    por_placa = [m for m in mensajes if "Ya la viste" in m]
+    assert len(por_placa) == 10
+    assert any("y 3 más, ver en la web" in m for m in mensajes)
+
+
+def test_alta_individual_web_dispara_ya_la_viste(bot, cliente):
+    admin = _crear_usuario("Admin Tele43", "Admin", "admin.tele43", telegram_id=556404)
+    bot._vincular(556404, [bot.codigo], "Admin Tele43")
+    import nexcam_api
+
+    nexcam_api.suscribir(bot.on_evento)
+    sesion = {"usuario_id": admin["id"], "nombre": "Eduardo", "device_uuid": "tel-alta"}
+    nexcam_db.registrar_avistamiento(
+        sesion, "ALT111", "ALT111", "exact", 0.9, None, None, "prueba",
+        None, None, int(time.time() * 1000), None, None,
+    )
+    bot.llamadas.clear()
+    r = cliente.post("/login", data={"username": "admin.tele43", "password": CLAVE}, follow_redirects=False)
+    assert r.status_code == 303
+
+    r_alta = cliente.post("/vehiculos/alta", data={"placa": "ALT111", "tipo_vehiculo": "carro"}, follow_redirects=False)
+    assert r_alta.status_code == 303
+
+    import time as _time
+
+    limite = _time.monotonic() + 3
+    while not any(m[0] == "sendMessage" for m in bot.llamadas) and _time.monotonic() < limite:
+        _time.sleep(0.05)
+    textos = [c["text"] for metodo, c in bot.llamadas if metodo == "sendMessage"]
+    assert any("Ya la viste: ALT 111" in t for t in textos)
+
+
+def test_agregar_por_telegram_dispara_ya_la_viste(bot):
+    admin = _crear_usuario("Admin Tele44", "Admin", "admin.tele44", telegram_id=556405)
+    bot._vincular(556405, [bot.codigo], "Admin Tele44")
+    import nexcam_api
+
+    nexcam_api.suscribir(bot.on_evento)
+    sesion = {"usuario_id": admin["id"], "nombre": "Eduardo", "device_uuid": "tel-agr"}
+    nexcam_db.registrar_avistamiento(
+        sesion, "AGR111", "AGR111", "exact", 0.9, None, None, "prueba",
+        None, None, int(time.time() * 1000), None, None,
+    )
+    bot.llamadas.clear()
+
+    bot._agregar(556405, admin["id"], "AGR111 Hurto")
+
+    import time as _time
+
+    limite = _time.monotonic() + 3
+    while sum(1 for m in bot.llamadas if m[0] == "sendMessage") < 2 and _time.monotonic() < limite:
+        _time.sleep(0.05)
+    textos = [c["text"] for metodo, c in bot.llamadas if metodo == "sendMessage"]
+    assert any("Ya la viste: AGR 111" in t for t in textos)
+
+
+def test_camara_encendida_cierra_y_arranca_de_nuevo_al_cambiar_de_dia(bot):
+    """Prompt 6 punto 6: una sesión que sigue abierta al cruzar la
+    medianoche (hora de Bogotá) cierra su mensaje de "Cámara encendida"
+    con el resumen del día ("🌙 Fin del día", NO "Cámara apagada": el
+    teléfono sigue grabando) y abre uno nuevo que arranca en 0 -- nada se
+    borra, solo el contador EN VIVO de ese mensaje de Telegram."""
+    admin = _crear_usuario("Admin Tele40", "Admin", "admin.tele40", telegram_id=556400)
+    bot._vincular(556400, [bot.codigo], "Admin Tele40")
+    bot.on_evento("camera.started", {"device_uuid": "tel-dia", "device": "HONOR ALT-NX3", "operador": "Eduardo"})
+    bot.on_evento("detection.hit", _deteccion("DIA111", device_uuid="tel-dia", id=1, en_lista=False, match_type=None))
+    sesion_vieja = bot.sesiones["tel-dia"]
+    sesion_vieja["dia"] = "2020-01-01"  # simula que viene de ayer
+    bot.llamadas.clear()
+
+    bot._revisar_sesiones_una_vez()
+
+    ediciones = [c for metodo, c in bot.llamadas if metodo == "editMessageText"]
+    assert any("🌙 Fin del día" in e["text"] and nexcam_telegram.placa_destacada("DIA 111") in e["text"]
+               for e in ediciones)
+    assert not any("Cámara apagada" in e["text"] for e in ediciones)
+    nueva = bot.sesiones["tel-dia"]
+    assert nueva is not sesion_vieja  # es una sesión nueva, no la misma
+    assert nueva["placas"] == {}  # arranca en 0
+    assert nueva["dia"] != "2020-01-01"
+    nuevo_mensaje = [c for metodo, c in bot.llamadas if metodo == "sendMessage"][-1]
+    assert "Cámara encendida" in nuevo_mensaje["text"]
+    assert "0 placas" in nuevo_mensaje["text"]
+
+
 def test_alerta_fuera_de_sesion_tambien_edita_una_sola_vez(bot):
     """Sin camera.started (en_vivo apagado o lectura antes de abrir sesión):
     el de-duplicado cae al diccionario _alertas_sin_sesion por TG_REPETIR_MIN."""
@@ -557,7 +705,7 @@ def test_lectura_tardia_no_contamina_la_sesion_y_avisa_aparte(bot):
     assert bot.llamadas == []
 
 
-# --------------------------------------------------------------------- Prompt 5: placa_destacada, lista en vivo, Últimas
+# --------------------------------------------------------------------- Prompt 5/6: placa_destacada, lista en vivo, Últimas en vivo
 
 def test_placa_destacada_convierte_letras_y_numeros():
     assert nexcam_telegram.placa_destacada("GCV 471") == "𝗚𝗖𝗩 𝟰𝟳𝟭"
@@ -586,27 +734,105 @@ def test_lista_en_vivo_solo_muestra_las_ultimas_diez_placas(bot):
     assert "…y 5 placa(s) más." in texto
 
 
-def test_ultimas_paginada_y_los_botones_editan_el_mismo_mensaje(bot):
+def test_ultimas_en_vivo_edita_el_mismo_mensaje_coalescido(bot, monkeypatch):
+    """Prompt 6 punto 3: al pulsar 🕒 Últimas se abre UN mensaje con las
+    últimas TG_ULTIMAS_VIVO_PAGINA placas; varias lecturas que llegan
+    juntas se funden en una sola edición (máximo 1 cada
+    TG_ULTIMAS_VIVO_EDIT_SEGUNDOS, no una por lectura)."""
     admin = _crear_usuario("Admin Tele19", "Admin", "admin.tele19", telegram_id=556311)
     bot._vincular(556311, [bot.codigo], "Admin Tele19")
-    sesion = {"usuario_id": admin["id"], "nombre": "Admin Tele19", "device_uuid": "tel-ultimas"}
-    for i in range(25):
+
+    timers = []
+
+    class _TimerFalso:
+        def __init__(self, espera, funcion):
+            self.funcion = funcion
+            timers.append(self)
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(nexcam_telegram.threading, "Timer", _TimerFalso)
+    bot.cfg["en_vivo"] = False  # aísla el temporizador de "Últimas en vivo" del de "Cámara encendida"
+
+    bot._ultimas(556311)
+    assert "en vivo" in bot._ultimas_vivo[556311]["ultimo_texto"]
+    mensaje_id = bot._ultimas_vivo[556311]["message_id"]
+    bot.llamadas.clear()
+
+    sesion = {"usuario_id": admin["id"], "nombre": "Eduardo", "device_uuid": "tel-uvivo"}
+    for i in range(7):
+        placa = f"UVI{i:03d}"
+        # bot.on_evento(...) solo mueve el estado EN MEMORIA del bot (la
+        # cola de edición); la fila real de "Últimas" sale de la base, que
+        # en la vida real llena /api/detections/upload (nexcam_db) antes
+        # de emitir el evento -- hay que insertarla igual aquí.
         nexcam_db.registrar_avistamiento(
-            sesion, f"UUU{i:03d}", f"UUU{i:03d}", "exact", 0.9, None, None, "prueba",
+            sesion, placa, placa, "exact", 0.78, None, None, "prueba",
             None, None, int(time.time() * 1000) + i, None, None,
         )
+        bot.on_evento("detection.hit", _deteccion(
+            placa, device_uuid="tel-uvivo", id=i, en_lista=False, match_type=None))
 
+    # 7 lecturas seguidas solo programan UN temporizador: las demás se le
+    # juntan porque ya había uno en curso (info["timer"]).
+    assert len(timers) == 1
+    assert bot._ultimas_vivo[556311]["pendiente"] is True
+    assert not any(m[0] == "editMessageText" for m in bot.llamadas)  # todavía no se editó nada
+
+    timers[0].funcion()  # simula que se cumplió la espera de TG_ULTIMAS_VIVO_EDIT_SEGUNDOS
+
+    ediciones = [c for metodo, c in bot.llamadas if metodo == "editMessageText"]
+    assert len(ediciones) == 1
+    assert ediciones[0]["message_id"] == mensaje_id
+    assert nexcam_telegram.placa_destacada("UVI 006") in ediciones[0]["text"]  # la más reciente
+    assert bot._ultimas_vivo[556311]["pendiente"] is False
+
+
+def test_ultimas_en_vivo_se_congela_al_pulsar_otra_vez(bot):
+    admin = _crear_usuario("Admin Tele19b", "Admin", "admin.tele19b", telegram_id=556315)
+    bot._vincular(556315, [bot.codigo], "Admin Tele19b")
+    bot._ultimas(556315)
+    primero_id = bot._ultimas_vivo[556315]["message_id"]
     bot.llamadas.clear()
-    resultado = bot._ultimas(556311)
-    primero = [c for metodo, c in bot.llamadas if metodo == "sendMessage"][-1]
-    assert "página 1 de 3" in primero["text"]
-    assert any("Siguiente" in b["text"] for fila in primero["reply_markup"]["inline_keyboard"] for b in fila)
 
-    bot._boton_pulsado({"id": "cbq1", "message": {"chat": {"id": 556311}, "message_id": resultado["message_id"]}, "data": "ultimas:2"})
+    bot._ultimas(556315)  # pulsarlo de nuevo: congela el anterior y abre uno nuevo
+    ediciones = [c for metodo, c in bot.llamadas if metodo == "editMessageText"]
+    assert any(e["message_id"] == primero_id and "Ya no se actualiza" in e["text"] for e in ediciones)
+    nuevo_id = bot._ultimas_vivo[556315]["message_id"]
+    assert nuevo_id != primero_id
+
+
+def test_ultimas_en_vivo_anteriores_pagina_sin_actualizarse_y_en_vivo_vuelve(bot):
+    admin = _crear_usuario("Admin Tele19c", "Admin", "admin.tele19c", telegram_id=556316)
+    sesion = {"usuario_id": admin["id"], "nombre": "Admin Tele19c", "device_uuid": "tel-uvivo2"}
+    for i in range(12):
+        nexcam_db.registrar_avistamiento(
+            sesion, f"UPG{i:03d}", f"UPG{i:03d}", "exact", 0.9, None, None, "prueba",
+            None, None, int(time.time() * 1000) + i, None, None,
+        )
+    bot._vincular(556316, [bot.codigo], "Admin Tele19c")
+    bot._ultimas(556316)
+    message_id = bot._ultimas_vivo[556316]["message_id"]
+    bot.llamadas.clear()
+
+    bot._boton_pulsado({"id": "cbq-a", "message": {"chat": {"id": 556316}, "message_id": message_id},
+                         "data": "uvivo:atras:2"})
     edicion = [c for metodo, c in bot.llamadas if metodo == "editMessageText"][-1]
-    assert edicion["message_id"] == resultado["message_id"]  # edita el MISMO mensaje, no manda uno nuevo
-    assert "página 2 de 3" in edicion["text"]
-    assert sum(1 for metodo, c in bot.llamadas if metodo == "sendMessage") == 1  # sigue siendo un solo mensaje
+    assert "página 2 de" in edicion["text"]
+    assert bot._ultimas_vivo[556316]["viendo_pagina"] == 2
+    assert any("En vivo" in b["text"] for fila in edicion["reply_markup"]["inline_keyboard"] for b in fila)
 
-    # El botón "2/3" (indicador de página) no hace nada, pero no debe fallar.
-    bot._boton_pulsado({"id": "cbq2", "message": {"chat": {"id": 556311}, "message_id": resultado["message_id"]}, "data": "noop"})
+    # Mientras se mira una página vieja, una lectura nueva NO toca el mensaje.
+    bot.llamadas.clear()
+    bot.on_evento("detection.hit", _deteccion("NEW001", device_uuid="tel-uvivo2x", id=99, en_lista=False, match_type=None))
+    assert not any(m[0] == "editMessageText" for m in bot.llamadas)
+
+    bot._boton_pulsado({"id": "cbq-b", "message": {"chat": {"id": 556316}, "message_id": message_id},
+                         "data": "uvivo:vivo"})
+    edicion2 = [c for metodo, c in bot.llamadas if metodo == "editMessageText"][-1]
+    assert "en vivo" in edicion2["text"]
+    assert bot._ultimas_vivo[556316]["viendo_pagina"] is None

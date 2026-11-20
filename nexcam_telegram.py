@@ -47,6 +47,7 @@ usuario asignado -- pedir la consulta no es sensible, el RESULTADO sí.
 import json
 import mimetypes
 import os
+import queue
 import re
 import secrets
 import sys
@@ -96,8 +97,15 @@ ICONO_VIVO = {"exacta": "🔴", "probable": "🟡"}
 # (antes mostraba hasta 30, una lista larga es difícil de leer de un
 # vistazo en la calle); la cabecera sigue contando el total de la sesión.
 TG_VIVO_MAX = int(os.environ.get("TG_VIVO_MAX", "10"))
-# Prompt 5 punto 6: "🕒 Últimas" paginada, 10 por página.
-TG_ULTIMAS_POR_PAGINA = 10
+# Prompt 6 punto 3: "🕒 Últimas" EN VIVO -- un mensaje que se va editando
+# solo con las últimas N placas (reemplaza la versión paginada de 10 del
+# Prompt 5 punto 6); [◀ Anteriores] pagina el historial viejo de a
+# TG_ULTIMAS_VIVO_PAGINA también. Se congela ("⏸ Ya no se actualiza") a
+# las TG_ULTIMAS_VIVO_HORAS h, y nunca edita más de una vez cada
+# TG_ULTIMAS_VIVO_EDIT_SEGUNDOS por mensaje (ver _tocar_ultimas_vivo).
+TG_ULTIMAS_VIVO_PAGINA = 5
+TG_ULTIMAS_VIVO_HORAS = 12
+TG_ULTIMAS_VIVO_EDIT_SEGUNDOS = int(os.environ.get("TG_ULTIMAS_EDIT_SEGUNDOS", "3"))
 
 B = {
     "estado": "📊 Estado", "ultimas": "🕒 Últimas", "buscar": "🔍 Buscar placa",
@@ -245,12 +253,6 @@ def _tiene_gps(v: dict) -> bool:
     return bool(v) and v.get("lat") is not None and v.get("lng") is not None
 
 
-def _vehiculo_txt(v: Optional[dict]) -> str:
-    if not v:
-        return ""
-    return ", ".join(x for x in (v.get("marca"), v.get("linea"), v.get("color"), v.get("modelo")) if x)
-
-
 def _titulo(texto: Optional[str]) -> Optional[str]:
     """Mayúscula inicial de cada palabra ("CHEVROLET TRACKER" ->
     "Chevrolet Tracker"): el RGM entrega marca/línea/tipo_servicio en
@@ -298,6 +300,14 @@ class BotTelegram:
         self.esperando = {}   # chat_id -> {"que": ..., "hasta": datetime}
         self.sesiones = {}    # device_uuid -> sesión de cámara en vivo
         self._alertas_sin_sesion = {}  # (device_uuid, placa) -> estado de alerta (Prompt 2, sin sesión de cámara)
+        # chat_id -> {"message_id","creado_en","timer","viendo_pagina","pendiente",
+        # "ultima_edicion","ultimo_texto","ultimo_teclado"} del mensaje de
+        # "🕒 Últimas" EN VIVO de ese chat (Prompt 6 punto 3).
+        self._ultimas_vivo = {}
+        # Prompt 6 punto 4: updates de getUpdates (mensajes/botones) en
+        # espera de ser atendidos por _trabajador_updates -- getUpdates
+        # (_bucle) nunca espera a que se vacíe.
+        self._cola_updates = queue.Queue()
         # item_id de rgm_cola -> {"chat_id", "estado_alerta"} de quien lo pidió con
         # el botón 🔎 RGM (Prompt 5); "estado_alerta" (Prompt 6 punto 1) es el
         # `estado` de la alerta en vivo que tenía el botón, o None si se pidió
@@ -602,36 +612,11 @@ class BotTelegram:
             f"<b>{B['app']}</b>: te envío la última versión de la app para el teléfono",
         ])
 
-    # ------------------------------------------------------------ textos
-
-    def _texto_ya_vista(self, h: dict, titulo: str) -> str:
-        ult = h["vistas"][0]
-        lineas = [titulo]
-        if h["tipo"] == "probable":
-            lineas.append(f"La cámara leyó <b>{_esc(ult.get('leida') or ult.get('placa'))}</b>, casi igual. Compara la foto antes de actuar.")
-        if h.get("motivo"):
-            lineas.append(f"Motivo: {_esc(h['motivo'])}")
-        veh = _vehiculo_txt(h)
-        if veh:
-            lineas.append(f"En tu lista: {_esc(veh)}")
-
-        def donde(v):
-            return f'<a href="{_url_mapa(v["lat"], v["lng"])}">ubicación</a>' if _tiene_gps(v) else "sin ubicación"
-
-        n = len(h["vistas"])
-        lineas.append(f"Vista {'1 vez' if n == 1 else f'{n} veces'}. Última: {_hora(ult.get('ts'))}, {_esc(ult.get('operador') or '')}, {donde(ult)}")
-        antes = [f"• {_hora(v.get('ts'))}, {donde(v)}" for v in h["vistas"][1:6]]
-        if antes:
-            lineas.append("Antes:")
-            lineas.extend(antes)
-        if n > 6:
-            lineas.append(f"…y {n - 6} más (ver en el panel).")
-        return "\n".join(lineas)
-
     # ------------------------------------------------------------ ficha única de Telegram (Prompt 6 punto 1)
 
     def _texto_ficha_telegram(self, placa: str, *, es_admin: bool, leida: Optional[str] = None,
-                               lectura_actual: Optional[dict] = None, limite: Optional[int] = None) -> str:
+                               lectura_actual: Optional[dict] = None, limite: Optional[int] = None,
+                               titulo: Optional[str] = None) -> str:
         """
         Formato ÚNICO compartido por la alerta en vivo, la respuesta del
         🔎 RGM (a pedido), el botón 📋 Ficha y /buscar -- antes cada uno
@@ -648,10 +633,12 @@ class BotTelegram:
         también aparece dentro de la lista, con su fecha completa).
         `limite`: si el texto final no cabe (pie de foto, 1024
         caracteres), se recorta la lista de Ubicaciones primero, nunca
-        las líneas fijas de arriba.
+        las líneas fijas de arriba. `titulo`: reemplaza la primera línea
+        ("🚗 <b>PLACA</b>") -- usado por "Ya la viste" (Prompt 6 punto 7),
+        que necesita decir "🗂️ Ya la viste: PLACA" en vez de solo la placa.
         """
         vehiculo = db.buscar_placa(placa)
-        lineas = [f"🚗 <b>{_esc(_fmt_placa(placa))}</b>"]
+        lineas = [titulo or f"🚗 <b>{_esc(_fmt_placa(placa))}</b>"]
         if leida:
             lineas.append(f"⚠️ POSIBLE · leyó {_esc(leida)}")
         elif vehiculo and vehiculo["estado"] == "activo":
@@ -921,8 +908,16 @@ class BotTelegram:
         en_lista = sum(1 for d in s["placas"].values() if d["tipo"] == "exacta")
         actor = f"{_esc(s.get('operador') or 'Operador')} ({_esc(s['device'])})"
         if final:
-            motivo = " Se perdió la señal del teléfono." if final == "sin-senal" else ""
-            cab = (f"⏹️ <b>Cámara apagada</b> · {actor}\n"
+            # Prompt 6 punto 6: "medianoche" cierra el mensaje del día que
+            # termina (la cámara NO se apagó, solo arranca un mensaje
+            # nuevo que vuelve a contar desde 0) -- título propio para no
+            # decir "Cámara apagada" cuando no lo está.
+            if final == "medianoche":
+                titulo, motivo = "🌙 Fin del día", ""
+            else:
+                titulo = "⏹️ Cámara apagada"
+                motivo = " Se perdió la señal del teléfono." if final == "sin-senal" else ""
+            cab = (f"{titulo} · {actor}\n"
                    f"{_reloj(s['inicio'])} a {_reloj(s['fin'])} ({_duracion(s['fin'] - s['inicio'])}).{motivo}")
         else:
             cab = f"📷 <b>Cámara encendida</b> · {actor}\nDesde {_reloj(s['inicio'])} · {n_placas} placas · {en_lista} en lista"
@@ -942,9 +937,14 @@ class BotTelegram:
         with self._lock:
             if device_uuid in self.sesiones or not self.cfg["en_vivo"]:
                 return self.sesiones.get(device_uuid)
+            inicio = ts or int(time.time() * 1000)
             s = {"device_uuid": device_uuid, "device": device or "Teléfono", "operador": operador,
-                 "inicio": ts or int(time.time() * 1000), "ultima": time.time(), "placas": {},
-                 "alertas": {}, "avisos_tardios": set(), "mensajes": [], "timer": None}
+                 "inicio": inicio, "ultima": time.time(), "placas": {},
+                 "alertas": {}, "avisos_tardios": set(), "mensajes": [], "timer": None,
+                 # Prompt 6 punto 6: fecha LOCAL (Bogotá) de esta sesión --
+                 # si sigue abierta cuando cambie, _vigilar_sesiones_inactivas
+                 # la cierra con el resumen del día y abre una nueva en 0.
+                 "dia": _dt_bogota(inicio).strftime("%Y-%m-%d")}
             self.sesiones[device_uuid] = s
         s["mensajes"] = self._a_todos(self._texto_sesion(s))
         return s
@@ -973,6 +973,20 @@ class BotTelegram:
             return
         s["fin"] = int(time.time() * 1000)
         self._refrescar_sesion(s, motivo)
+
+    def _cerrar_por_cambio_de_dia(self, uuid):
+        """Prompt 6 punto 6: una sesión que sigue abierta al cruzar la
+        medianoche (hora de Bogotá) cierra su mensaje con el resumen del
+        día y abre uno NUEVO que arranca en 0 -- nada se borra (las
+        lecturas ya guardadas siguen intactas en la base), solo el
+        contador EN VIVO de ese mensaje de Telegram."""
+        with self._lock:
+            s = self.sesiones.pop(uuid, None)
+        if not s:
+            return
+        s["fin"] = int(time.time() * 1000)
+        self._refrescar_sesion(s, "medianoche")
+        self._abrir_sesion(uuid, s["device"], s["operador"], s["fin"])
 
     def _lectura_en_vivo(self, p: dict):
         if not self.cfg["en_vivo"]:
@@ -1007,22 +1021,39 @@ class BotTelegram:
             s["timer"].daemon = True
             s["timer"].start()
 
+    def _revisar_sesiones_una_vez(self):
+        """Un ciclo de _vigilar_sesiones_inactivas, extraído aparte para
+        poder probarlo sin depender del `while` + `time.sleep(60)` real."""
+        dia_actual = _dt_bogota().strftime("%Y-%m-%d")
+        for uuid, s in list(self.sesiones.items()):
+            if time.time() - s["ultima"] > VENTANA_SIN_SENAL_SEGUNDOS:
+                self._cerrar_sesion(uuid, "sin-senal")
+            elif s.get("dia") and s["dia"] != dia_actual:
+                self._cerrar_por_cambio_de_dia(uuid)
+        # Poda las alertas por placa fuera de sesión (sin cámara en
+        # vivo) que ya vencieron su ventana de TG_REPETIR_MIN: así la
+        # próxima lectura de esa placa manda una alerta nueva, no edita
+        # una vieja de hace rato.
+        vencidas = [
+            clave for clave, estado in self._alertas_sin_sesion.items()
+            if (time.time() - estado["ultima_actividad"]) > TG_REPETIR_MIN * 60
+        ]
+        for clave in vencidas:
+            self._alertas_sin_sesion.pop(clave, None)
+        # Prompt 6 punto 3: "Últimas en vivo" se fija a las 12 h aunque
+        # no haya llegado ninguna lectura nueva que dispare el chequeo
+        # de _tocar_ultimas_vivo.
+        vencidas_ultimas = [
+            chat_id for chat_id, info in self._ultimas_vivo.items()
+            if (time.time() - info["creado_en"]) > TG_ULTIMAS_VIVO_HORAS * 3600
+        ]
+        for chat_id in vencidas_ultimas:
+            self._congelar_ultimas_vivo(chat_id)
+
     def _vigilar_sesiones_inactivas(self):
         while not self.detenido:
             time.sleep(60)
-            for uuid, s in list(self.sesiones.items()):
-                if time.time() - s["ultima"] > VENTANA_SIN_SENAL_SEGUNDOS:
-                    self._cerrar_sesion(uuid, "sin-senal")
-            # Poda las alertas por placa fuera de sesión (sin cámara en
-            # vivo) que ya vencieron su ventana de TG_REPETIR_MIN: así la
-            # próxima lectura de esa placa manda una alerta nueva, no edita
-            # una vieja de hace rato.
-            vencidas = [
-                clave for clave, estado in self._alertas_sin_sesion.items()
-                if (time.time() - estado["ultima_actividad"]) > TG_REPETIR_MIN * 60
-            ]
-            for clave in vencidas:
-                self._alertas_sin_sesion.pop(clave, None)
+            self._revisar_sesiones_una_vez()
 
     # ------------------------------------------------------------ eventos del servidor -> avisos
 
@@ -1045,19 +1076,38 @@ class BotTelegram:
                 s["ultima"] = time.time()
             return
         if evento == "retro.hits":
+            # Prompt 6 punto 7: "Ya la viste" completo -- formato único
+            # (punto 1, con 🗺️ Ubicaciones y foto de la última vez) y SOLO
+            # a los chats de Admin (antes iba a todos con _a_todos). Un
+            # mensaje por placa, máximo 10 por carga.
             hits = p.get("hits") or []
-            for h in hits[:8]:
-                titulo = (f"🗂️ <b>YA LA VISTE: {_esc(_fmt_placa(h['placa']))}</b> (recién cargada)" if h["tipo"] == "exacta"
-                          else f"⚠️ <b>POSIBLEMENTE VISTA: {_esc(_fmt_placa(h['placa']))}</b> (recién cargada)")
-                v0 = {**h["vistas"][0], "placa": h["placa"]}
-                self._a_todos(self._texto_ya_vista(h, titulo), foto=self._foto_principal(v0), extra={"reply_markup": self._botones_vista(v0)})
-            if len(hits) > 8:
-                resto = ", ".join(_esc(_fmt_placa(h["placa"])) for h in hits[8:])
-                self._a_todos(f"Y otras {len(hits) - 8} placas de la carga ya se habían visto: {resto}. Míralas con {B['buscar']} o en el panel.")
+            chats_admin = self._chats_admin()
+            for h in hits[:10]:
+                placa = h["placa"]
+                titulo = (f"🗂️ <b>Ya la viste: {_esc(_fmt_placa(placa))}</b>" if h["tipo"] == "exacta"
+                          else f"⚠️ <b>Posiblemente vista: {_esc(_fmt_placa(placa))}</b>")
+                v0 = {**h["vistas"][0], "placa": placa}
+                foto = self._foto_principal(v0)
+                limite = 1024 if foto else None
+                texto = self._texto_ficha_telegram(placa, es_admin=True, titulo=titulo, limite=limite)
+                for c in chats_admin:
+                    try:
+                        self._enviar(c["id"], texto, foto, extra={"reply_markup": self._botones_vista(v0)})
+                    except Exception as e:
+                        self.log(f"Telegram: no se pudo avisar 'ya la viste' de {placa} a {c['id']} - {e}")
+            if len(hits) > 10:
+                resto = ", ".join(_esc(_fmt_placa(h["placa"])) for h in hits[10:])
+                texto_resto = f"… y {len(hits) - 10} más, ver en la web: {resto}"
+                for c in chats_admin:
+                    try:
+                        self._texto(c["id"], texto_resto)
+                    except Exception as e:
+                        self.log(f"Telegram: no se pudo avisar el resto de 'ya la viste' a {c['id']} - {e}")
             return
         if evento == "detection.hit":
             self._lectura_en_vivo(p)
             self._alerta_placa(p)
+            self._tocar_ultimas_vivo()
             return
         if evento == "rgm.resultado":
             return self._on_rgm_resultado(p)
@@ -1202,19 +1252,20 @@ class BotTelegram:
             muestra = ", ".join(f"<code>{_esc(x[:30])}</code>" for x in resumen["invalidas"][:5])
             lineas.append(f"No entendí {len(resumen['invalidas'])} línea(s): {muestra}{'…' if len(resumen['invalidas']) > 5 else ''}")
         ya_vistas = resumen.get("ya_vistas") or {}
-        lineas.append(f"🗂️ {len(ya_vistas)} ya se habían visto. Te las mando ahora con foto y lugar." if ya_vistas
+        lineas.append(f"🗂️ {len(ya_vistas)} ya se habían visto. Los chats de Admin reciben el detalle con foto y lugar." if ya_vistas
                       else "Ninguna se había visto antes. Te aviso apenas una cámara las vea.")
         return "\n".join(lineas)
 
     def _cargar(self, chat_id, usuario_id: int, cuerpo: str):
         import vehiculos
 
+        # Prompt 6 punto 7: el aviso "ya la viste" por placa (foto + Ubicaciones)
+        # ya lo manda, una sola vez, el evento retro.hits que
+        # procesar_carga_masiva_texto dispara (_on_evento) -- a los chats de
+        # Admin, con el formato único del punto 1. Mandarlo aparte aquí
+        # también lo duplicaría (y con el formato viejo).
         resumen = vehiculos.procesar_carga_masiva_texto(cuerpo, usuario_id)
         self._texto(chat_id, self._resumen_carga(resumen), self._con_menu())
-        for h in list((resumen.get("ya_vistas") or {}).values())[:8]:
-            v0 = {**h["vistas"][0], "placa": h["placa"]}
-            titulo = f"🗂️ <b>YA LA VISTE: {_esc(_fmt_placa(h['placa']))}</b> (recién cargada)" if h["tipo"] == "exacta" else f"⚠️ <b>POSIBLEMENTE VISTA: {_esc(_fmt_placa(h['placa']))}</b>"
-            self._enviar(chat_id, self._texto_ya_vista(h, titulo), foto=self._foto_principal(v0), extra={"reply_markup": self._botones_vista(v0)})
 
     def _agregar(self, chat_id, usuario_id: int, linea: str):
         m = PATRON_AGREGAR.match(linea or "")
@@ -1228,9 +1279,18 @@ class BotTelegram:
             return self._texto(chat_id, f"<b>{_esc(_fmt_placa(placa))}</b> ya está en el inventario (usa {B['buscar']} para verla).", self._con_menu())
         except db.ValorInvalidoError as e:
             return self._texto(chat_id, _esc(str(e)))
+        self._texto(chat_id, f"Agregada <b>{_esc(_fmt_placa(placa))}</b>{f': {_esc(motivo)}' if motivo else ''}. Los teléfonos la reciben en segundos.", self._con_menu())
+        # Prompt 6 punto 7: alta individual por Telegram también dispara
+        # "ya la viste" (mismo evento retro.hits que usa la carga masiva y
+        # la alta individual de la web -- un solo camino, formato único).
         vistas = nexcam_db.vistas_de([placa]).get(placa)
-        extra_vista = " 🗂️ Ya la habían visto antes: usa 🔍 Buscar placa para ver dónde." if vistas and vistas["vistas"] else ""
-        self._texto(chat_id, f"Agregada <b>{_esc(_fmt_placa(placa))}</b>{f': {_esc(motivo)}' if motivo else ''}. Los teléfonos la reciben en segundos.{extra_vista}", self._con_menu())
+        if vistas and vistas["vistas"]:
+            try:
+                import nexcam_api
+
+                nexcam_api.broadcast("retro.hits", {"origen": "telegram", "hits": [vistas]})
+            except Exception as e:
+                self.log(f"Telegram: no se pudo avisar 'ya la viste' de {placa} - {e}")
 
     def _quitar(self, chat_id, usuario_id: int, placa_raw: str):
         placa = nexcam_db.normalizar_placa(placa_raw or "")
@@ -1242,35 +1302,21 @@ class BotTelegram:
             return self._texto(chat_id, _esc(str(e)))
         return self._texto(chat_id, f"Quitada <b>{_esc(_fmt_placa(placa))}</b> de la lista.", self._con_menu())
 
-    def _pagina_ultimas(self, pagina: int):
-        """Recalcula una página de "Últimas" desde la base (sin guardar
-        ningún estado de paginación aparte: la propia página pedida ES el
-        estado, igual que ya hace rgm_web con `pagina` en NEXCAM -> En
-        vivo). Devuelve (pagina_recortada, total_paginas, items)."""
-        total = nexcam_db.contar_avistamientos()
-        total_paginas = max(1, -(-total // TG_ULTIMAS_POR_PAGINA))
-        pagina = min(max(1, pagina), total_paginas)
-        items = nexcam_db.avistamientos_recientes(TG_ULTIMAS_POR_PAGINA, (pagina - 1) * TG_ULTIMAS_POR_PAGINA)
-        return pagina, total_paginas, items
-
-    def _texto_ultimas(self, pagina: int, total_paginas: int, items: list) -> str:
-        cabecera = f"🕒 <b>Últimas placas</b> · página {pagina} de {total_paginas}"
-        if not items:
-            return f"{cabecera}\n\nTodavía no hay placas leídas."
-        filas = [
+    def _filas_ultimas(self, items: list) -> list:
+        return [
             f"{ICONO_VIVO.get(d.get('match_type') or ('exacta' if d['en_lista'] else None), '⚪')} 🚗 "
             f"{placa_destacada(_fmt_placa(d['placa']))}   {_reloj_corto(d['ts'])} · {_esc(d.get('operador') or '—')}"
             for d in items
         ]
-        return f"{cabecera}\n\n{chr(10).join(filas)}"
 
-    def _botones_ultimas(self, pagina: int, total_paginas: int, items: list) -> dict:
-        nav = []
-        if pagina > 1:
-            nav.append({"text": "◀ Anterior", "callback_data": f"ultimas:{pagina - 1}"})
-        nav.append({"text": f"{pagina}/{total_paginas}", "callback_data": "noop"})
-        if pagina < total_paginas:
-            nav.append({"text": "Siguiente ▶", "callback_data": f"ultimas:{pagina + 1}"})
+    def _botones_ultimas_vivo(self, items: list, viendo_pagina: Optional[int]) -> dict:
+        # La vista en vivo (viendo_pagina=None) muestra lo mismo que la
+        # página 1 (las TG_ULTIMAS_VIVO_PAGINA más recientes): "Anteriores"
+        # desde ahí debe saltar a la página 2, no repetir la 1.
+        pagina_actual = viendo_pagina or 1
+        nav = [{"text": "◀ Anteriores", "callback_data": f"uvivo:atras:{pagina_actual + 1}"}]
+        if viendo_pagina is not None:
+            nav.append({"text": "🔴 En vivo", "callback_data": "uvivo:vivo"})
         filas_placas, fila = [], []
         for d in items:
             fila.append({"text": f"📋 {_fmt_placa(d['placa'])}", "callback_data": f"ficha:{d['placa']}"})
@@ -1281,15 +1327,138 @@ class BotTelegram:
             filas_placas.append(fila)
         return {"inline_keyboard": [nav] + filas_placas}
 
-    def _ultimas(self, chat_id, pagina: int = 1):
-        """Prompt 5 punto 6: paginada, 10 por página, la más reciente
-        primero; los botones [◀ Anterior] [Siguiente ▶] EDITAN este mismo
-        mensaje (ver accion=="ultimas" en _boton_pulsado), nunca mandan
-        uno nuevo."""
-        pagina, total_paginas, items = self._pagina_ultimas(pagina)
-        texto = self._texto_ultimas(pagina, total_paginas, items)
-        extra = {"reply_markup": self._botones_ultimas(pagina, total_paginas, items)}
-        return self._texto(chat_id, texto, extra)
+    def _texto_ultimas_vivo(self, items: list) -> str:
+        cabecera = "🕒 <b>Últimas placas</b> · en vivo"
+        if not items:
+            return f"{cabecera}\n\nTodavía no hay placas leídas."
+        return f"{cabecera}\n\n{chr(10).join(self._filas_ultimas(items))}"
+
+    def _texto_ultimas_pagina(self, pagina: int, total_paginas: int, items: list) -> str:
+        cabecera = f"🕒 <b>Últimas placas</b> · página {pagina} de {total_paginas}"
+        if not items:
+            return f"{cabecera}\n\nSin más lecturas."
+        return f"{cabecera}\n\n{chr(10).join(self._filas_ultimas(items))}"
+
+    def _ultimas(self, chat_id):
+        """
+        Prompt 6 punto 3: al pulsar 🕒 Últimas se fija (si había) el
+        mensaje EN VIVO anterior de este chat ("⏸ Ya no se actualiza") y
+        se abre uno nuevo con las últimas TG_ULTIMAS_VIVO_PAGINA placas,
+        que se va editando solo mientras la cámara lee (ver
+        _tocar_ultimas_vivo/_refrescar_ultimas_vivo) hasta que se pulse
+        de nuevo o pasen TG_ULTIMAS_VIVO_HORAS h (_vigilar_sesiones_inactivas).
+        """
+        self._congelar_ultimas_vivo(chat_id)
+        items = nexcam_db.avistamientos_recientes(TG_ULTIMAS_VIVO_PAGINA, 0)
+        texto = self._texto_ultimas_vivo(items)
+        teclado = self._botones_ultimas_vivo(items, viendo_pagina=None)
+        m = self._texto(chat_id, texto, {"reply_markup": teclado})
+        if m and m.get("message_id"):
+            self._ultimas_vivo[chat_id] = {
+                "message_id": m["message_id"], "creado_en": time.time(), "timer": None,
+                "viendo_pagina": None, "pendiente": False, "ultima_edicion": time.time(),
+                "ultimo_texto": texto, "ultimo_teclado": teclado,
+            }
+        return m
+
+    def _congelar_ultimas_vivo(self, chat_id):
+        """Fija el mensaje de "Últimas en vivo" anterior de este chat (si
+        lo hay) con "⏸ Ya no se actualiza" -- al pulsar 🕒 Últimas otra vez
+        o a las TG_ULTIMAS_VIVO_HORAS h. Reusa el último texto/teclado ya
+        armado (no vuelve a consultar la base): es el estado final tal
+        como quedó, no uno recalculado en el momento de fijarlo."""
+        info = self._ultimas_vivo.pop(chat_id, None)
+        if not info:
+            return
+        if info.get("timer"):
+            info["timer"].cancel()
+        try:
+            texto = f"{info.get('ultimo_texto') or ''}\n\n⏸ Ya no se actualiza."
+            self._llamar("editMessageText", {
+                "chat_id": chat_id, "message_id": info["message_id"], "text": texto,
+                "parse_mode": "HTML", "disable_web_page_preview": True,
+                "reply_markup": info.get("ultimo_teclado") or {"inline_keyboard": []},
+            })
+        except Exception as e:
+            if "not modified" not in str(e).lower():
+                self.log(f"Telegram: no se pudo fijar Últimas en vivo - {e}")
+
+    def _tocar_ultimas_vivo(self):
+        """Cada detection.hit llega aquí (Prompt 6 punto 3): a cada chat
+        con un mensaje de "Últimas" EN VIVO (viendo_pagina is None) se le
+        programa una actualización, coalescida a máximo una edición cada
+        TG_ULTIMAS_VIVO_EDIT_SEGUNDOS si llegan varias lecturas juntas --
+        un token-bucket simple: si ya pasó el tiempo mínimo desde la
+        última edición, se programa para YA (espera 0); si no, se
+        completa la espera que falte, nunca menos."""
+        ahora = time.time()
+        for chat_id, info in list(self._ultimas_vivo.items()):
+            if info.get("viendo_pagina") is not None:
+                continue  # mirando una página vieja: no se toca (Prompt 6 punto 3)
+            if ahora - info["creado_en"] > TG_ULTIMAS_VIVO_HORAS * 3600:
+                self._congelar_ultimas_vivo(chat_id)
+                continue
+            info["pendiente"] = True
+            if info.get("timer"):
+                continue  # ya hay una edición programada: esta lectura se le junta
+            espera = max(0.0, TG_ULTIMAS_VIVO_EDIT_SEGUNDOS - (ahora - info.get("ultima_edicion", 0)))
+            info["timer"] = threading.Timer(espera, lambda cid=chat_id: self._refrescar_ultimas_vivo(cid))
+            info["timer"].daemon = True
+            info["timer"].start()
+
+    def _refrescar_ultimas_vivo(self, chat_id):
+        info = self._ultimas_vivo.get(chat_id)
+        if not info:
+            return
+        info["timer"] = None
+        if not info.get("pendiente") or info.get("viendo_pagina") is not None:
+            return
+        info["pendiente"] = False
+        info["ultima_edicion"] = time.time()
+        items = nexcam_db.avistamientos_recientes(TG_ULTIMAS_VIVO_PAGINA, 0)
+        texto = self._texto_ultimas_vivo(items)
+        teclado = self._botones_ultimas_vivo(items, viendo_pagina=None)
+        info["ultimo_texto"], info["ultimo_teclado"] = texto, teclado
+        try:
+            self._llamar("editMessageText", {
+                "chat_id": chat_id, "message_id": info["message_id"], "text": texto,
+                "parse_mode": "HTML", "disable_web_page_preview": True, "reply_markup": teclado,
+            })
+        except Exception as e:
+            if "not modified" not in str(e).lower():
+                self.log(f"Telegram: no se pudo actualizar Últimas en vivo - {e}")
+
+    def _mostrar_ultimas_vivo_pagina(self, chat_id, message_id, pagina: int):
+        """[◀ Anteriores]: páginas viejas de TG_ULTIMAS_VIVO_PAGINA en
+        TG_ULTIMAS_VIVO_PAGINA, sin tocar el mensaje mientras se mira una
+        de ellas (Prompt 6 punto 3)."""
+        total = nexcam_db.contar_avistamientos()
+        total_paginas = max(1, -(-total // TG_ULTIMAS_VIVO_PAGINA))
+        pagina = min(max(1, pagina), total_paginas)
+        items = nexcam_db.avistamientos_recientes(TG_ULTIMAS_VIVO_PAGINA, (pagina - 1) * TG_ULTIMAS_VIVO_PAGINA)
+        texto = self._texto_ultimas_pagina(pagina, total_paginas, items)
+        teclado = self._botones_ultimas_vivo(items, viendo_pagina=pagina)
+        info = self._ultimas_vivo.get(chat_id)
+        if info and info["message_id"] == message_id:
+            info["viendo_pagina"] = pagina
+            info["ultimo_texto"], info["ultimo_teclado"] = texto, teclado
+        try:
+            self._llamar("editMessageText", {
+                "chat_id": chat_id, "message_id": message_id, "text": texto,
+                "parse_mode": "HTML", "disable_web_page_preview": True, "reply_markup": teclado,
+            })
+        except Exception as e:
+            if "not modified" not in str(e).lower():
+                self.log(f"Telegram: no se pudo paginar Últimas - {e}")
+
+    def _volver_a_ultimas_en_vivo(self, chat_id, message_id):
+        info = self._ultimas_vivo.get(chat_id)
+        if not info or info["message_id"] != message_id:
+            return
+        info["viendo_pagina"] = None
+        info["pendiente"] = True
+        info["timer"] = None
+        self._refrescar_ultimas_vivo(chat_id)
 
     PREGUNTA = {
         "buscar": "🔍 Escribe la placa que quieres buscar (por ejemplo ABC123).",
@@ -1444,135 +1613,159 @@ class BotTelegram:
         return None
 
     def _boton_pulsado(self, q: dict):
+        """
+        Prompt 6 punto 4 ("mucho delay al pasar de páginas"): el
+        answerCallbackQuery se manda INMEDIATO, antes de calcular nada --
+        antes, cada rama lo mandaba en un punto distinto (a veces después
+        de una consulta SQL, a veces al final de todo), y el "cargando…"
+        del botón se quedaba ahí mientras tanto. A cambio, el texto
+        informativo que antes iba en ese aviso ("Ya hay una consulta en
+        curso…") se pierde -- el mensaje final (editado o nuevo) ya avisa
+        lo que haga falta, y lo que de verdad medía Gabriel (Fase 16.13:
+        "cambia en menos de 1 s") es cuándo deja de girar el botón y
+        cuándo cambia el mensaje, no el texto del aviso.
+        """
+        t0 = time.monotonic()
         chat_id = (q.get("message") or {}).get("chat", {}).get("id")
         if not self._autorizado(chat_id):
             return self._llamar("answerCallbackQuery", {"callback_query_id": q["id"], "text": "Chat no vinculado"})
+        try:
+            self._llamar("answerCallbackQuery", {"callback_query_id": q["id"]})
+        except Exception:
+            pass
+        t_ack = time.monotonic()
+
         datos = q.get("data") or ""
         i = datos.find(":")
         accion, valor = (datos[:i], datos[i + 1:]) if i >= 0 else (datos, "")
 
-        def responder(texto=None):
-            try:
-                self._llamar("answerCallbackQuery", {"callback_query_id": q["id"], **({"text": texto} if texto else {})})
-            except Exception:
-                pass
-
-        if accion == "auth":
-            dev = nexcam_db.autorizar_dispositivo(valor)
-            responder("Teléfono autorizado" if dev else "Ese teléfono ya no existe")
-            if dev:
-                modelo = f"{dev.get('brand') or ''} {dev.get('model') or ''}".strip()
-                try:
-                    self._llamar("editMessageText", {
-                        "chat_id": chat_id, "message_id": q["message"]["message_id"], "parse_mode": "HTML",
-                        "text": f"✅ <b>Teléfono autorizado</b>\n{_esc(modelo)}\nID: <code>{_esc(valor)}</code>",
-                    })
-                except Exception:
-                    pass
-            return
-        if accion == "ficha":
-            responder()
-            return self._buscar(chat_id, valor)
-        if accion == "placa":
-            v = nexcam_db.obtener_avistamiento(int(valor)) if valor.isdigit() else None
-            foto = nexcam_db.ruta_foto_segura(v["snapshot"]) if v else None
-            responder("" if foto else "Esa foto ya no está disponible")
-            if foto:
-                return self._enviar_foto(chat_id, foto, f"🔢 Placa leída: <b>{_esc(_fmt_placa(v.get('leida') or v['placa']))}</b>, {_hora(v['ts'])}")
-        if accion in ("rgm", "rgm_judicial"):
-            usuario = self._usuario_de_chat(chat_id)
-            if usuario is None:
-                responder("Este chat no tiene usuario de NEXORA asignado todavía.")
+        try:
+            if accion == "auth":
+                dev = nexcam_db.autorizar_dispositivo(valor)
+                if dev:
+                    modelo = f"{dev.get('brand') or ''} {dev.get('model') or ''}".strip()
+                    try:
+                        self._llamar("editMessageText", {
+                            "chat_id": chat_id, "message_id": q["message"]["message_id"], "parse_mode": "HTML",
+                            "text": f"✅ <b>Teléfono autorizado</b>\n{_esc(modelo)}\nID: <code>{_esc(valor)}</code>",
+                        })
+                    except Exception:
+                        pass
                 return
-            import rgm_cola
+            if accion == "ficha":
+                return self._buscar(chat_id, valor)
+            if accion == "placa":
+                v = nexcam_db.obtener_avistamiento(int(valor)) if valor.isdigit() else None
+                foto = nexcam_db.ruta_foto_segura(v["snapshot"]) if v else None
+                if foto:
+                    return self._enviar_foto(chat_id, foto, f"🔢 Placa leída: <b>{_esc(_fmt_placa(v.get('leida') or v['placa']))}</b>, {_hora(v['ts'])}")
+                return
+            if accion in ("rgm", "rgm_judicial"):
+                usuario = self._usuario_de_chat(chat_id)
+                if usuario is None:
+                    return
+                import rgm_cola
 
-            alcance = "RGM" if accion == "rgm" else "JUDICIAL"
-            placa = nexcam_db.normalizar_placa(valor)
-            es_admin = usuario["rol"] == "Admin" and usuario["estado"] == "activo"
-            # Prompt 6 punto 1: si el botón vive en una alerta EN VIVO, el
-            # resultado la EDITA (nunca manda un mensaje aparte). Solo se
-            # rastrea para "rgm" puro -- "rgm_judicial" siempre manda un
-            # mensaje nuevo (el botón ⚖️ no vive en la alerta original).
-            message_id = (q.get("message") or {}).get("message_id")
-            estado_alerta = self._estado_alerta_por_mensaje(chat_id, message_id) if accion == "rgm" else None
-            resultado = rgm_cola.solicitar_consulta(placa, alcance, "telegram", usuario["id"])
-            if resultado["accion"] == "SNAPSHOT_VIGENTE":
-                # Prompt 5 punto 1: ya hay dato vigente -- rgm.resultado NUNCA
-                # va a llegar para este caso (no se encoló nada), así que el
-                # mensaje con los datos se manda aquí mismo, de una vez.
-                responder(f"Ya hay una consulta de {alcance} reciente para esa placa.")
-                try:
-                    if alcance == "RGM" and estado_alerta is not None:
-                        self._refrescar_texto_estado(estado_alerta)
-                    elif alcance == "RGM":
-                        self._texto(chat_id, self._texto_ficha_telegram(placa, es_admin=es_admin))
-                    else:
-                        self._texto(chat_id, self._texto_resultado_judicial(
-                            placa, json.loads(resultado["snapshot"]["datos"]), es_admin))
-                except Exception as e:
-                    self.log(f"Telegram: no se pudo mostrar el snapshot vigente de {placa} - {e}")
-            elif resultado["accion"] == "YA_EN_COLA":
-                responder(f"Ya hay una consulta de {alcance} en curso para esa placa.")
-                self._chat_por_item_rgm[resultado["item"]["id"]] = {"chat_id": chat_id, "estado_alerta": estado_alerta}
-            else:
-                self._chat_por_item_rgm[resultado["item"]["id"]] = {"chat_id": chat_id, "estado_alerta": estado_alerta}
-                conectado = rgm_cola.trabajador_conectado()
-                extra = f" {resultado['mensaje']}" if resultado.get("mensaje") else ""
-                responder(("Consulta encolada." + extra) if conectado else ("Consulta encolada, pero nadie tiene abierta la página Consulta ahora mismo." + extra))
-            return
+                alcance = "RGM" if accion == "rgm" else "JUDICIAL"
+                placa = nexcam_db.normalizar_placa(valor)
+                es_admin = usuario["rol"] == "Admin" and usuario["estado"] == "activo"
+                # Prompt 6 punto 1: si el botón vive en una alerta EN VIVO, el
+                # resultado la EDITA (nunca manda un mensaje aparte). Solo se
+                # rastrea para "rgm" puro -- "rgm_judicial" siempre manda un
+                # mensaje nuevo (el botón ⚖️ no vive en la alerta original).
+                message_id = (q.get("message") or {}).get("message_id")
+                estado_alerta = self._estado_alerta_por_mensaje(chat_id, message_id) if accion == "rgm" else None
+                resultado = rgm_cola.solicitar_consulta(placa, alcance, "telegram", usuario["id"])
+                if resultado["accion"] == "SNAPSHOT_VIGENTE":
+                    # Prompt 5 punto 1: ya hay dato vigente -- rgm.resultado NUNCA
+                    # va a llegar para este caso (no se encoló nada), así que el
+                    # mensaje con los datos se manda aquí mismo, de una vez.
+                    try:
+                        if alcance == "RGM" and estado_alerta is not None:
+                            self._refrescar_texto_estado(estado_alerta)
+                        elif alcance == "RGM":
+                            self._texto(chat_id, self._texto_ficha_telegram(placa, es_admin=es_admin))
+                        else:
+                            self._texto(chat_id, self._texto_resultado_judicial(
+                                placa, json.loads(resultado["snapshot"]["datos"]), es_admin))
+                    except Exception as e:
+                        self.log(f"Telegram: no se pudo mostrar el snapshot vigente de {placa} - {e}")
+                elif resultado["accion"] == "YA_EN_COLA":
+                    self._chat_por_item_rgm[resultado["item"]["id"]] = {"chat_id": chat_id, "estado_alerta": estado_alerta}
+                else:
+                    self._chat_por_item_rgm[resultado["item"]["id"]] = {"chat_id": chat_id, "estado_alerta": estado_alerta}
+                return
 
-        if accion == "noop":
-            # Prompt 5 punto 6: el botón "1/4" (indicador de página) no
-            # hace nada -- solo hay que cerrar el "cargando..." del botón.
-            responder()
-            return
+            if accion == "noop":
+                return  # el botón "1/4" (indicador de página): solo hacía falta el ack de arriba
 
-        if accion == "ultimas":
-            # Prompt 5 punto 6: [◀ Anterior]/[Siguiente ▶] EDITAN este
-            # mismo mensaje, nunca mandan uno nuevo.
-            responder()
-            pagina = int(valor) if valor.lstrip("-").isdigit() else 1
-            pagina, total_paginas, items = self._pagina_ultimas(pagina)
-            try:
-                self._llamar("editMessageText", {
-                    "chat_id": chat_id, "message_id": q["message"]["message_id"],
-                    "text": self._texto_ultimas(pagina, total_paginas, items), "parse_mode": "HTML",
-                    "disable_web_page_preview": True,
-                    "reply_markup": self._botones_ultimas(pagina, total_paginas, items),
-                })
-            except Exception as e:
-                if "not modified" not in str(e).lower():
-                    self.log(f"Telegram: no se pudo paginar Últimas - {e}")
-            return
+            if accion == "uvivo":
+                # Prompt 6 punto 3: [◀ Anteriores]/[🔴 En vivo] EDITAN este
+                # mismo mensaje, nunca mandan uno nuevo.
+                message_id = (q.get("message") or {}).get("message_id")
+                i_sub = valor.find(":")
+                sub, resto = (valor[:i_sub], valor[i_sub + 1:]) if i_sub >= 0 else (valor, "")
+                if sub == "vivo":
+                    self._volver_a_ultimas_en_vivo(chat_id, message_id)
+                elif sub == "atras":
+                    pagina = int(resto) if resto.isdigit() else 1
+                    self._mostrar_ultimas_vivo_pagina(chat_id, message_id, pagina)
+                return
+        finally:
+            # Fase 16.13 ("menos de 1 s"): se mide en vez de asumirse.
+            duracion_ack = t_ack - t0
+            duracion_total = time.monotonic() - t0
+            if duracion_total > 1.0:
+                self.log(f"Telegram: botón {accion!r} tardó {duracion_total:.2f} s en total "
+                         f"(ack en {duracion_ack:.2f} s) -- revisar.")
 
     # ------------------------------------------------------------ bucle de mensajes
 
     def _bucle(self):
+        """
+        Prompt 6 punto 4: getUpdates en SU PROPIO hilo, que nunca espera a
+        que termine de procesarse nada -- antes, este mismo hilo hacía
+        getUpdates Y procesaba cada update (incluidos los botones, con sus
+        llamadas de red), así que un mensaje lento de procesar (p.ej.
+        _cargar con miles de placas) retrasaba la siguiente ronda de
+        getUpdates, y con ella cualquier botón que llegara mientras tanto.
+        Ahora este hilo SOLO pide actualizaciones y las deja en
+        self._cola_updates; _trabajador_updates (hilo aparte) es quien
+        realmente las atiende.
+        """
         while not self.detenido:
             try:
                 updates = self._llamar("getUpdates", {"offset": self.offset, "timeout": 30,
                                                         "allowed_updates": ["message", "callback_query"]})
                 for u in updates:
                     self.offset = u["update_id"] + 1
-                    try:
-                        m = u.get("message")
-                        if m and m.get("text"):
-                            nombre = " ".join(x for x in ((m.get("from") or {}).get("first_name"), (m.get("from") or {}).get("last_name")) if x) or str(m["chat"]["id"])
-                            self._mensaje(m["chat"]["id"], m["text"], nombre)
-                        elif m and m.get("document"):
-                            if not self._autorizado(m["chat"]["id"]):
-                                self._vincular(m["chat"]["id"], [], "")
-                            else:
-                                self._documento(m["chat"]["id"], m["document"])
-                        elif u.get("callback_query"):
-                            self._boton_pulsado(u["callback_query"])
-                    except Exception as e:
-                        self.log(f"Telegram: error atendiendo un mensaje: {e}")
+                    self._cola_updates.put(u)
             except Exception as e:
                 if self.detenido:
                     return
                 self.log(f"Telegram: sin conexión con Telegram, reintento en 5 s: {e}")
                 time.sleep(5)
+
+    def _trabajador_updates(self):
+        while not self.detenido:
+            try:
+                u = self._cola_updates.get(timeout=1)
+            except queue.Empty:
+                continue
+            try:
+                m = u.get("message")
+                if m and m.get("text"):
+                    nombre = " ".join(x for x in ((m.get("from") or {}).get("first_name"), (m.get("from") or {}).get("last_name")) if x) or str(m["chat"]["id"])
+                    self._mensaje(m["chat"]["id"], m["text"], nombre)
+                elif m and m.get("document"):
+                    if not self._autorizado(m["chat"]["id"]):
+                        self._vincular(m["chat"]["id"], [], "")
+                    else:
+                        self._documento(m["chat"]["id"], m["document"])
+                elif u.get("callback_query"):
+                    self._boton_pulsado(u["callback_query"])
+            except Exception as e:
+                self.log(f"Telegram: error atendiendo un mensaje: {e}")
 
     # ------------------------------------------------------------ eventos de NEXORA (CAMARA...)
 
@@ -1657,6 +1850,8 @@ class BotTelegram:
         self.log(f"  Telegram: para vincular un chat, escríbele al bot  /vincular {self.codigo}")
         self._hilo_bucle = threading.Thread(target=self._bucle, daemon=True, name="nexcam-telegram-bucle")
         self._hilo_bucle.start()
+        self._hilo_trabajador = threading.Thread(target=self._trabajador_updates, daemon=True, name="nexcam-telegram-trabajador")
+        self._hilo_trabajador.start()
         self._hilo_eventos = threading.Thread(target=self._vigilar_eventos_notificacion, daemon=True, name="nexcam-telegram-eventos")
         self._hilo_eventos.start()
         self._hilo_inactivas = threading.Thread(target=self._vigilar_sesiones_inactivas, daemon=True, name="nexcam-telegram-inactivas")

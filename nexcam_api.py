@@ -59,10 +59,31 @@ _cola_oyentes: "queue.Queue" = queue.Queue()
 _hilo_oyentes: Optional[threading.Thread] = None
 _hilo_oyentes_lock = threading.Lock()
 
+# Prompt 6 punto 4: "camera.started"/"camera.stopped" (la cabecera "📷
+# Cámara encendida"/"⏹️ Cámara apagada" de Telegram) tienen su PROPIA cola
+# y su PROPIO hilo -- Gabriel notaba demora al prender/apagar porque esos
+# dos eventos entraban al FIFO general y quedaban detrás de lo que ya
+# hubiera en curso (una alerta con foto a varios chats, un RGM, etc.).
+# Nunca comparten cola con detection.hit/rgm.resultado/etc.
+EVENTOS_ALTA_PRIORIDAD = {"camera.started", "camera.stopped"}
+_cola_oyentes_prioritaria: "queue.Queue" = queue.Queue()
+_hilo_oyentes_prioritario: Optional[threading.Thread] = None
+_hilo_oyentes_prioritario_lock = threading.Lock()
+
 
 def _repartir_a_oyentes():
     while True:
         evento, payload = _cola_oyentes.get()
+        for fn in list(_oyentes):
+            try:
+                fn(evento, payload)
+            except Exception:
+                pass
+
+
+def _repartir_a_oyentes_prioritario():
+    while True:
+        evento, payload = _cola_oyentes_prioritaria.get()
         for fn in list(_oyentes):
             try:
                 fn(evento, payload)
@@ -81,9 +102,22 @@ def _asegurar_hilo_oyentes():
         _hilo_oyentes.start()
 
 
+def _asegurar_hilo_oyentes_prioritario():
+    global _hilo_oyentes_prioritario
+    if _hilo_oyentes_prioritario is not None and _hilo_oyentes_prioritario.is_alive():
+        return
+    with _hilo_oyentes_prioritario_lock:
+        if _hilo_oyentes_prioritario is not None and _hilo_oyentes_prioritario.is_alive():
+            return
+        _hilo_oyentes_prioritario = threading.Thread(
+            target=_repartir_a_oyentes_prioritario, daemon=True, name="nexcam-oyentes-prioritario")
+        _hilo_oyentes_prioritario.start()
+
+
 def suscribir(fn):
     _oyentes.append(fn)
     _asegurar_hilo_oyentes()
+    _asegurar_hilo_oyentes_prioritario()
 
 
 def broadcast(evento: str, payload: dict):
@@ -94,8 +128,12 @@ def broadcast(evento: str, payload: dict):
         except asyncio.QueueFull:
             pass
     if _oyentes:
-        _asegurar_hilo_oyentes()
-        _cola_oyentes.put((evento, payload))
+        if evento in EVENTOS_ALTA_PRIORIDAD:
+            _asegurar_hilo_oyentes_prioritario()
+            _cola_oyentes_prioritaria.put((evento, payload))
+        else:
+            _asegurar_hilo_oyentes()
+            _cola_oyentes.put((evento, payload))
 
 
 # ---------------------------------------------------------------------------

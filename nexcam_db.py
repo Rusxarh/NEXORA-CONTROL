@@ -69,7 +69,10 @@ import os  # noqa: E402  (después de las constantes por legibilidad)
 NEXCAM_FOTOS_DIR = Path(
     os.environ.get("NEXCAM_FOTOS_DIR", str(Path(__file__).parent / "datos_nexcam" / "fotos"))
 )
-DIAS_RETENCION_FOTOS = int(os.environ.get("NEXCAM_DIAS_FOTOS", "90"))
+# Prompt 6 punto 7: "al menos 180 días" -- verificado que podar_fotos()
+# no se llama en ningún lado hoy (no hay limpieza automática corriendo),
+# pero si alguna vez se programa, su piso por defecto debe cumplir esto.
+DIAS_RETENCION_FOTOS = int(os.environ.get("NEXCAM_DIAS_FOTOS", "180"))
 
 _RE_RUTA_FOTO = re.compile(r"^(\d{4}-\d{2}-\d{2})/([\w.-]+\.jpg)$")
 

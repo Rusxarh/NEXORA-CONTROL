@@ -22,6 +22,7 @@ Orden de trabajo:
 | 1c | Prompt 6 (antes del 3) + apps 0.5.4 y 0.5.5 | Fase 16 (16.9 a 16.20) |
 | 1d | Prompt 7 (RGM a pedido + acceso desde internet) | Fase 17 |
 | 1e | Prompt 8 (RGM y Judicial en segundo plano, todo en NEXORA) | Fase 18 |
+| 1f | Prompt 9 (Telegram limpio con menú y Volver) | Fase 19 |
 
 ### Regla para todos los reportes de Claude Code
 
@@ -902,6 +903,65 @@ actualiza sola (evento SSE simulado); ninguna llamada a chrome.tabs.update con
 active:true en todo el Connector.
 ```
 
+## Prompt 9: Telegram limpio, todo por menú y paneles que se cierran con "Volver"
+
+Pedido de Gabriel (20/11/2026): que no aparezca el menú escrito (la lista "📊 Estado: teléfonos…, 🕒 Últimas: …"); que todo sea por botones; y que lo que él abre (Últimas, Estado, Buscar, Ficha…) se cierre con "Volver" y desaparezca del chat, para que siempre queden a la vista las cosas importantes: las alertas con foto y la cámara en vivo.
+
+```text
+Rama nexcam, sin preguntar (CLAUDE.md). Puede hacerse junto con el Prompt 6 o
+después. Commit por punto, push al final, reporte con "Pruebas para tu visto bueno".
+
+1) MENÚ SIEMPRE EN BOTONES, NUNCA ESCRITO
+   - /start y /menu ya no mandan el texto explicativo. Muestran el teclado de
+     botones fijo abajo (ReplyKeyboardMarkup con is_persistent=true,
+     resize_keyboard=true), con un texto mínimo de una línea ("NEXCAM ·
+     elige una opción"), que el bot BORRA a los pocos segundos (el teclado
+     queda).
+   - Botones del teclado (2 o 3 por fila): 📊 Estado · 🕒 Últimas · 🔍 Buscar ·
+     📷 En vivo · 📥 Cargar lista · ➕ Agregar · ➖ Quitar · 🔔 Avisos · 🔕 Silencio
+     · 📲 Instalar app. Operadores ven solo lo que pueden usar.
+   - setMyCommands solo con /start y /menu. El botón "Menú" de Telegram abre los
+     comandos; la ayuda larga pasa a un botón ❓ Ayuda dentro de Estado (panel).
+   - Si alguien escribe texto que no es placa ni lista, el bot no contesta con
+     explicación: borra el mensaje y vuelve a mostrar el teclado.
+
+2) PANELES QUE SE CIERRAN
+   - Todo lo que el usuario abre es un "panel": Estado, Últimas, Buscar/resultado,
+     Ficha, Datos RGM, Procesos, Cargar lista (resumen), Avisos, Silencio,
+     Instalar app, Ayuda. Cada panel lleva al final [⬅️ Volver].
+   - Volver = deleteMessage del panel (y de sus mensajes hijos, p. ej. la foto de
+     la placa o el PDF que se abrió desde él). No se manda nada nuevo.
+   - Un solo panel abierto por chat: al abrir otro, el anterior se borra solo.
+   - Los mensajes que escribe el usuario (botón del teclado, /comando, placa
+     buscada) también se borran apenas el bot los procesa (en chats privados el
+     bot puede borrarlos, < 48 h).
+   - Un panel olvidado se borra solo a los 15 min (TG_PANEL_MIN), salvo "Últimas
+     en vivo" mientras la cámara esté encendida.
+   - Guarda en la base (no en memoria) los message_id de paneles por chat, para
+     poder borrarlos después de reiniciar NEXORA.
+   - Si deleteMessage falla (mensaje de más de 48 h), edita el panel a una línea
+     "·" sin botones y sigue.
+
+3) LO IMPORTANTE NO SE BORRA
+   - Nunca se borran solos: alertas 🚨/⚠️ con foto, "🗂️ Ya la viste", "📷 Cámara
+     encendida" (lista en vivo) y su cierre "⏹️ Cámara apagada", avisos 🔐 de
+     seguridad, mensajes del chat operador ↔ Admin, oficios PDF de alertas.
+   - Abrir 📋 Ficha o 🔢 Placa DESDE una alerta crea un panel aparte con
+     [⬅️ Volver] (la alerta queda intacta). Lo mismo 🔎 RGM: el resultado edita la
+     alerta (Prompt 6) y no deja mensajes sueltos.
+   - Botón 🧹 Limpiar en el panel Estado: borra todos los paneles y mensajes
+     temporales que queden, y deja solo lo importante.
+
+4) TECLADO SIEMPRE PRESENTE
+   - Si el teclado desaparece (Telegram lo oculta al borrar mensajes), el
+     siguiente panel o la siguiente alerta lo vuelve a poner.
+
+Pruebas con Telegram simulado: /start no manda texto largo y deja el teclado;
+abrir Últimas y Volver → deleteMessage del panel y del mensaje del usuario; abrir
+Estado con Últimas abierto → se borra Últimas; panel a los 15 min → borrado;
+alertas nunca borradas; reinicio de NEXORA → los paneles viejos se pueden borrar.
+```
+
 ---
 
 ## Plan de pruebas
@@ -1037,6 +1097,25 @@ Antes: recargar el Connector en `brave://extensions` y reiniciar NEXORA.
 - **18.6** El proceso privado sale como "🔒 Proceso privado" y no se repite.
 - **18.7** Telegram ⚖️ Procesos (Admin): mismo resumen, la financiera primero.
 - **18.8** Dejar Brave minimizado 10 min con varias placas en cola → todas terminan.
+
+**Fase 19: Telegram limpio (Prompt 9)**
+- **19.1** Escribir /start → no llega el texto largo; abajo queda el teclado con los botones.
+- **19.2** 🕒 Últimas → se abre el panel; [⬅️ Volver] → desaparece el panel y también tu toque del botón; el chat queda como antes.
+- **19.3** Con Últimas abierto, tocar 📊 Estado → Últimas se borra solo y queda Estado.
+- **19.4** Abrir 📋 Ficha desde una alerta → la ficha sale aparte con Volver; al volver, la alerta sigue igual.
+- **19.5** Dejar un panel abierto 15 min → se borra solo.
+- **19.6** Las alertas con foto, la lista "📷 Cámara encendida" y "🗂️ Ya la viste" nunca se borran.
+- **19.7** Estado → 🧹 Limpiar → quedan solo las alertas y la cámara en vivo.
+- **19.8** Escribir "hola" → el bot borra el mensaje y no responde con texto.
+
+**Fase 20: alarma fuerte en la app (app 0.5.6, sin prompt: la hizo Claude chat)**
+- **20.1** Menú ☰ → "Probar alarma" → suena la sirena 4 s aunque el volumen de música esté bajo, y vibra fuerte.
+- **20.2** Apuntar a una placa de la lista → sirena + vibración que se repite, la franja roja "🚨 Placa en lista" parpadea, la foto del carro sale grande debajo de la placa.
+- **20.3** Tocar cualquier parte de la alerta (o 🔇 Silenciar alarma) → se calla y deja de vibrar; la alerta sigue en pantalla.
+- **20.4** "Seguir escaneando" → se cierra; el volumen de alarma del teléfono vuelve a como estaba.
+- **20.5** Posible coincidencia → tres pitidos agudos (otro sonido) con la foto grande.
+- **20.6** Con la pantalla en 🌙 → la alerta enciende la pantalla y suena igual.
+- **20.7** Nadie toca la alerta → la sirena se calla sola a los 30 s.
 
 ### Migrar la base de placas desde WhatsApp (Prompt 3, bloque A)
 - Exportar el chat del grupo: WhatsApp → grupo → ⋮ → Más → Exportar chat → Sin archivos. Sale un .zip: no hace falta descomprimirlo.

@@ -71,6 +71,34 @@ def test_ficha_vehiculo_existente(cliente):
     assert "Observación de prueba" in r.text
 
 
+def test_ficha_muestra_aviso_ya_la_viste_cuando_hay_avistamientos(cliente):
+    """Prompt 6 punto 7: aviso prominente arriba de la ficha cuando la
+    cámara ya vio la placa, con fecha de la última vez."""
+    admin = _crear_admin("Admin FichaYaVista", "admin.fichayavista")
+    db.insertar_placa("YVF456", "carro", admin["id"], None)
+    sesion = {"usuario_id": admin["id"], "nombre": "Admin FichaYaVista", "device_uuid": "tel-yvf"}
+    nexcam_db.registrar_avistamiento(
+        sesion, "YVF456", "YVF456", "exact", 0.9, None, None, "prueba",
+        4.6, -74.1, int(datetime.now().timestamp() * 1000), None, None,
+    )
+    _login_web(cliente, "admin.fichayavista")
+
+    r = cliente.get("/vehiculos/YVF456")
+    assert r.status_code == 200
+    assert "La cámara ya vio esta placa 1 vez" in r.text
+    assert "ver en el mapa" in r.text
+
+
+def test_ficha_sin_avistamientos_no_muestra_el_aviso(cliente):
+    admin = _crear_admin("Admin FichaSinVista", "admin.fichasinvista")
+    db.insertar_placa("SVF789", "carro", admin["id"], None)
+    _login_web(cliente, "admin.fichasinvista")
+
+    r = cliente.get("/vehiculos/SVF789")
+    assert r.status_code == 200
+    assert "La cámara ya vio esta placa" not in r.text
+
+
 def test_ficha_vehiculo_inexistente_no_rompe(cliente):
     _crear_admin("Admin Ficha2", "admin.ficha2")
     _login_web(cliente, "admin.ficha2")
