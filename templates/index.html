@@ -87,25 +87,25 @@
     </div>
 
     <div class="overflow-x-auto -mx-5">
-      <table class="table-shell">
+      <table class="table-shell table-compacta">
         <thead>
           <tr class="table-head-row">
-            <th class="table-head-cell">Placa</th>
-            <th class="table-head-cell">Tipo</th>
+            <th class="table-head-cell whitespace-nowrap">Placa</th>
+            <th class="table-head-cell whitespace-nowrap">Tipo</th>
             <th class="table-head-cell">Vehículo</th>
-            <th class="table-head-cell">Estado</th>
-            <th class="table-head-cell">Fecha ingreso</th>
-            <th class="table-head-cell">Fecha de baja</th>
-            <th class="table-head-cell text-right">Acciones</th>
+            <th class="table-head-cell whitespace-nowrap">Estado</th>
+            <th class="table-head-cell whitespace-nowrap">Fecha ingreso</th>
+            <th class="table-head-cell whitespace-nowrap">Fecha de baja</th>
+            <th class="table-head-cell text-right whitespace-nowrap">Acciones</th>
           </tr>
         </thead>
         <tbody class="table-body">
           {% for v in vehiculos %}
           <tr class="table-row">
-            <td class="table-cell">{{ placa_macro(v.placa) }}</td>
-            <td class="table-cell text-zinc-300 capitalize">{{ v.tipo_vehiculo }}</td>
-            <td class="table-cell text-zinc-300">{{ ((v.marca or '') + ' ' + (v.linea or '')).strip() or '—' }}</td>
-            <td class="table-cell">
+            <td class="table-cell whitespace-nowrap">{{ placa_macro(v.placa) }}</td>
+            <td class="table-cell text-zinc-300 capitalize whitespace-nowrap">{{ v.tipo_vehiculo }}</td>
+            <td class="table-cell text-zinc-300 col-vehiculo">{{ (((v.marca or '') + ' ' + (v.linea or '')).strip() | title) or '—' }}</td>
+            <td class="table-cell whitespace-nowrap">
               {% if v.estado == 'activo' %}
               <span class="badge-success">
                 <span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span> Activo
@@ -116,9 +116,9 @@
               </span>
               {% endif %}
             </td>
-            <td class="table-cell text-zinc-400 whitespace-nowrap">{{ v.fecha_ingreso | fecha_co }}</td>
-            <td class="table-cell text-zinc-400 whitespace-nowrap">{{ v.fecha_baja | fecha_co }}</td>
-            <td class="table-cell text-right">
+            <td class="table-cell text-zinc-400 whitespace-nowrap col-fecha">{{ v.fecha_ingreso | fecha_co }}</td>
+            <td class="table-cell text-zinc-400 whitespace-nowrap col-fecha">{{ v.fecha_baja | fecha_co }}</td>
+            <td class="table-cell text-right whitespace-nowrap">
               <a href="/vehiculos/{{ v.placa }}" class="btn-secondary btn-sm">Ficha</a>
             </td>
           </tr>
