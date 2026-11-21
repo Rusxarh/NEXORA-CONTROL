@@ -54,14 +54,13 @@ import secrets
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
 import database as db
 import nexcam_db
+import telegram_http
 
 
 def _pruebas_activas() -> bool:
@@ -368,12 +367,20 @@ class BotTelegram:
 
     def _llamar(self, metodo: str, cuerpo: dict) -> dict:
         datos = json.dumps(cuerpo).encode("utf-8")
-        peticion = urllib.request.Request(
-            f"{self.api}/bot{self.cfg['token']}/{metodo}", data=datos,
-            headers={"Content-Type": "application/json"}, method="POST",
+        # Prompt 6c punto 1: timeout de lectura largo SOLO para getUpdates
+        # (long poll real, hasta 30 s pedidos + margen); todo lo demás usa
+        # el timeout corto de telegram_http, para que un botón nunca quede
+        # esperando detrás de un getUpdates lento.
+        timeout_lectura = (
+            telegram_http.TIMEOUT_LECTURA_GETUPDATES_SEGUNDOS if metodo == "getUpdates"
+            else telegram_http.TIMEOUT_LECTURA_NORMAL_SEGUNDOS
         )
-        with urllib.request.urlopen(peticion, timeout=35) as r:
-            j = json.loads(r.read().decode("utf-8"))
+        status, cuerpo_resp = telegram_http.peticion(
+            f"{self.api}/bot{self.cfg['token']}/{metodo}", metodo="POST", cuerpo=datos,
+            headers={"Content-Type": "application/json"}, timeout_lectura=timeout_lectura,
+            log=self.log, etiqueta=metodo,
+        )
+        j = json.loads(cuerpo_resp.decode("utf-8"))
         if not j.get("ok"):
             raise RuntimeError(f"{metodo}: {j.get('description', 'error')}")
         return j.get("result")
@@ -402,12 +409,12 @@ class BotTelegram:
         partes.append(f"\r\n--{boundary}--\r\n".encode("utf-8"))
         cuerpo = b"".join(partes)
 
-        peticion = urllib.request.Request(
-            f"{self.api}/bot{self.cfg['token']}/sendPhoto", data=cuerpo,
-            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"}, method="POST",
+        _, cuerpo_resp = telegram_http.peticion(
+            f"{self.api}/bot{self.cfg['token']}/sendPhoto", metodo="POST", cuerpo=cuerpo,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            timeout_lectura=35, log=self.log, etiqueta="sendPhoto",
         )
-        with urllib.request.urlopen(peticion, timeout=35) as r:
-            j = json.loads(r.read().decode("utf-8"))
+        j = json.loads(cuerpo_resp.decode("utf-8"))
         if not j.get("ok"):
             raise RuntimeError(f"sendPhoto: {j.get('description', 'error')}")
         return j.get("result")
@@ -435,12 +442,12 @@ class BotTelegram:
         partes.append(f"\r\n--{boundary}--\r\n".encode("utf-8"))
         cuerpo = b"".join(partes)
 
-        peticion = urllib.request.Request(
-            f"{self.api}/bot{self.cfg['token']}/sendDocument", data=cuerpo,
-            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"}, method="POST",
+        _, cuerpo_resp = telegram_http.peticion(
+            f"{self.api}/bot{self.cfg['token']}/sendDocument", metodo="POST", cuerpo=cuerpo,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            timeout_lectura=timeout, log=self.log, etiqueta="sendDocument",
         )
-        with urllib.request.urlopen(peticion, timeout=timeout) as r:
-            j = json.loads(r.read().decode("utf-8"))
+        j = json.loads(cuerpo_resp.decode("utf-8"))
         if not j.get("ok"):
             raise RuntimeError(f"sendDocument: {j.get('description', 'error')}")
         return j.get("result")
@@ -1634,8 +1641,10 @@ class BotTelegram:
         if not usuario:
             return None
         f = self._llamar("getFile", {"file_id": doc["file_id"]})
-        with urllib.request.urlopen(f"{self.api}/file/bot{self.cfg['token']}/{f['file_path']}", timeout=35) as r:
-            crudo = r.read()
+        _, crudo = telegram_http.peticion(
+            f"{self.api}/file/bot{self.cfg['token']}/{f['file_path']}", metodo="GET",
+            timeout_lectura=35, log=self.log, etiqueta="getFile(descarga)",
+        )
         try:
             texto = crudo.decode("utf-8")
             if "�" in texto:
