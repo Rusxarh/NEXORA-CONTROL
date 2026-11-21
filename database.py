@@ -931,30 +931,37 @@ def buscar_vehiculos(query: str = None, estado: str = None):
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
-def buscar_placas_por_prefijo(prefijo: str, limite: int = 10):
+def buscar_vehiculos_vivo(q: str, estado: str = None, limite: int = 50):
     """
-    Autocompletado de Consulta: a diferencia de buscar_vehiculos (que
-    busca la placa en CUALQUIER posición), esta función exige que la
-    placa EMPIECE por el prefijo dado -- es la semántica correcta para
-    "mientras el usuario escribe" (si escribe "FQL", no tiene sentido
-    sugerir una placa que solo contenga "FQL" en el medio).
-
-    No reutiliza buscar_vehiculos ni cambia su SQL: esa función ya la usa
-    el Inventario con su propia semántica, y no se toca aquí.
+    Búsqueda "mientras se escribe" (Prompt 6c punto 2): por PREFIJO (la
+    placa EMPIEZA por q) y por "contiene" (q en cualquier posición), con
+    los prefijos primero -- usada tanto por el filtro en vivo de
+    Vehículos (con `estado`, para respetar Todos/Activos/Dados de baja)
+    como por las sugerencias de Consulta (sin `estado`). Reemplaza a la
+    antigua buscar_placas_por_prefijo (solo prefijo, sin "contiene").
     """
-    prefijo = (prefijo or "").strip().upper()
-    if not prefijo:
+    q = (q or "").strip().upper()
+    if not q:
         return []
+    if estado is not None and estado not in ESTADOS_VEHICULO:
+        raise ValorInvalidoError(f"Estado inválido: {estado}")
+
+    comodin = q.replace("%", "\\%").replace("_", "\\_")
+    sql = """
+        SELECT placa, tipo_vehiculo, estado, marca, linea, fecha_ingreso, fecha_baja,
+               (UPPER(placa) LIKE ? ESCAPE '\\') AS es_prefijo
+        FROM vehiculos
+        WHERE UPPER(placa) LIKE ? ESCAPE '\\'
+    """
+    params = [comodin + "%", "%" + comodin + "%"]
+    if estado:
+        sql += " AND estado = ?"
+        params.append(estado)
+    sql += " ORDER BY es_prefijo DESC, placa ASC LIMIT ?"
+    params.append(limite)
 
     with get_connection() as conn:
-        filas = conn.execute(
-            """SELECT placa, tipo_vehiculo, estado FROM vehiculos
-               WHERE UPPER(placa) LIKE ? ESCAPE '\\'
-               ORDER BY placa ASC
-               LIMIT ?""",
-            (prefijo.replace("%", "\\%").replace("_", "\\_") + "%", limite),
-        ).fetchall()
-        return [dict(f) for f in filas]
+        return [dict(f) for f in conn.execute(sql, params).fetchall()]
 
 
 def obtener_resumen_vehiculos():

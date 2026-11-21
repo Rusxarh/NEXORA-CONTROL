@@ -62,12 +62,13 @@
     </div>
 
     <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
-      <form method="get" action="/" class="flex items-center gap-2">
-        <input type="hidden" name="filtro" value="{{ filtro }}">
+      <form method="get" action="/" class="flex items-center gap-2" id="formBuscarVehiculo">
+        <input type="hidden" name="filtro" id="filtroActualVehiculo" value="{{ filtro }}">
         <input
-          type="text" name="q" value="{{ q }}"
+          type="text" name="q" id="inputBuscarVehiculo" value="{{ q }}"
           placeholder="Buscar placa..."
           oninput="this.value = this.value.toUpperCase()"
+          autocomplete="off"
           class="input-field w-36 font-mono text-xs py-1.5"
         >
         <button type="submit" class="btn-secondary btn-sm">Buscar</button>
@@ -99,7 +100,7 @@
             <th class="table-head-cell text-right whitespace-nowrap">Acciones</th>
           </tr>
         </thead>
-        <tbody class="table-body">
+        <tbody class="table-body" id="tablaVehiculosBody">
           {% for v in vehiculos %}
           <tr class="table-row">
             <td class="table-cell whitespace-nowrap">{{ placa_macro(v.placa) }}</td>
@@ -138,4 +139,94 @@
     </div>
   </section>
 </div>
+
+<script>
+  // Prompt 6c punto 2: filtro EN VIVO del inventario -- mientras se
+  // escribe, sin Enter, pide /vehiculos/buscar-vivo (prefijo + "contiene",
+  // respeta Todos/Activos/Dados de baja) y reconstruye las filas. Si se
+  // borra la caja, se vuelve a mostrar la tabla que ya trajo el servidor
+  // (sin recargar la página). Enter abre la ficha directo SOLO si el
+  // filtro en vivo dejó una única placa; si no, el <form> se envía normal
+  // (mismo "contiene" de siempre, por si se querían ver varias a la vez).
+  (function () {
+    var input = document.getElementById("inputBuscarVehiculo");
+    var tbody = document.getElementById("tablaVehiculosBody");
+    var filtroInput = document.getElementById("filtroActualVehiculo");
+    if (!input || !tbody) return;
+
+    var htmlOriginal = tbody.innerHTML;
+    var temporizador = null;
+    var controlador = null;
+    var coincidenciasActuales = null;
+
+    function escapar(txt) {
+      var d = document.createElement("div");
+      d.textContent = txt == null ? "" : String(txt);
+      return d.innerHTML;
+    }
+
+    function formatearPlaca(placa) {
+      var limpio = (placa || "").toUpperCase();
+      var mostrar = limpio.length === 6 ? limpio.slice(0, 3) + " " + limpio.slice(3) : limpio;
+      return '<span class="placa placa-chip">' + escapar(mostrar) + '</span>';
+    }
+
+    function pintarFilas(items) {
+      if (!items || items.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="px-5 py-8 text-center text-zinc-500 text-sm">' +
+          'No se encontró ninguna placa que coincida con "' + escapar(input.value.trim()) + '".</td></tr>';
+        return;
+      }
+      tbody.innerHTML = items.map(function (v) {
+        var badge = v.estado === "activo"
+          ? '<span class="badge-success"><span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span> Activo</span>'
+          : '<span class="badge-danger"><span class="h-1.5 w-1.5 rounded-full bg-red-400"></span> Baja</span>';
+        return (
+          '<tr class="table-row">' +
+          '<td class="table-cell whitespace-nowrap">' + formatearPlaca(v.placa) + '</td>' +
+          '<td class="table-cell text-zinc-300 capitalize whitespace-nowrap">' + escapar(v.tipo_vehiculo) + '</td>' +
+          '<td class="table-cell text-zinc-300 col-vehiculo">' + escapar(v.vehiculo || '—') + '</td>' +
+          '<td class="table-cell whitespace-nowrap">' + badge + '</td>' +
+          '<td class="table-cell text-zinc-400 whitespace-nowrap col-fecha">' + escapar(v.fecha_ingreso) + '</td>' +
+          '<td class="table-cell text-zinc-400 whitespace-nowrap col-fecha">' + escapar(v.fecha_baja) + '</td>' +
+          '<td class="table-cell text-right whitespace-nowrap"><a href="/vehiculos/' + encodeURIComponent(v.placa) + '" class="btn-secondary btn-sm">Ficha</a></td>' +
+          '</tr>'
+        );
+      }).join("");
+    }
+
+    input.addEventListener("input", function () {
+      var valor = input.value.trim();
+      clearTimeout(temporizador);
+
+      if (!valor) {
+        coincidenciasActuales = null;
+        tbody.innerHTML = htmlOriginal;
+        return;
+      }
+
+      temporizador = setTimeout(function () {
+        if (controlador) controlador.abort();
+        controlador = new AbortController();
+        var filtro = filtroInput ? filtroInput.value : "todos";
+
+        fetch("/vehiculos/buscar-vivo?q=" + encodeURIComponent(valor) + "&filtro=" + encodeURIComponent(filtro), { signal: controlador.signal })
+          .then(function (resp) { return resp.json(); })
+          .then(function (datos) {
+            coincidenciasActuales = datos.coincidencias || [];
+            pintarFilas(coincidenciasActuales);
+          })
+          .catch(function () { /* sesión expirada u otro fallo: se deja como está */ });
+      }, 200);
+    });
+
+    input.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter") return;
+      if (coincidenciasActuales && coincidenciasActuales.length === 1) {
+        e.preventDefault();
+        window.location.href = "/vehiculos/" + encodeURIComponent(coincidenciasActuales[0].placa);
+      }
+    });
+  })();
+</script>
 {% endblock %}

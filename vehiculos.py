@@ -118,6 +118,37 @@ def index(
 # Consulta de placas (solo lectura) — Etapa 4
 # ---------------------------------------------------------------------------
 
+@router.get("/vehiculos/buscar-vivo")
+def vehiculos_buscar_vivo(
+    q: str = "",
+    filtro: str = "todos",
+    usuario_actual: dict = Depends(usuarios.requerir_autenticacion),
+):
+    """
+    Prompt 6c punto 2: filtro EN VIVO del Inventario -- JSON (no HTML),
+    mismo criterio prefijo+contiene que /consulta/autocompletar, pero
+    respetando el filtro Todos/Activos/Dados de baja ya elegido. El HTML
+    de cada fila se reconstruye en el navegador (index.html) con el mismo
+    formato de fecha que ya usa toda la web (templates.fecha_co).
+    """
+    from templates import fecha_co
+
+    estado_filtro = filtro if filtro in db.ESTADOS_VEHICULO else None
+    coincidencias = db.buscar_vehiculos_vivo(q, estado=estado_filtro, limite=50)
+    resultado = [
+        {
+            "placa": v["placa"],
+            "tipo_vehiculo": v["tipo_vehiculo"],
+            "estado": v["estado"],
+            "vehiculo": ((v["marca"] or "") + " " + (v["linea"] or "")).strip().title() or None,
+            "fecha_ingreso": fecha_co(v["fecha_ingreso"]),
+            "fecha_baja": fecha_co(v["fecha_baja"]),
+        }
+        for v in coincidencias
+    ]
+    return {"coincidencias": resultado}
+
+
 @router.get("/consulta")
 def consulta_vista(
     request: Request,
@@ -167,11 +198,12 @@ def consulta_autocompletar(
 ):
     """
     Autocompletado de la pantalla de Consulta: devuelve JSON (no HTML) con
-    las placas que EMPIEZAN por `q`, buscando en la base real (sin crear
-    ninguna tabla/base nueva, sin tocar RGM ni Judicial). Misma sesión de
-    autenticación que el resto de la app -- sin mecanismo nuevo.
+    las placas que coinciden con `q` (prefijo primero, luego "contiene"),
+    buscando en la base real (sin crear ninguna tabla/base nueva, sin
+    tocar RGM ni Judicial). Misma sesión de autenticación que el resto de
+    la app -- sin mecanismo nuevo.
     """
-    coincidencias = db.buscar_placas_por_prefijo(q, limite=10)
+    coincidencias = db.buscar_vehiculos_vivo(q, limite=50)
     return {"coincidencias": coincidencias}
 
 

@@ -314,6 +314,7 @@
     var lista = document.getElementById("sugerenciasPlaca");
     var controlador = null;
     var temporizador = null;
+    var ultimasCoincidencias = [];
 
     function ocultar() {
       lista.classList.add("hidden");
@@ -322,6 +323,7 @@
 
     function pintar(coincidencias) {
       lista.innerHTML = "";
+      ultimasCoincidencias = coincidencias || [];
       if (!coincidencias || coincidencias.length === 0) {
         ocultar();
         return;
@@ -349,6 +351,7 @@
 
       if (!valor) {
         ocultar();
+        ultimasCoincidencias = [];
         return;
       }
 
@@ -361,6 +364,19 @@
           .then(function (datos) { pintar(datos.coincidencias); })
           .catch(function () { /* sesion expirada u otro fallo: no romper el formulario */ });
       }, 200);
+    });
+
+    input.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter") return;
+      // Si queda una sola sugerencia visible, Enter abre esa ficha directo
+      // (sin depender de que lo tecleado coincida exacto); si hay 0 o
+      // varias, se deja el <form> enviarse normal con lo que se escribió.
+      if (ultimasCoincidencias.length === 1 && !lista.classList.contains("hidden")) {
+        e.preventDefault();
+        input.value = ultimasCoincidencias[0].placa;
+        ocultar();
+        input.form.submit();
+      }
     });
 
     document.addEventListener("click", function (e) {
