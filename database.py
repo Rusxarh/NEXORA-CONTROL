@@ -12,6 +12,7 @@ autorizados (Admin/Operador) a través del bot/dashboard.
 
 import secrets
 import sqlite3
+import time
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 from pathlib import Path
@@ -96,20 +97,46 @@ DURACION_SESION_HORAS = 12
 # Conexión
 # ---------------------------------------------------------------------------
 
+# Prompt 8b punto 3: "database is locked" venía del hilo de Judicial directo
+# (rgm_cola._hilo_judicial_directo) escribiendo cada 0.5-3 s mientras el
+# servidor web también escribe -- SQLite, sin WAL ni busy_timeout, falla
+# al instante con "locked" en vez de esperar a que el otro termine (las
+# escrituras de este proyecto son cortas, casi nunca más de unos ms).
+# BUSY_TIMEOUT_MS: cuánto espera SQLite antes de levantar "locked" de
+# verdad. REINTENTOS_SI_BLOQUEADA/ESPERA_REINTENTO_SEGUNDOS: red de
+# seguridad por si, aun así, sigue bloqueada (ver get_connection).
+BUSY_TIMEOUT_MS = 10_000
+REINTENTOS_SI_BLOQUEADA = 3
+ESPERA_REINTENTO_SEGUNDOS = 0.3
+
+
 @contextmanager
 def get_connection():
     """
     Context manager para obtener una conexión SQLite con:
     - row_factory como sqlite3.Row (acceso a columnas por nombre)
     - claves foráneas habilitadas (SQLite las trae desactivadas por defecto)
-    - commit automático al salir sin errores, rollback si hay excepción
+    - busy_timeout de BUSY_TIMEOUT_MS (Prompt 8b punto 3): si otra conexión
+      tiene la base ocupada escribiendo, espera en vez de fallar al instante
+    - commit automático al salir sin errores, rollback si hay excepción;
+      si el commit sigue topando con "database is locked" después del
+      busy_timeout (muy raro: significaría una escritura larga de verdad),
+      reintenta unas pocas veces con una espera corta antes de rendirse
     """
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     try:
         yield conn
-        conn.commit()
+        for intento in range(REINTENTOS_SI_BLOQUEADA + 1):
+            try:
+                conn.commit()
+                break
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e).lower() or intento == REINTENTOS_SI_BLOQUEADA:
+                    raise
+                time.sleep(ESPERA_REINTENTO_SEGUNDOS * (intento + 1))
     except Exception:
         conn.rollback()
         raise
@@ -179,13 +206,16 @@ CREATE TABLE IF NOT EXISTS eventos_notificacion (
 -- (Etapa 5 §30). El estado "vigente" de una placa se calcula a partir del
 -- snapshot más reciente (ver gestion_masiva.calcular_estado_informacion),
 -- nunca se guarda como columna aparte para no desincronizarse.
+-- Prompt 8b punto 2: SIN FOREIGN KEY a vehiculos.placa a propósito -- una
+-- consulta RGM/Judicial a pedido (Telegram /buscar, Consulta, estudio) de
+-- una placa que todavía no está en la lista debe poder guardar su
+-- snapshot igual (ver _migrar_snapshots_sin_fk para bases ya existentes).
 CREATE TABLE IF NOT EXISTS snapshots_placa (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     placa       TEXT NOT NULL,
     fuente      TEXT NOT NULL,
     datos       TEXT,
-    creado_en   TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
-    FOREIGN KEY (placa) REFERENCES vehiculos (placa)
+    creado_en   TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
 
 -- Etapa 5: Job Manager de estudios masivos. Un estudio agrupa una cola de
@@ -356,6 +386,7 @@ def _migrar_rol_operador():
     """
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     try:
         fila = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='usuarios'"
@@ -606,9 +637,108 @@ def _migrar_backfill_rgm_a_vehiculos():
         )
 
 
+def _migrar_journal_mode_wal():
+    """
+    Prompt 8b punto 3: cambia el journal mode de SQLite a WAL (el modo por
+    defecto, "rollback journal", deja un único escritor que bloquea a
+    cualquier otro de inmediato; WAL permite que lecturas sigan mientras
+    alguien escribe y que escrituras cortas se encolen en vez de chocar).
+    Solo agrega los archivos -wal/-shm junto a MasterPlacas.db: no reescribe
+    ninguna fila, pero de todos modos se copia la base antes (regla de
+    CLAUDE.md), por si el cambio de modo coincidiera con algo ya corrupto.
+    Idempotente: PRAGMA journal_mode ya devuelve 'wal' si esta migración
+    corrió antes, así que no vuelve a copiar nada.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        modo_actual = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        if str(modo_actual).lower() == "wal":
+            return
+        try:
+            import shutil
+
+            shutil.copy2(DB_PATH, DB_PATH.with_name(f"{DB_PATH.stem}.antes-wal-prompt8b.bak"))
+        except Exception as e:
+            print(f"AVISO: no se pudo copiar {DB_PATH.name} antes de activar WAL: {e}")
+        conn.execute("PRAGMA journal_mode = WAL")
+    finally:
+        conn.close()
+
+
+def _migrar_snapshots_sin_fk():
+    """
+    Prompt 8b punto 2: quita la FOREIGN KEY de snapshots_placa.placa hacia
+    vehiculos.placa. Antes, consultar RGM/Judicial de una placa que no
+    está en la lista (por /buscar en Telegram, Consulta o el estudio
+    masivo -- ej. NHP973 en la prueba real) hacía que crear_snapshot
+    reventara con sqlite3.IntegrityError y el ítem se quedara sin
+    completar ni marcar error (500 en /rgm/trabajador/resultado, y la cola
+    mostraba "En curso" para siempre en vez de reflejar el resultado real).
+
+    snapshots_placa ya no necesita esa referencia: es solo un historial de
+    lo que se consultó, por diseño nunca se borra ni se actualiza (ver su
+    comentario en SCHEMA_SQL), y una placa que no esté en vehiculos sigue
+    siendo una placa válida para consultar a pedido. Mismo procedimiento
+    oficial de SQLite para cambios de esquema que _migrar_rol_operador
+    (tabla nueva sin la FK, copiar filas conservando id, DROP + RENAME),
+    con copia de MasterPlacas.db antes (regla de CLAUDE.md).
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+    try:
+        fila = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='snapshots_placa'"
+        ).fetchone()
+        if fila is None or "FOREIGN KEY" not in (fila["sql"] or ""):
+            # Tabla nueva (ya sin FK) o ya migrada antes: nada que hacer.
+            return
+
+        hay_filas = conn.execute("SELECT 1 FROM snapshots_placa LIMIT 1").fetchone() is not None
+        if hay_filas:
+            try:
+                import shutil
+
+                shutil.copy2(DB_PATH, DB_PATH.with_name(f"{DB_PATH.stem}.antes-snapshots-sin-fk-prompt8b.bak"))
+            except Exception as e:
+                print(f"AVISO: no se pudo copiar {DB_PATH.name} antes de quitar la FK de snapshots_placa: {e}")
+
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("BEGIN")
+        conn.execute(
+            """
+            CREATE TABLE snapshots_placa_nueva (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                placa       TEXT NOT NULL,
+                fuente      TEXT NOT NULL,
+                datos       TEXT,
+                creado_en   TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO snapshots_placa_nueva (id, placa, fuente, datos, creado_en)
+            SELECT id, placa, fuente, datos, creado_en FROM snapshots_placa
+            """
+        )
+        conn.execute("DROP TABLE snapshots_placa")
+        conn.execute("ALTER TABLE snapshots_placa_nueva RENAME TO snapshots_placa")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_placa ON snapshots_placa (placa)")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.close()
+
+
 def inicializar_db():
     """Crea las tablas e índices si no existen, y aplica migraciones aditivas
     sobre tablas ya existentes. Es seguro llamarla varias veces."""
+    _migrar_journal_mode_wal()
+    _migrar_snapshots_sin_fk()
     with get_connection() as conn:
         _migrar_rgm_cola_alcance(conn)  # ANTES del executescript: DROP si corresponde
         conn.executescript(SCHEMA_SQL)

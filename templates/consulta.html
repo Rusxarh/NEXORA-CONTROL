@@ -402,6 +402,11 @@
     // otra ruta en el futuro, este es el UNICO lugar que habria que
     // actualizar.
     var EXTENSION_ID_NEXORA_CONNECTOR = "ffmpfdlipjjodljhkheemiajmfjogefb";
+    // Prompt 8b punto 1: versión del Connector que trae este repo (debe
+    // coincidir con manifest.json) -- si el PING devuelve una versión más
+    // vieja, Gabriel sabe que le falta recargar la extensión en
+    // chrome://extensions / brave://extensions.
+    var VERSION_CONNECTOR_ESPERADA = "0.2.0";
     var ESTADOS_TERMINALES = ["CONSULTA_COMPLETADA", "CONSULTA_ERROR", "CONSULTA_CANCELADA"];
     var PAUSA_ENTRE_CONSULTAS_MS = 5000;
     var TIMEOUT_ITEM_MS = 2 * 60 * 1000;
@@ -469,28 +474,50 @@
     // la respuesta nunca llega o chrome.runtime.lastError queda puesto.
     function pingExtension(callback) {
       if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.sendMessage) {
-        callback(false);
+        callback(false, null);
         return;
       }
       try {
         chrome.runtime.sendMessage(EXTENSION_ID_NEXORA_CONNECTOR, { accion: "PING" }, function (respuesta) {
-          callback(!chrome.runtime.lastError && !!respuesta && respuesta.ok === true);
+          var ok = !chrome.runtime.lastError && !!respuesta && respuesta.ok === true;
+          callback(ok, ok ? (respuesta.version || null) : null);
         });
       } catch (e) {
-        callback(false);
+        callback(false, null);
       }
     }
 
+    // Prompt 8b punto 1: compara "0.2.0" contra "0.1.0" por partes
+    // numéricas (no alfabéticamente: "0.10.0" > "0.9.0").
+    function versionMasVieja(version, esperada) {
+      if (!version) return false;
+      var a = String(version).split(".").map(Number);
+      var b = String(esperada).split(".").map(Number);
+      for (var i = 0; i < Math.max(a.length, b.length); i++) {
+        var x = a[i] || 0, y = b[i] || 0;
+        if (x < y) return true;
+        if (x > y) return false;
+      }
+      return false;
+    }
+
     function latido() {
-      pingExtension(function (disponible) {
+      pingExtension(function (disponible, version) {
         connectorDisponible = disponible;
         if (!disponible) {
           elBadgeTrabajador.textContent = "Connector no disponible: revisa la extensión";
           elBadgeTrabajador.className = "badge-danger";
           return; // nunca se manda el latido al servidor si la extensión no respondió
         }
+        var etiquetaVersion = version ? ("Connector v" + version + " conectado") : "Connector conectado (sin versión)";
+        if (versionMasVieja(version, VERSION_CONNECTOR_ESPERADA)) {
+          elBadgeTrabajador.textContent = etiquetaVersion + " — versión vieja, recarga la extensión";
+          elBadgeTrabajador.className = "badge-warning";
+        } else {
+          elBadgeTrabajador.textContent = etiquetaVersion;
+          elBadgeTrabajador.className = "badge-success";
+        }
         fetch("/rgm/trabajador/latido", { method: "POST" })
-          .then(function () { elBadgeTrabajador.textContent = "Atendiendo la cola"; elBadgeTrabajador.className = "badge-success"; })
           .catch(function () { elBadgeTrabajador.textContent = "Sin conexión con el servidor"; elBadgeTrabajador.className = "badge-danger"; });
       });
     }
@@ -798,9 +825,16 @@
       desconectarPuerto();
       if (item) {
         var resultado = resultadoForzado || { rgm: (consultaFinal && consultaFinal.rgm) || null, judicial: (consultaFinal && consultaFinal.judicial) || null };
+        // Prompt 8b punto 1: "plan"/"planMotivo" vienen del Connector
+        // (consultaPublica() en background.js) -- se reenvían tal cual
+        // para que NEXORA los anote en /consulta/diagnostico.
         fetch("/rgm/trabajador/resultado", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ item_id: item, resultado: resultado }),
+          body: JSON.stringify({
+            item_id: item, resultado: resultado,
+            plan: consultaFinal && consultaFinal.plan,
+            plan_motivo: consultaFinal && consultaFinal.planMotivo,
+          }),
         }).catch(function () {});
       }
       setTimeout(function () { limpiarRenderizado(); elEstadoTexto.textContent = "Esperando trabajo (propio o de la cola)…"; }, 4000);

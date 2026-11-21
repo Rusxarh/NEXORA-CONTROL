@@ -140,51 +140,6 @@
     </div>
     {% endif %}
   </section>
-
-  <!-- Visor ampliado (Prompt 5 punto 4): overlay oscuro, Esc o clic fuera
-       para cerrar, flechas (← →) para pasar a la foto de la siguiente
-       lectura, en el mismo orden en que aparecen en la tabla. -->
-  <div id="visorFotoEnVivo" class="hidden fixed inset-0 z-50 bg-black/90 flex items-center justify-center"
-       onclick="if (event.target === this) cerrarVisorFotoEnVivo()">
-    <button type="button" onclick="cerrarVisorFotoEnVivo()" class="absolute top-4 right-4 text-white text-2xl leading-none" aria-label="Cerrar">✕</button>
-    <button type="button" onclick="moverVisorFotoEnVivo(-1)" class="absolute left-4 text-white text-3xl leading-none" aria-label="Foto anterior">‹</button>
-    <img id="visorFotoEnVivoImg" src="" alt="" class="max-h-[85vh] max-w-[85vw] object-contain rounded">
-    <button type="button" onclick="moverVisorFotoEnVivo(1)" class="absolute right-4 text-white text-3xl leading-none" aria-label="Foto siguiente">›</button>
-    <p id="visorFotoEnVivoLeyenda" class="absolute bottom-4 text-white text-xs"></p>
-  </div>
-  <script>
-    (function () {
-      var fotos = Array.prototype.map.call(document.querySelectorAll('[data-foto-en-vivo]'), function (img) {
-        return { url: img.getAttribute('src'), placa: img.getAttribute('data-placa'), hora: img.getAttribute('data-hora') };
-      });
-      var indiceActual = -1;
-      var visor = document.getElementById('visorFotoEnVivo');
-      var visorImg = document.getElementById('visorFotoEnVivoImg');
-      var visorLeyenda = document.getElementById('visorFotoEnVivoLeyenda');
-
-      function abrirVisor(i) {
-        indiceActual = i;
-        visorImg.src = fotos[i].url;
-        visorLeyenda.textContent = fotos[i].placa + ' · ' + fotos[i].hora;
-        visor.classList.remove('hidden');
-      }
-      window.cerrarVisorFotoEnVivo = function () { visor.classList.add('hidden'); };
-      window.moverVisorFotoEnVivo = function (delta) {
-        if (!fotos.length) return;
-        indiceActual = (indiceActual + delta + fotos.length) % fotos.length;
-        abrirVisor(indiceActual);
-      };
-      Array.prototype.forEach.call(document.querySelectorAll('[data-foto-en-vivo]'), function (img, i) {
-        img.addEventListener('click', function () { abrirVisor(i); });
-      });
-      document.addEventListener('keydown', function (e) {
-        if (visor.classList.contains('hidden')) return;
-        if (e.key === 'Escape') cerrarVisorFotoEnVivo();
-        if (e.key === 'ArrowLeft') moverVisorFotoEnVivo(-1);
-        if (e.key === 'ArrowRight') moverVisorFotoEnVivo(1);
-      });
-    })();
-  </script>
   {% endif %}
 
   {# "Buscar placa" se retiró de NEXCAM en FASE 7: su función la cumple
@@ -220,7 +175,15 @@
           {% set ultima = info.vistas[0] %}
           <tr class="table-row">
             <td class="table-cell">
-              {% if ultima.vehiculo %}<a href="{{ ultima.vehiculo }}" target="_blank"><img src="{{ ultima.vehiculo }}" class="h-10 w-14 object-cover rounded border border-zinc-700"></a>{% else %}<div class="foto-vacia h-10 w-14 text-[10px]">Sin foto</div>{% endif %}
+              <!-- Prompt 8b punto 4: miniaturas como En vivo (72x48 y 48x32)
+                   en vez de la foto a tamaño natural -- h-10/w-14 no
+                   existían en app.css, así que la foto no tenía límite de
+                   tamaño. Mismo visor ampliado al tocar. -->
+              <div class="flex gap-1 items-center">
+                {% if ultima.vehiculo %}<img src="{{ ultima.vehiculo }}" data-foto-en-vivo data-placa="{{ placa }}" data-hora="{{ ultima.recibido_en | fecha_co }}" class="h-12 w-[72px] object-cover rounded border border-zinc-700 cursor-pointer" onerror="this.style.display='none'">{% endif %}
+                {% if ultima.snapshot %}<img src="{{ ultima.snapshot }}" data-foto-en-vivo data-placa="{{ placa }}" data-hora="{{ ultima.recibido_en | fecha_co }}" class="h-8 w-12 object-cover rounded border border-zinc-700 cursor-pointer" onerror="this.style.display='none'">{% endif %}
+                {% if not ultima.vehiculo and not ultima.snapshot %}<span class="text-zinc-600 text-xs">Sin foto</span>{% endif %}
+              </div>
             </td>
             <td class="table-cell font-mono font-semibold text-zinc-100">{{ placa }}</td>
             <td class="table-cell">{% if info.tipo == 'exacta' %}<span class="badge-success">Exacta</span>{% else %}<span class="badge-warning">Probable</span>{% endif %}</td>
@@ -336,6 +299,54 @@
     {% endif %}
   </section>
   {% endif %}
+
+  <!-- Visor ampliado (Prompt 5 punto 4, extendido a toda la pestaña en el
+       Prompt 8b punto 4): overlay oscuro, Esc o clic fuera para cerrar,
+       flechas (← →) para pasar a la foto de la siguiente lectura, en el
+       mismo orden en que aparecen en la tabla. Fuera de los bloques de
+       pestaña a propósito: así sirve tanto para "En vivo" como para
+       "Ya vistas" sin duplicar el visor ni el script. -->
+  <div id="visorFotoEnVivo" class="hidden fixed inset-0 z-50 bg-black/90 flex items-center justify-center"
+       onclick="if (event.target === this) cerrarVisorFotoEnVivo()">
+    <button type="button" onclick="cerrarVisorFotoEnVivo()" class="absolute top-4 right-4 text-white text-2xl leading-none" aria-label="Cerrar">✕</button>
+    <button type="button" onclick="moverVisorFotoEnVivo(-1)" class="absolute left-4 text-white text-3xl leading-none" aria-label="Foto anterior">‹</button>
+    <img id="visorFotoEnVivoImg" src="" alt="" class="max-h-[85vh] max-w-[85vw] object-contain rounded">
+    <button type="button" onclick="moverVisorFotoEnVivo(1)" class="absolute right-4 text-white text-3xl leading-none" aria-label="Foto siguiente">›</button>
+    <p id="visorFotoEnVivoLeyenda" class="absolute bottom-4 text-white text-xs"></p>
+  </div>
+  <script>
+    (function () {
+      var fotos = Array.prototype.map.call(document.querySelectorAll('[data-foto-en-vivo]'), function (img) {
+        return { url: img.getAttribute('src'), placa: img.getAttribute('data-placa'), hora: img.getAttribute('data-hora') };
+      });
+      var indiceActual = -1;
+      var visor = document.getElementById('visorFotoEnVivo');
+      var visorImg = document.getElementById('visorFotoEnVivoImg');
+      var visorLeyenda = document.getElementById('visorFotoEnVivoLeyenda');
+
+      function abrirVisor(i) {
+        indiceActual = i;
+        visorImg.src = fotos[i].url;
+        visorLeyenda.textContent = fotos[i].placa + ' · ' + fotos[i].hora;
+        visor.classList.remove('hidden');
+      }
+      window.cerrarVisorFotoEnVivo = function () { visor.classList.add('hidden'); };
+      window.moverVisorFotoEnVivo = function (delta) {
+        if (!fotos.length) return;
+        indiceActual = (indiceActual + delta + fotos.length) % fotos.length;
+        abrirVisor(indiceActual);
+      };
+      Array.prototype.forEach.call(document.querySelectorAll('[data-foto-en-vivo]'), function (img, i) {
+        img.addEventListener('click', function () { abrirVisor(i); });
+      });
+      document.addEventListener('keydown', function (e) {
+        if (visor.classList.contains('hidden')) return;
+        if (e.key === 'Escape') cerrarVisorFotoEnVivo();
+        if (e.key === 'ArrowLeft') moverVisorFotoEnVivo(-1);
+        if (e.key === 'ArrowRight') moverVisorFotoEnVivo(1);
+      });
+    })();
+  </script>
 
 </div>
 {% endblock %}

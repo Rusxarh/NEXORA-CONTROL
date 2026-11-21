@@ -50,7 +50,35 @@ async def rgm_resultado(request: Request, usuario_actual: dict = Depends(usuario
         item_id = int(item_id)
     except (TypeError, ValueError):
         return {"ok": False, "motivo": "item_id inválido"}
-    resultado = rgm_cola.completar_item(item_id, b.get("resultado") or {})
+    # Prompt 8b punto 2: nunca un 500 aquí -- si completar_item falla por
+    # lo que sea (antes: IntegrityError de la FK de snapshots_placa en una
+    # placa que no está en vehiculos; cualquier otro fallo futuro queda
+    # igual cubierto), el ítem se marca ERROR con el motivo real en vez de
+    # quedarse EN_CURSO para siempre (eso era lo que la cola de Consulta
+    # mostraba como "se quedó en curso" aunque el portal ya había
+    # respondido: la excepción pasaba por encima de marcar_item_rgm_completado
+    # y de _emitir, así que ni el estado ni el aviso por SSE llegaban).
+    # Prompt 8b punto 1: el Connector manda "plan" ("A" sin pestaña o "B"
+    # con pestaña/ventana) y, si fue "B", "plan_motivo" (por qué no pudo
+    # usar el plan A) -- se deja constancia en /consulta/diagnostico
+    # ("plan A (sin pestaña) OK" / "plan B porque: <motivo exacto>") sin
+    # importar si la consulta terminó bien o en error.
+    plan = b.get("plan")
+    if plan in ("A", "B"):
+        item_previo = db.obtener_item_rgm(item_id)
+        placa_previa = item_previo["placa"] if item_previo else None
+        if plan == "A":
+            db.registrar_diagnostico_rgm("plan A (sin pestaña) OK", item_id, placa_previa)
+        else:
+            db.registrar_diagnostico_rgm(
+                f"plan B porque: {b.get('plan_motivo') or 'motivo no informado'}", item_id, placa_previa
+            )
+
+    try:
+        resultado = rgm_cola.completar_item(item_id, b.get("resultado") or {})
+    except Exception as e:
+        rgm_cola.marcar_error(item_id, f"Error guardando el resultado: {e}")
+        return {"ok": False, "motivo": str(e)}
     return {"ok": True, **resultado}
 
 

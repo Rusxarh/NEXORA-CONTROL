@@ -337,6 +337,87 @@ def test_trabajador_rgm_reserva_completa_y_registra_error(cliente):
     assert r_err.json() == {"ok": True}
 
 
+def test_resultado_de_placa_que_no_esta_en_vehiculos_no_da_500(cliente):
+    """Prompt 8b punto 2: NHP973 pedida por /buscar en Telegram (que no
+    exige que la placa ya esté cargada) terminaba en 500
+    (sqlite3.IntegrityError de la FK de snapshots_placa a vehiculos.placa)
+    y el ítem se quedaba EN_CURSO para siempre -- la cola de Consulta lo
+    mostraba sin avanzar aunque el 'portal' (simulado aquí) ya había
+    respondido. Ahora guarda el snapshot igual y el ítem queda OK."""
+    admin = _crear_admin("Admin RGM SinVehiculo", "admin.rgmsinveh")
+    _login_web(cliente, "admin.rgmsinveh")
+
+    item = rgm_cola.solicitar_consulta("NHP973", "RGM", "telegram", admin["id"])["item"]
+    assert item["placa"] == "NHP973"
+
+    r_sig = cliente.post("/rgm/trabajador/siguiente")
+    assert r_sig.json()["item"]["id"] == item["id"]
+
+    r_res = cliente.post("/rgm/trabajador/resultado", json={
+        "item_id": item["id"],
+        "resultado": {"rgm": {"estado": "OK", "vehiculo": {}}, "judicial": None},
+    })
+    assert r_res.status_code == 200
+    assert r_res.json()["ok"] is True
+    assert db.obtener_item_rgm(item["id"])["estado"] == "OK"
+    assert db.obtener_ultimo_snapshot_por_fuente("NHP973", "RGM") is not None
+
+
+def test_resultado_con_fallo_inesperado_marca_error_en_vez_de_500(cliente, monkeypatch):
+    """Red de seguridad general del punto 2: cualquier excepción futura
+    dentro de completar_item (no solo la FK ya corregida) tampoco debe
+    devolver 500. Se agotan los MAX_INTENTOS_RGM (mismo patrón que
+    test_error_del_connector_muestra_su_motivo_en_ultimas_20) para que el
+    ítem quede en ERROR final en vez de reintentando en silencio."""
+    admin = _crear_admin("Admin RGM Fallo", "admin.rgmfallo")
+    _crear_placa("FAL999", admin["id"])
+    _login_web(cliente, "admin.rgmfallo")
+
+    cliente.post("/rgm/solicitar", data={"placa": "FAL999", "alcance": "RGM"})
+
+    def _reventar(item_id, resultado):
+        raise RuntimeError("fallo simulado de completar_item")
+
+    monkeypatch.setattr(rgm_cola, "completar_item", _reventar)
+
+    item_id = None
+    for _ in range(db.MAX_INTENTOS_RGM):
+        item = cliente.post("/rgm/trabajador/siguiente").json()["item"]
+        item_id = item["id"]
+        r_res = cliente.post("/rgm/trabajador/resultado", json={"item_id": item_id, "resultado": {"rgm": None, "judicial": None}})
+        assert r_res.status_code == 200
+        assert r_res.json()["ok"] is False
+
+    assert db.obtener_item_rgm(item_id)["estado"] == "ERROR"
+    assert "fallo simulado" in db.obtener_item_rgm(item_id)["error"]
+
+
+def test_resultado_registra_el_plan_usado_en_diagnostico(cliente):
+    """Prompt 8b punto 1: el Connector manda "plan" ("A" sin pestaña o
+    "B" con pestaña/ventana, con "plan_motivo" si fue B) junto con el
+    resultado; /consulta/diagnostico debe reflejar por qué se usó cada
+    uno, sin importar si la propia consulta terminó OK o en error."""
+    admin = _crear_admin("Admin RGM Plan", "admin.rgmplan")
+    _crear_placa("PLN001", admin["id"])
+    _login_web(cliente, "admin.rgmplan")
+
+    cliente.post("/rgm/solicitar", data={"placa": "PLN001", "alcance": "RGM"})
+    item = cliente.post("/rgm/trabajador/siguiente").json()["item"]
+    motivo = "no existe un plan A (fetch sin pestaña) implementado todavía"
+    r = cliente.post("/rgm/trabajador/resultado", json={
+        "item_id": item["id"],
+        "resultado": {"rgm": {"estado": "OK", "vehiculo": {}}, "judicial": None},
+        "plan": "B", "plan_motivo": motivo,
+    })
+    assert r.json()["ok"] is True
+
+    pasos = db.listar_diagnostico_rgm(50)
+    assert any(p["paso"] == f"plan B porque: {motivo}" and p["item_id"] == item["id"] for p in pasos)
+
+    r_diag = cliente.get("/consulta/diagnostico")
+    assert f"plan B porque: {motivo}" in r_diag.text
+
+
 def test_error_del_connector_muestra_su_motivo_en_ultimas_20(cliente):
     """Prueba real del Connector: el timeout de 2 min de una consulta
     externa (o cualquier consulta.errores que mande el Connector) debe

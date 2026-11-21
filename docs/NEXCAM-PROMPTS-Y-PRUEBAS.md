@@ -24,6 +24,7 @@ Orden de trabajo:
 | 1c3 | Prompt 6c (botones lentos, búsqueda en vivo, chat sin usuario) | 16.12, 16.13, 16.21, 16.22 |
 | 1d | Prompt 7 (RGM a pedido + acceso desde internet) | Fase 17 |
 | 1e | Prompt 8 (RGM y Judicial en segundo plano, todo en NEXORA) | Fase 18 |
+| 1e2 | Prompt 8b (RGM sigue abriendo pestaña, 500 FK, database locked, Ya vistas) | Fase 18 de nuevo |
 | 1f | Prompt 9 (Telegram limpio con menú y Volver) | Fase 19 |
 
 ### Regla para todos los reportes de Claude Code
@@ -1049,6 +1050,57 @@ actualiza sola (evento SSE simulado); ninguna llamada a chrome.tabs.update con
 active:true en todo el Connector.
 ```
 
+## Prompt 8b: correcciones de la prueba del Prompt 8 (21/11/2026, 1:20 a. m.)
+
+Resultado: 16.12/16.13 OK (botones en 0,5 s después del arreglo de IPv4), 16.9/16.10 OK, 16.21 OK. Fase 18: **falla, el RGM sigue abriendo la pestaña del portal**. Del log de Gabriel salieron además tres errores:
+- `POST /rgm/trabajador/resultado` → 500, `sqlite3.IntegrityError: FOREIGN KEY constraint failed` en `database.crear_snapshot` (rgm_cola.completar_item, línea 341). Placa NHP973, pedida por Telegram (/buscar) y que NO está en vehiculos: el snapshot no se puede guardar y la consulta termina en "Error".
+- `AVISO: el hilo de Judicial directo tuvo un error inesperado: database is locked`.
+- NEXCAM → Ya vistas muestra la foto a tamaño gigante (sin miniatura).
+
+```text
+Rama nexcam (y el Connector, rama alcance-rgm), sin preguntar (CLAUDE.md). Commit por
+punto, push al final, reporte con "Pruebas para tu visto bueno".
+
+1) RGM SIGUE ABRIENDO PESTAÑA (fase 18 falla):
+   - Primero comprueba qué Connector está cargado: sube la versión del manifest,
+     haz que el Connector la mande en el latido/PING y muestra en Consulta
+     "Connector vX.Y.Z conectado" (y un aviso rojo si es más vieja que la del
+     repo). Así Gabriel sabe si recargó la extensión.
+   - Registra en Consulta → Diagnóstico POR QUÉ el RGM usó pestaña: "plan A (sin
+     pestaña) OK" o "plan B porque: <motivo exacto>" (captcha, desafío anti-bots,
+     error de red, parser sin datos, DOMParser no disponible en el service
+     worker, etc.), con el código HTTP y los primeros 200 caracteres de la
+     respuesta (sin cookies ni tokens).
+   - Corrige la causa para que el plan A funcione de verdad en Brave. Si el portal
+     exige un desafío del navegador, el plan B NO puede abrir una pestaña visible
+     ni activarla: ventana aparte creada con focused:false y state:"minimized"
+     (o fuera de pantalla), pestaña con active:true SOLO dentro de esa ventana,
+     y se cierra al terminar. Verifica que la ventana de NEXORA nunca pierda el foco.
+   - Prueba manual que debes describirle a Gabriel paso a paso (no la hagas tú
+     contra el portal real).
+
+2) SNAPSHOT DE PLACA QUE NO ESTÁ EN LA LISTA (500 FOREIGN KEY): una consulta RGM o
+   Judicial de una placa que no existe en vehiculos (pedida por /buscar, Consulta o
+   estudio) debe guardarse igual. Opción recomendada: crear la fila mínima en
+   vehiculos con estado "consultada" (no activa, no entra a la lista de la cámara,
+   no sale en la tabla de Vehículos salvo con el filtro "Consultadas"), o quitar la
+   FK de snapshots_placa con migración aditiva; elige la más segura, con copia de
+   la base antes, y anótalo. Ningún 500 en /rgm/trabajador/resultado: si algo
+   falla, el ítem queda en Error con el motivo legible y se avisa a quien pidió.
+
+3) "database is locked" (hilo de Judicial directo): todas las conexiones SQLite con
+   timeout/busy_timeout de 10 s y modo WAL (PRAGMA journal_mode=WAL, una vez al
+   arrancar, con copia antes); escrituras cortas; reintento con espera si aún así
+   sale "locked". Prueba con dos hilos escribiendo a la vez.
+
+4) NEXCAM → Ya vistas: la foto sale gigante. Miniaturas como En vivo (72×48 y 48×32)
+   con el mismo visor ampliado al tocar.
+
+5) Consulta, cola y "Últimas 20": confirma que el estado cambia solo (Pendiente →
+   En curso → OK/Error) sin pulsar Actualizar; en la captura de Gabriel LRY517 se
+   quedó "En curso" mientras el portal ya había respondido.
+```
+
 ## Prompt 9: Telegram limpio, todo por menú y paneles que se cierran con "Volver"
 
 Pedido de Gabriel (20/11/2026): que no aparezca el menú escrito (la lista "📊 Estado: teléfonos…, 🕒 Últimas: …"); que todo sea por botones; y que lo que él abre (Últimas, Estado, Buscar, Ficha…) se cierre con "Volver" y desaparezca del chat, para que siempre queden a la vista las cosas importantes: las alertas con foto y la cámara en vivo.
@@ -1303,4 +1355,8 @@ Antes: recargar el Connector en `brave://extensions` y reiniciar NEXORA.
 | 17.1, 17.4 | 20/11/2026 | OK | |
 | 16.9, 16.10 (2.ª vez) | 20/11/2026 | Falla | Chat de Telegram sin usuario Admin asignado → asignarlo en NEXCAM → Telegram |
 | 16.12, 16.13 (log) | 20/11/2026 | Falla | TIEMPO_BOTON ack≈21,7 s total≈43,4 s en todos los toques → conexión a Telegram tarda 21 s (IPv6/TCP) → Prompt 6c punto 1 |
+| 16.12, 16.13 (3.ª vez) | 21/11/2026 | OK | ack ≈ 0,5 s tras forzar IPv4 |
+| 16.9, 16.10 (3.ª vez) | 21/11/2026 | OK | |
+| 16.21 | 21/11/2026 | OK | Búsqueda en vivo |
+| 18.1 a 18.8 | 21/11/2026 | Falla | RGM sigue abriendo la pestaña; 500 FK con NHP973; database locked → Prompt 8b |
 | 7.1 | | | |

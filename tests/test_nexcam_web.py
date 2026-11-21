@@ -154,6 +154,34 @@ def test_panel_ya_vistas_refleja_carga_masiva(cliente):
     assert "1 placa(s) cargada(s)" in r_despues.text or "ya vista(s)" in r_despues.text
 
 
+def test_panel_ya_vistas_foto_en_miniatura_con_visor(cliente):
+    """Prompt 8b punto 4: la foto de "Ya vistas" salía a tamaño natural
+    (h-10/w-14 no existen en app.css, así que no tenía límite de tamaño).
+    Ahora usa las mismas clases que "En vivo" (72x48/48x32) y el mismo
+    visor ampliado compartido (data-foto-en-vivo), ya no envuelta en un
+    <a target="_blank"> que abría la foto en una pestaña nueva."""
+    import base64
+
+    admin = _crear_admin("Admin Web Seis", "admin.web6")
+    _login_web(cliente, "admin.web6")
+
+    foto = base64.b64encode(b"contenido-jpg-de-prueba").decode("ascii")
+    sesion = {"usuario_id": admin["id"], "nombre": "Admin Web Seis", "device_uuid": "device-miniatura"}
+    nexcam_db.registrar_avistamiento(
+        sesion, "QRS456", "QRS456", "exact", 0.9, None, None, "prueba",
+        None, None, int(datetime.now().timestamp() * 1000), foto, foto,
+    )
+    cliente.post("/vehiculos/carga-masiva", data={"lineas": "QRS456,carro,Carga de prueba"}, follow_redirects=False)
+
+    r = cliente.get("/nexcam?tab=ya-vistas")
+    assert r.status_code == 200
+    assert "data-foto-en-vivo" in r.text
+    assert "h-10 w-14" not in r.text  # las clases viejas sin límite de tamaño
+    assert 'target="_blank"><img' not in r.text  # ya no abre la foto en pestaña nueva
+    assert "h-12 w-[72px]" in r.text
+    assert 'id="visorFotoEnVivo"' in r.text  # el visor existe aunque no esté en la pestaña "En vivo"
+
+
 def test_panel_ocr_sin_confusiones(cliente):
     _crear_admin("Admin Web Cuatro", "admin.web4")
     _login_web(cliente, "admin.web4")

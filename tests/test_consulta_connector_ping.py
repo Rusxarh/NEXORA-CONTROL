@@ -44,10 +44,27 @@ def test_latido_solo_se_manda_si_el_ping_a_la_extension_responde(cliente):
     # cuando el callback diga "disponible"; si no, badge en rojo y ni
     # intenta /rgm/trabajador/latido.
     inicio = js.index("function latido()")
-    cuerpo_latido = js[inicio:inicio + 900]
-    assert "pingExtension(function (disponible)" in cuerpo_latido
+    cuerpo_latido = js[inicio:inicio + 1200]
+    assert "pingExtension(function (disponible, version)" in cuerpo_latido
     assert "Connector no disponible: revisa la extensión" in cuerpo_latido
     assert '/rgm/trabajador/latido' in cuerpo_latido
+
+
+def test_badge_muestra_la_version_del_connector_y_avisa_si_es_vieja(cliente):
+    """Prompt 8b punto 1: el PING ahora devuelve la versión del manifest
+    del Connector; la página debe mostrarla ("Connector vX.Y.Z conectado")
+    y avisar si es más vieja que la que trae este repo."""
+    admin = _crear_admin("Admin Ping4", "admin.ping4")
+    _login_web(cliente, "admin.ping4")
+
+    r = cliente.get("/consulta")
+    js = r.text
+
+    assert "VERSION_CONNECTOR_ESPERADA" in js
+    assert "function versionMasVieja(" in js
+    assert "Connector v\" + version" in js
+    assert "versión vieja, recarga la extensión" in js
+    assert "respuesta.version" in js
 
 
 def test_ciclo_no_reserva_de_la_cola_sin_connector_disponible(cliente):
