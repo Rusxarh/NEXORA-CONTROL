@@ -25,6 +25,7 @@ Orden de trabajo:
 | 1d | Prompt 7 (RGM a pedido + acceso desde internet) | Fase 17 |
 | 1e | Prompt 8 (RGM y Judicial en segundo plano, todo en NEXORA) | Fase 18 |
 | 1e2 | Prompt 8b (RGM sigue abriendo pestaña, 500 FK, database locked, Ya vistas) | Fase 18 de nuevo |
+| 1e3 | Prompt 8c (RGM sin pestaña de verdad, con RGM-PLAN-A.md) | 18.1, 18.9 |
 | 1f | Prompt 9 (Telegram limpio con menú y Volver) | Fase 19 |
 
 ### Regla para todos los reportes de Claude Code
@@ -1101,6 +1102,46 @@ punto, push al final, reporte con "Pruebas para tu visto bueno".
    quedó "En curso" mientras el portal ya había respondido.
 ```
 
+## Prompt 8c: RGM sin pestaña de verdad (plan A) con la especificación de la captura
+
+El Prompt 8b dejó el RGM en una ventana aparte sin foco (plan B) y dijo que el plan A no se podía construir sin una captura. La captura ya está analizada y convertida en una especificación sin datos reales: `RGM-PLAN-A.md` (en la misma carpeta que este documento; en el Proyecto: `claude/rgm-plan-a-especificacion.md`).
+
+```text
+Connector (rama alcance-rgm) y NEXORA-CONTROL (rama nexcam), sin preguntar (CLAUDE.md).
+Lee "C:\Users\Rus\Documents\NEXORA\PROMPTS Y PRUEBAS DOCS\RGM-PLAN-A.md": es la
+estructura exacta de la consulta real del RGM (campos, cabeceras, formato delta,
+pageRedirect), sacada de la captura de Gabriel y sin datos reales. Con eso:
+1) Implementa el plan A en el service worker del Connector: GET formulario → POST
+   búsqueda → parsear delta (por longitudes) → elegir la fila más reciente → POST
+   detalle → pageRedirect → GET detalle → mismo extractor de content.js sobre ese HTML
+   (DOMParser en un offscreen document). credentials:"include". Una consulta a la vez,
+   mínimo 3 s entre consultas.
+0) URGENTE (prueba del 21/11/2026, 3:11 a. m.): el plan B del 8b FALLA SIEMPRE.
+   Diagnóstico de LRY517 y KPQ749: "error — Invalid value for bounds. Bounds must
+   be at least 50% within visible screen space." chrome.windows.create no acepta
+   ventanas fuera de la pantalla, así que hoy ningún RGM termina. Arréglalo
+   primero: ventana con state:"minimized" y focused:false; si con la ventana
+   minimizada la extracción no avanza en 20 s, reintenta con una ventana normal
+   pequeña (p. ej. 480×360) en una esquina DENTRO de la pantalla (usa
+   chrome.system.display o screen.availWidth/Height), focused:false, y vuelve a
+   enfocar la ventana anterior si Windows le pasa el foco. Nunca más bounds fuera
+   de la pantalla. Prueba automática que valide que los bounds pedidos están
+   ≥ 50 % dentro de la pantalla.
+
+2) Plan B automático (la ventana aparte sin foco que ya hiciste) si: falta
+   __VIEWSTATE, aparece captcha/desafío, el delta no trae la grilla o el detalle no
+   se puede leer. Diagnóstico dice "plan A OK" o "plan B porque: <motivo>".
+3) Pruebas automáticas con respuestas simuladas escritas a mano según la
+   especificación (grilla de 0, 1 y 2 filas; delta con pageRedirect; detalle
+   ficticio). Nunca contra el portal real.
+4) Sube la versión del Connector (v0.3.0) y dile a Gabriel cómo verificarlo:
+   Consulta debe decir "Connector v0.3.0 conectado" y Diagnóstico "plan A OK".
+Además, Prompt 8 punto 2 (sujetos procesales en judicial.js) ya no aplica si Judicial
+va por la API JSON desde el servidor: confírmalo y, si judicial.js ya no se usa,
+déjalo como plan B documentado.
+Push de las dos ramas. Termina con "Pruebas para tu visto bueno".
+```
+
 ## Prompt 9: Telegram limpio, todo por menú y paneles que se cierran con "Volver"
 
 Pedido de Gabriel (20/11/2026): que no aparezca el menú escrito (la lista "📊 Estado: teléfonos…, 🕒 Últimas: …"); que todo sea por botones; y que lo que él abre (Últimas, Estado, Buscar, Ficha…) se cierre con "Volver" y desaparezca del chat, para que siempre queden a la vista las cosas importantes: las alertas con foto y la cámara en vivo.
@@ -1359,4 +1400,6 @@ Antes: recargar el Connector en `brave://extensions` y reiniciar NEXORA.
 | 16.9, 16.10 (3.ª vez) | 21/11/2026 | OK | |
 | 16.21 | 21/11/2026 | OK | Búsqueda en vivo |
 | 18.1 a 18.8 | 21/11/2026 | Falla | RGM sigue abriendo la pestaña; 500 FK con NHP973; database locked → Prompt 8b |
+| 18.9 | 21/11/2026 | OK | Connector v0.2.0 conectado |
+| 18.1 (8b) | 21/11/2026 | Falla | Plan B: "Invalid value for bounds… 50% within visible screen space" → ningún RGM termina → Prompt 8c punto 0 |
 | 7.1 | | | |

@@ -58,17 +58,17 @@ async def rgm_resultado(request: Request, usuario_actual: dict = Depends(usuario
     # mostraba como "se quedó en curso" aunque el portal ya había
     # respondido: la excepción pasaba por encima de marcar_item_rgm_completado
     # y de _emitir, así que ni el estado ni el aviso por SSE llegaban).
-    # Prompt 8b punto 1: el Connector manda "plan" ("A" sin pestaña o "B"
-    # con pestaña/ventana) y, si fue "B", "plan_motivo" (por qué no pudo
-    # usar el plan A) -- se deja constancia en /consulta/diagnostico
-    # ("plan A (sin pestaña) OK" / "plan B porque: <motivo exacto>") sin
-    # importar si la consulta terminó bien o en error.
+    # Prompt 8b/8c: el Connector manda "plan" ("A" sin pestaña o "B" con
+    # pestaña/ventana) y, si fue "B", "plan_motivo" (por qué no pudo usar
+    # el plan A) -- se deja constancia en /consulta/diagnostico ("plan A
+    # OK" / "plan B porque: <motivo exacto>", texto exacto del Prompt 8c
+    # punto 2) sin importar si la consulta terminó bien o en error.
     plan = b.get("plan")
     if plan in ("A", "B"):
         item_previo = db.obtener_item_rgm(item_id)
         placa_previa = item_previo["placa"] if item_previo else None
         if plan == "A":
-            db.registrar_diagnostico_rgm("plan A (sin pestaña) OK", item_id, placa_previa)
+            db.registrar_diagnostico_rgm("plan A OK", item_id, placa_previa)
         else:
             db.registrar_diagnostico_rgm(
                 f"plan B porque: {b.get('plan_motivo') or 'motivo no informado'}", item_id, placa_previa

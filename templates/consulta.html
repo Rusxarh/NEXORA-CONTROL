@@ -406,7 +406,7 @@
     // coincidir con manifest.json) -- si el PING devuelve una versión más
     // vieja, Gabriel sabe que le falta recargar la extensión en
     // chrome://extensions / brave://extensions.
-    var VERSION_CONNECTOR_ESPERADA = "0.2.0";
+    var VERSION_CONNECTOR_ESPERADA = "0.3.0";
     var ESTADOS_TERMINALES = ["CONSULTA_COMPLETADA", "CONSULTA_ERROR", "CONSULTA_CANCELADA"];
     var PAUSA_ENTRE_CONSULTAS_MS = 5000;
     var TIMEOUT_ITEM_MS = 2 * 60 * 1000;
@@ -916,6 +916,14 @@
         .then(function (datos) {
           if (!datos || !datos.item) { setTimeout(ciclo, POLL_COLA_MS); return; }
           var item = datos.item;
+          // Prompt 8c: Judicial YA NO depende de esta pestana -- lo atiende
+          // un hilo propio de NEXORA-CONTROL contra la API real
+          // (judicial_directo.py, rgm_cola._hilo_judicial_directo), que
+          // reserva los items alcance="JUDICIAL" casi al instante. Esta
+          // rama (mandarlo al Connector/judicial.js via una pestana real)
+          // queda como "plan B" documentado para el caso raro de que ese
+          // hilo este caido: no se borra, pero en la practica no deberia
+          // dispararse nunca.
           var mensaje = item.alcance === "JUDICIAL"
             ? { accion: "CONSULTAR_PLACA", alcance: "JUDICIAL", nombre: item.nombre_judicial }
             : { accion: "CONSULTAR_PLACA", alcance: item.alcance, placa: item.placa };

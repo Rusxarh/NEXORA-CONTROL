@@ -418,6 +418,28 @@ def test_resultado_registra_el_plan_usado_en_diagnostico(cliente):
     assert f"plan B porque: {motivo}" in r_diag.text
 
 
+def test_resultado_registra_plan_a_ok(cliente):
+    """Prompt 8c punto 2: texto exacto pedido, "plan A OK" (sin el
+    paréntesis que tenía la versión del Prompt 8b)."""
+    admin = _crear_admin("Admin RGM PlanA", "admin.rgmplana")
+    _crear_placa("PLN002", admin["id"])
+    _login_web(cliente, "admin.rgmplana")
+
+    cliente.post("/rgm/solicitar", data={"placa": "PLN002", "alcance": "RGM"})
+    item = cliente.post("/rgm/trabajador/siguiente").json()["item"]
+    r = cliente.post("/rgm/trabajador/resultado", json={
+        "item_id": item["id"],
+        "resultado": {"rgm": {"estado": "OK", "vehiculo": {}}, "judicial": None},
+        "plan": "A",
+    })
+    assert r.json()["ok"] is True
+
+    pasos = db.listar_diagnostico_rgm(50)
+    assert any(p["paso"] == "plan A OK" and p["item_id"] == item["id"] for p in pasos)
+    r_diag = cliente.get("/consulta/diagnostico")
+    assert "plan A OK" in r_diag.text
+
+
 def test_error_del_connector_muestra_su_motivo_en_ultimas_20(cliente):
     """Prueba real del Connector: el timeout de 2 min de una consulta
     externa (o cualquier consulta.errores que mande el Connector) debe
