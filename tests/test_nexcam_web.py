@@ -57,6 +57,40 @@ def test_panel_telefonos_autorizar_y_revocar(cliente):
     assert dispositivo["revoked"] is True
 
 
+def test_telegram_asignar_usuario_lee_el_formulario_no_la_query(tmp_path, monkeypatch, cliente):
+    """Prompt 6c punto 0: usuario_id no tenía Form(), así que FastAPI lo
+    leía de la query string (siempre vacía) y el selector de NEXCAM ->
+    Telegram nunca guardaba el usuario elegido, por más que se reenviara
+    el formulario."""
+    import nexcam_telegram
+
+    _crear_admin("Admin Web Tele", "admin.web.tele")
+    _login_web(cliente, "admin.web.tele")
+    operador_id = db.crear_usuario(555001, "Operador Tele", "Operador")
+
+    ruta_cfg = tmp_path / "telegram.json"
+    ruta_cfg.write_text(
+        '{"token": "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabc12", '
+        '"chats": [{"id": 777, "nombre": "Chat de prueba", "desde": 0, "usuario_id": null}], '
+        '"modo": "alertas", "silencio": false, "en_vivo": true}'
+    )
+    bot = nexcam_telegram.BotTelegram(ruta_cfg, log=lambda *a: None)
+    bot.activo = True
+    monkeypatch.setattr(nexcam_telegram, "_instancia", bot)
+
+    r = cliente.post(
+        "/nexcam/telegram/777/asignar-usuario", data={"usuario_id": str(operador_id)}, follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert bot._chat(777)["usuario_id"] == operador_id
+
+    r_sin_usuario = cliente.post(
+        "/nexcam/telegram/777/asignar-usuario", data={"usuario_id": ""}, follow_redirects=False,
+    )
+    assert r_sin_usuario.status_code == 303
+    assert bot._chat(777)["usuario_id"] is None
+
+
 def test_panel_buscar_placa_muestra_ficha_y_avistamientos(cliente):
     admin = _crear_admin("Admin Web Dos", "admin.web2")
     _login_web(cliente, "admin.web2")

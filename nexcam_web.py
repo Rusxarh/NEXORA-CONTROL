@@ -12,7 +12,7 @@ aprendizaje OCR, telegram.
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
 from starlette.status import HTTP_303_SEE_OTHER
 
@@ -81,7 +81,7 @@ def nexcam_panel(
 
 
 @router.post("/nexcam/telegram/{chat_id}/asignar-usuario")
-def nexcam_asignar_usuario_telegram(chat_id: int, usuario_id: str = "", usuario_actual: dict = Depends(usuarios.requerir_admin)):
+def nexcam_asignar_usuario_telegram(chat_id: int, usuario_id: str = Form(""), usuario_actual: dict = Depends(usuarios.requerir_admin)):
     bot = nexcam_telegram.instancia()
     if bot is None or not bot.activo:
         return usuarios.redirigir_con_mensaje("/nexcam?tab=telegram", "El bot de Telegram no está activo.", "error")
