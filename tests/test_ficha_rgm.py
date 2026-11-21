@@ -112,3 +112,74 @@ def test_ficha_sin_rgm_muestra_mensaje_vacio(cliente):
     # Prompt 6b punto 2: mensaje vacío accionable, no una frase muerta.
     assert "Sin RGM todavía" in r.text
     assert "🔎 Consultar" in r.text
+
+
+# --------------------------------------------------------------------- Prompt 8 punto 6: tarjetas judiciales
+
+def test_ficha_muestra_tarjetas_judiciales_con_coincidencia_de_acreedor(cliente):
+    admin = _crear_usuario("Admin Ficha Judicial", "Admin", "admin.fichajudicial")
+    db.insertar_placa("JUD777", "carro", admin["id"], None)
+    item_rgm = rgm_cola.solicitar_consulta("JUD777", "RGM", "panel", admin["id"])["item"]
+    rgm_cola.completar_item(item_rgm["id"], {
+        "rgm": {"estado": "OK", "acreedor": {"razon_social": "BANCO FINANDINA S.A. BIC"}}, "judicial": None,
+    })
+    db.crear_snapshot("JUD777", "JUDICIAL", json.dumps({
+        "nombre_consultado": "BANCO FINANDINA SA BIC",
+        "procesos": [{"radicado": "R-FICTICIO-1", "despacho": "Juzgado 3 Civil", "departamento": "ANTIOQUIA",
+                      "fecha_radicacion": "2025-01-01", "fecha_ultima_actuacion": "2026-09-01", "privado": False,
+                      "id_proceso": 55, "sujetos": [{"rol": "Demandante/accionante", "nombre": "BANCO FINANDINA SA BIC"},
+                                                     {"rol": "Demandado", "nombre": "Juan Pérez"}]}],
+    }))
+    _login_web(cliente, "admin.fichajudicial")
+
+    r = cliente.get("/vehiculos/JUD777")
+    assert r.status_code == 200
+    assert "R-FICTICIO-1" in r.text
+    assert "🏦 Demanda la financiera" in r.text
+    assert "Ver proceso" in r.text
+    assert 'data-id-proceso="55"' in r.text
+
+
+def test_ver_proceso_judicial_trae_detalle_y_actuaciones(cliente, monkeypatch):
+    import judicial_directo
+
+    admin = _crear_usuario("Admin VerProceso", "Admin", "admin.verproceso")
+    db.insertar_placa("VPR111", "carro", admin["id"], None)
+    _login_web(cliente, "admin.verproceso")
+
+    monkeypatch.setattr(judicial_directo, "obtener_detalle_proceso",
+                        lambda id_proceso: {"id_proceso": id_proceso, "despacho": "Juzgado Ficticio", "tipo_proceso": "Ejecutivo"})
+    monkeypatch.setattr(judicial_directo, "obtener_actuaciones_proceso",
+                        lambda id_proceso: [{"fecha_actuacion": "2026-01-01", "actuacion": "Auto admisorio"}])
+
+    r = cliente.post("/rgm/judicial/ver-proceso", data={"placa": "VPR111", "id_proceso": 99})
+    assert r.status_code == 200
+    cuerpo = r.json()
+    assert cuerpo["ok"] is True
+    assert cuerpo["detalle"]["despacho"] == "Juzgado Ficticio"
+    assert cuerpo["actuaciones"][0]["actuacion"] == "Auto admisorio"
+    snapshot = db.obtener_ultimo_snapshot_por_fuente("VPR111", "JUDICIAL_DETALLE")
+    assert snapshot is not None
+
+
+def test_ver_proceso_judicial_error_de_red_responde_502(cliente, monkeypatch):
+    import judicial_directo
+
+    admin = _crear_usuario("Admin VerProceso2", "Admin", "admin.verproceso2")
+    db.insertar_placa("VPR222", "carro", admin["id"], None)
+    _login_web(cliente, "admin.verproceso2")
+
+    def _falla(id_proceso):
+        raise judicial_directo.ErrorJudicialDirecto("timeout")
+
+    monkeypatch.setattr(judicial_directo, "obtener_detalle_proceso", _falla)
+
+    r = cliente.post("/rgm/judicial/ver-proceso", data={"placa": "VPR222", "id_proceso": 1})
+    assert r.status_code == 502
+    assert r.json()["ok"] is False
+
+
+def test_rgm_stream_exige_sesion_admin(cliente):
+    r = cliente.get("/rgm/stream", follow_redirects=False)
+    assert r.status_code == 303
+    assert "/login" in r.headers["location"]

@@ -29,6 +29,7 @@ import nexcam_db
 import nexcam_telegram
 import nexcam_web
 import puente
+import rgm_cola
 import rgm_web
 import usuarios
 import vehiculos
@@ -58,6 +59,11 @@ app.include_router(rgm_web.router)
 # el arranque del servidor. Si no hay token válido, queda desactivado y
 # todo lo demás sigue funcionando exactamente igual (ver nexcam_telegram.py).
 nexcam_telegram.iniciar()
+
+# Prompt 8: Judicial ya no depende de la página Consulta ni del Connector
+# -- este hilo (daemon) la consulta directo contra la API real, siempre
+# que NEXORA-CONTROL esté corriendo (ver rgm_cola.py).
+rgm_cola.arrancar_hilo_judicial_directo()
 
 
 # ---------------------------------------------------------------------------

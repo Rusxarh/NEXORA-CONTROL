@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import placa as placa_macro %}
+{% from "_macros.html" import placa as placa_macro, judicial_tarjetas %}
 {% block titulo %}{{ placa }} · Vehículos · NEXORA{% endblock %}
 
 {% block contenido %}
@@ -153,7 +153,15 @@
         {% endif %}
         {% if snapshot_judicial %}
         <p class="text-xs text-zinc-500 mb-1">Consultado: {{ snapshot_judicial.creado_en | fecha_co }}</p>
+        {% if judicial_datos %}
+        {{ judicial_tarjetas(judicial_datos.procesos, vehiculo.placa) }}
+        <details class="mt-2">
+          <summary class="text-xs text-zinc-500 cursor-pointer hover:text-zinc-300">Ver datos originales</summary>
+          <pre class="text-xs font-mono text-zinc-500 whitespace-pre-wrap mt-2">{{ judicial_datos.crudo }}</pre>
+        </details>
+        {% else %}
         <pre class="text-xs font-mono text-zinc-400 whitespace-pre-wrap">{{ snapshot_judicial.datos }}</pre>
+        {% endif %}
         {% else %}
         <p class="text-sm text-zinc-500">Todavía no se han consultado procesos judiciales para esta placa.</p>
         {% endif %}
@@ -239,6 +247,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="/static/js/rgm_tiempo_real.js"></script>
 <script>
   function abrirModalBaja() {
     var checkbox = document.getElementById('checkbox-confirmar');

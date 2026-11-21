@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import judicial_tarjetas %}
 {% block titulo %}Consulta de Placas · NEXORA{% endblock %}
 
 {% block contenido %}
@@ -204,11 +205,34 @@
     <p class="label-field mb-2">Último resultado guardado para {{ q | trim | upper }}</p>
     {% if snapshot_rgm %}
     <p class="text-xs text-zinc-500 mb-1">RGM — {{ snapshot_rgm.creado_en | fecha_co }}</p>
+    {% if rgm_datos %}
+    {% if usuario_actual.rol == 'Admin' and (rgm_datos.acreedor or rgm_datos.deudor_nombre) %}
+    <div class="space-y-1 text-sm mb-2">
+      {% if rgm_datos.acreedor %}<p>🏦 Acreedor: <span class="text-zinc-300">{{ rgm_datos.acreedor }}</span></p>{% endif %}
+      {% if rgm_datos.deudor_nombre %}
+      <p>👤 Deudor: <span class="text-zinc-300">{{ rgm_datos.deudor_nombre }}{% if rgm_datos.deudor_documento %} · {{ rgm_datos.deudor_documento }}{% endif %}{% if rgm_datos.deudor_ciudad %} · {{ rgm_datos.deudor_ciudad }}{% endif %}</span></p>
+      {% endif %}
+    </div>
+    {% endif %}
+    <details class="mb-3">
+      <summary class="text-xs text-zinc-500 cursor-pointer hover:text-zinc-300">Ver datos originales (RGM)</summary>
+      <pre class="text-xs font-mono text-zinc-500 whitespace-pre-wrap mt-2">{{ rgm_datos.crudo }}</pre>
+    </details>
+    {% else %}
     <pre class="text-xs font-mono text-zinc-400 whitespace-pre-wrap mb-3">{{ snapshot_rgm.datos }}</pre>
+    {% endif %}
     {% endif %}
     {% if snapshot_judicial %}
     <p class="text-xs text-zinc-500 mb-1">Judicial — {{ snapshot_judicial.creado_en | fecha_co }}</p>
+    {% if judicial_datos %}
+    {{ judicial_tarjetas(judicial_datos.procesos, q | trim | upper) }}
+    <details class="mt-2">
+      <summary class="text-xs text-zinc-500 cursor-pointer hover:text-zinc-300">Ver datos originales (Judicial)</summary>
+      <pre class="text-xs font-mono text-zinc-500 whitespace-pre-wrap mt-2">{{ judicial_datos.crudo }}</pre>
+    </details>
+    {% else %}
     <pre class="text-xs font-mono text-zinc-400 whitespace-pre-wrap">{{ snapshot_judicial.datos }}</pre>
+    {% endif %}
     {% endif %}
   </section>
   {% endif %}
@@ -279,6 +303,7 @@
 
 </div>
 
+<script src="/static/js/rgm_tiempo_real.js"></script>
 <script>
   // Autocompletado de Consulta: busca SOLO contra la base real (/consulta/autocompletar),
   // sin crear datos nuevos, sin ejecutar RGM ni Judicial. Si la peticion falla o la

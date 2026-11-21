@@ -1414,6 +1414,44 @@ def reservar_siguiente_item_rgm():
         return dict(conn.execute("SELECT * FROM rgm_cola WHERE id = ?", (fila["id"],)).fetchone())
 
 
+def reservar_siguiente_item_rgm_judicial():
+    """
+    Prompt 8: Judicial ya NO depende del Connector/la página Consulta --
+    lo atiende un hilo propio de NEXORA-CONTROL (judicial_directo.py)
+    contra la API real. Misma mecánica que reservar_siguiente_item_rgm
+    pero acotada a alcance='JUDICIAL' (nunca toca ni reserva ítems RGM,
+    que siguen siendo del Connector).
+    """
+    with get_connection() as conn:
+        limite = (datetime.now() - timedelta(minutes=MINUTOS_ABANDONO_ITEM_RGM)).strftime("%Y-%m-%d %H:%M:%S")
+        for colgado in conn.execute(
+            "SELECT id, intentos FROM rgm_cola WHERE alcance = 'JUDICIAL' AND estado = 'EN_CURSO' AND reservado_en < ?",
+            (limite,),
+        ).fetchall():
+            if colgado["intentos"] >= MAX_INTENTOS_RGM:
+                conn.execute(
+                    "UPDATE rgm_cola SET estado = 'ERROR', error = ?, terminado = datetime('now', 'localtime') WHERE id = ?",
+                    ("Abandonada: el hilo de Judicial no reportó el resultado.", colgado["id"]),
+                )
+            else:
+                conn.execute("UPDATE rgm_cola SET estado = 'PENDIENTE', reservado_en = NULL WHERE id = ?", (colgado["id"],))
+
+        fila = conn.execute(
+            "SELECT id FROM rgm_cola WHERE alcance = 'JUDICIAL' AND estado = 'PENDIENTE' "
+            "ORDER BY prioridad ASC, id ASC LIMIT 1"
+        ).fetchone()
+        if fila is None:
+            return None
+        cur = conn.execute(
+            """UPDATE rgm_cola SET estado = 'EN_CURSO', intentos = intentos + 1, reservado_en = datetime('now', 'localtime')
+               WHERE id = ? AND estado = 'PENDIENTE'""",
+            (fila["id"],),
+        )
+        if cur.rowcount == 0:
+            return None
+        return dict(conn.execute("SELECT * FROM rgm_cola WHERE id = ?", (fila["id"],)).fetchone())
+
+
 def marcar_item_rgm_completado(item_id: int):
     with get_connection() as conn:
         conn.execute(

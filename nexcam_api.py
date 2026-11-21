@@ -376,8 +376,11 @@ def ocr_confusions(authorization: Optional[str] = Header(None),
 # Stream en vivo (SSE)
 # ---------------------------------------------------------------------------
 
-@router.get("/app/stream")
-async def app_stream():
+def respuesta_sse() -> StreamingResponse:
+    """Prompt 8 punto 5: extraído para que rgm_web.py también pueda
+    ofrecer un stream SSE (para la página Consulta/ficha, detrás de
+    sesión de Admin) sin duplicar el mecanismo de suscripción -- mismo
+    `_suscriptores_sse`/broadcast() de siempre, un consumidor más."""
     cola: asyncio.Queue = asyncio.Queue(maxsize=200)
     _suscriptores_sse.append(cola)
 
@@ -398,6 +401,11 @@ async def app_stream():
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
+
+
+@router.get("/app/stream")
+async def app_stream():
+    return respuesta_sse()
 
 
 # ---------------------------------------------------------------------------

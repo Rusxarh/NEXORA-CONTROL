@@ -135,6 +135,8 @@ def consulta_vista(
     # el módulo.
     import rgm_cola
 
+    snapshot_rgm = db.obtener_ultimo_snapshot_por_fuente(placa_normalizada, "RGM") if buscado else None
+    snapshot_judicial = db.obtener_ultimo_snapshot_por_fuente(placa_normalizada, "JUDICIAL") if buscado else None
     return templates.TemplateResponse(
         request,
         "consulta.html",
@@ -147,8 +149,10 @@ def consulta_vista(
             "ruta_activa": "consulta",
             "mensaje": mensaje,
             "tipo_mensaje": tipo,
-            "snapshot_rgm": db.obtener_ultimo_snapshot_por_fuente(placa_normalizada, "RGM") if buscado else None,
-            "snapshot_judicial": db.obtener_ultimo_snapshot_por_fuente(placa_normalizada, "JUDICIAL") if buscado else None,
+            "snapshot_rgm": snapshot_rgm,
+            "rgm_datos": _datos_rgm_para_ficha(snapshot_rgm),
+            "snapshot_judicial": snapshot_judicial,
+            "judicial_datos": _datos_judicial_para_vista(snapshot_judicial, snapshot_rgm),
             "cola_activa": db.listar_items_rgm_activos(),
             "ultimos_items_rgm": db.listar_ultimos_items_rgm(20),
             "trabajador_rgm_conectado": rgm_cola.trabajador_conectado(),
@@ -438,6 +442,39 @@ def _datos_rgm_para_ficha(snapshot_rgm: Optional[dict]) -> Optional[dict]:
     }
 
 
+def _datos_judicial_para_vista(snapshot_judicial: Optional[dict], snapshot_rgm: Optional[dict]) -> Optional[dict]:
+    """
+    Prompt 8 punto 6: "Último resultado guardado"/ficha ya NO muestran el
+    JSON crudo de Judicial -- tarjetas legibles (judicial_tarjetas en
+    _macros.html), ordenadas y marcadas con judicial_directo.ordenar_y_marcar_procesos
+    (financiera primero, según el acreedor del RGM de esa misma placa).
+    Si el JSON no se puede leer, devuelve None y la plantilla cae al
+    texto crudo tal cual.
+    """
+    import json
+
+    import judicial_directo
+
+    if not snapshot_judicial:
+        return None
+    try:
+        crudo = json.loads(snapshot_judicial["datos"])
+    except Exception:
+        return None
+
+    acreedor = None
+    if snapshot_rgm:
+        try:
+            acreedor = (json.loads(snapshot_rgm["datos"]).get("acreedor") or {}).get("razon_social")
+        except Exception:
+            acreedor = None
+
+    return {
+        "procesos": judicial_directo.ordenar_y_marcar_procesos(crudo.get("procesos") or [], acreedor),
+        "crudo": snapshot_judicial["datos"],
+    }
+
+
 @router.get("/vehiculos/{placa}")
 def vehiculo_ficha_vista(
     request: Request,
@@ -454,6 +491,7 @@ def vehiculo_ficha_vista(
     grado_placa = camara.calcular_grado_placa(vehiculo["fecha_ingreso"]) if vehiculo else None
     vistas = nexcam_db.vistas_de([placa_normalizada]).get(placa_normalizada)
     snapshot_rgm = db.obtener_ultimo_snapshot_por_fuente(placa_normalizada, "RGM")
+    snapshot_judicial = db.obtener_ultimo_snapshot_por_fuente(placa_normalizada, "JUDICIAL")
 
     return templates.TemplateResponse(
         request,
@@ -468,7 +506,8 @@ def vehiculo_ficha_vista(
             "avistamientos": (vistas or {}).get("vistas", []),
             "snapshot_rgm": snapshot_rgm,
             "rgm_datos": _datos_rgm_para_ficha(snapshot_rgm),
-            "snapshot_judicial": db.obtener_ultimo_snapshot_por_fuente(placa_normalizada, "JUDICIAL"),
+            "snapshot_judicial": snapshot_judicial,
+            "judicial_datos": _datos_judicial_para_vista(snapshot_judicial, snapshot_rgm),
             "logs": db.listar_logs_de_placa(placa_normalizada) if vehiculo else [],
             "mensaje": mensaje,
             "tipo_mensaje": tipo,

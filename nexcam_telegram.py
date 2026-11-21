@@ -1237,22 +1237,43 @@ class BotTelegram:
                 db.registrar_diagnostico_rgm("aviso fallido", item_id, placa, f"chat_id={chat_id}: {e}")
 
     def _texto_resultado_judicial(self, placa: str, resultado: dict, es_admin: bool) -> str:
+        """
+        Prompt 8 punto 6: usa el shape NUEVO de judicial_directo.py
+        (consultaprocesos.ramajudicial.gov.co, API directa -- ya no el
+        de la vieja pestaña del Connector). Los de la financiera primero
+        (judicial_directo.ordenar_y_marcar_procesos, comparando contra el
+        acreedor del último RGM de esta placa), privados sin radicado.
+        """
         if not es_admin:
             return f"📄 <b>Procesos judiciales consultados: {_esc(_fmt_placa(placa))}</b>\nConsulta hecha."
-        if resultado.get("estado") == "PROCESO_PRIVADO":
-            return f"⚖️ <b>{_esc(_fmt_placa(placa))}</b>: el proceso es privado, no se puede abrir."
+
+        import judicial_directo
+
         procesos = resultado.get("procesos") or []
         if not procesos:
             return f"⚖️ <b>{_esc(_fmt_placa(placa))}</b>: no se encontraron procesos judiciales."
+
+        acreedor = None
+        snap_rgm = db.obtener_ultimo_snapshot_por_fuente(placa, "RGM")
+        if snap_rgm:
+            try:
+                acreedor = (json.loads(snap_rgm["datos"]).get("acreedor") or {}).get("razon_social")
+            except Exception:
+                acreedor = None
+        ordenados = judicial_directo.ordenar_y_marcar_procesos(procesos, acreedor)
+
         lineas = [f"⚖️ <b>Procesos judiciales: {_esc(_fmt_placa(placa))}</b> (en prueba: verifica en el portal antes de actuar)"]
-        seleccionado = resultado.get("procesoSeleccionado")
-        if seleccionado and seleccionado.get("radicado"):
-            lineas.append(f"Radicado: <code>{_esc(seleccionado['radicado'])}</code>")
-            for act in (seleccionado.get("actuaciones") or [])[:10]:
-                lineas.append(f"• {_esc(act if isinstance(act, str) else act.get('descripcion', ''))}")
-        else:
-            for proc in procesos[:10]:
-                lineas.append(f"• Radicado <code>{_esc(proc.get('radicado'))}</code>")
+        for p in ordenados[:10]:
+            if p.get("privado"):
+                lineas.append(f"🔒 Proceso privado · {_esc(p.get('despacho') or '—')}")
+                continue
+            marca = "🏦 " if p.get("coincide_acreedor") else ""
+            lineas.append(f"{marca}<code>{_esc(p.get('radicado') or '—')}</code> · {_esc(p.get('despacho') or '—')}"
+                          f" · última actuación {_esc(p.get('fecha_ultima_actuacion') or '—')}")
+            for s in (p.get("sujetos") or [])[:4]:
+                lineas.append(f"  {_esc(s.get('rol') or '')}: {_esc(s.get('nombre') or '')}")
+        if len(ordenados) > 10:
+            lineas.append(f"… y {len(ordenados) - 10} más, ver en la web.")
         return "\n".join(lineas)
 
     # ------------------------------------------------------------ acciones del usuario

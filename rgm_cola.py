@@ -52,10 +52,27 @@ Decisiones de esta fase:
   el origen de creación. Pedir sobre un ítem YA encolado también sube su
   prioridad (`prioridad` en rgm_cola, antes un FIFO puro por `id`) a la
   de quien pide, para no esperar detrás de algo de menor prioridad.
+- Prompt 8 (hallazgos de la captura de red de Gabriel, 20/11/2026):
+  consultaprocesos.ramajudicial.gov.co resultó ser una API JSON pública
+  (sin login/captcha/cookies) -- Judicial YA NO depende del Connector ni
+  de ninguna pestaña: _hilo_judicial_directo (más abajo) la consulta
+  DIRECTO con judicial_directo.py, un hilo propio de NEXORA-CONTROL,
+  reservando SOLO ítems alcance='JUDICIAL' (reservar_siguiente_item_rgm_judicial,
+  nunca toca los de RGM). "COMPLETO" ya no se encola como tal: se resuelve
+  como una RGM (Connector) con encadenar_judicial=True -- al completarse,
+  el Judicial encadenado lo atiende este mismo hilo, no el Connector.
+  RGM sigue siendo del Connector (garantiasmobiliarias.com.co SÍ exige
+  ASP.NET WebForms con VIEWSTATE/tokens -- lo hace el service worker del
+  Connector con fetch, sin pestaña, plan B de pestaña oculta si hiciera
+  falta; ver nexora-connector-rgm-v0.1/background.js rama alcance-rgm).
 """
 
 import json
+import os
 import re
+import sys
+import threading
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -168,6 +185,14 @@ def solicitar_consulta(placa: str, alcance: str, origen: str, usuario_id: int, a
         snap_jud = db.obtener_ultimo_snapshot_por_fuente(placa, "JUDICIAL")
         if snap_rgm and _snapshot_vigente(snap_rgm) and snap_jud and _snapshot_vigente(snap_jud):
             return {"accion": "SNAPSHOT_VIGENTE", "snapshot": {"rgm": snap_rgm, "judicial": snap_jud}}
+        # Prompt 8: Judicial ya no depende del Connector/pestaña (lo
+        # consulta NEXORA mismo contra la API real) -- "COMPLETO" se
+        # resuelve como una RGM (Connector) que al completarse encadena
+        # un Judicial servido por el hilo trabajador de judicial_directo
+        # (ver completar_item e _hilo_judicial_directo más abajo), no
+        # como un ítem "COMPLETO" literal enviado al Connector.
+        return solicitar_consulta(placa, "RGM", origen, usuario_id, avistamiento_id, _encadenado=True,
+                                   chat_id=chat_id, alerta_chat_id=alerta_chat_id, alerta_message_id=alerta_message_id)
     else:  # "RGM"
         snapshot = db.obtener_ultimo_snapshot_por_fuente(placa, "RGM")
         if snapshot and _snapshot_vigente(snapshot) and not _encadenado:
@@ -348,3 +373,72 @@ def marcar_error(item_id: int, mensaje: str):
         avisos = db.listar_avisos_rgm(item_id)
         _emitir("rgm.error", {"item_id": item_id, "placa": item["placa"], "alcance": item["alcance"],
                                "origen": item["origen"], "error": mensaje, "avisos": avisos})
+
+
+# ---------------------------------------------------------------------------
+# Prompt 8: hilo trabajador de Judicial DIRECTO (sin Connector ni pestaña).
+# ---------------------------------------------------------------------------
+
+def _pruebas_activas() -> bool:
+    """Misma salvaguarda que nexcam_telegram._pruebas_activas(): nunca
+    arrancar un hilo que llame a internet de verdad bajo pytest, sin
+    depender solo de que el caller se acuerde de no invocarlo."""
+    return (
+        os.environ.get("NEXORA_PRUEBAS") == "1"
+        or "PYTEST_CURRENT_TEST" in os.environ
+        or "pytest" in sys.modules
+    )
+
+
+def completar_judicial_directo(item_id: int) -> dict:
+    """Consulta judicial_directo.py con el nombre guardado en el ítem y
+    reutiliza completar_item() (snapshot, avisos, diagnóstico, emisión)
+    -- el mismo camino que ya usaba el resultado que mandaba la página
+    Consulta, solo que el "judicial" ahora lo trae NEXORA, no el Connector."""
+    import judicial_directo
+
+    item = db.obtener_item_rgm(item_id)
+    if item is None:
+        raise db.RegistroNoEncontradoError(f"Ítem de cola RGM id={item_id} no existe")
+    nombre = (item.get("nombre_judicial") or "").strip()
+    if not nombre:
+        marcar_error(item_id, "Ítem Judicial sin nombre para consultar.")
+        return {}
+    try:
+        resultado = judicial_directo.consultar_judicial_por_nombre(nombre)
+    except judicial_directo.ErrorJudicialDirecto as e:
+        marcar_error(item_id, str(e))
+        return {}
+    return completar_item(item_id, {"rgm": None, "judicial": resultado})
+
+
+def _ciclo_judicial_directo():
+    item = db.reservar_siguiente_item_rgm_judicial()
+    if item is None:
+        return False
+    db.registrar_diagnostico_rgm("reservado por el hilo Judicial directo", item["id"], item["placa"],
+                                  f"intento {item['intentos']}")
+    try:
+        completar_judicial_directo(item["id"])
+    except Exception as e:
+        marcar_error(item["id"], f"Error interno consultando Judicial: {e}")
+    return True
+
+
+def _hilo_judicial_directo():
+    while True:
+        try:
+            hubo_trabajo = _ciclo_judicial_directo()
+        except Exception as e:
+            print(f"AVISO: el hilo de Judicial directo tuvo un error inesperado: {e}")
+            hubo_trabajo = False
+        time.sleep(0.5 if hubo_trabajo else 3)
+
+
+def arrancar_hilo_judicial_directo():
+    """Llamado una sola vez desde main.py al arrancar NEXORA-CONTROL
+    (mismo patrón que nexcam_telegram.iniciar()): nunca bajo pruebas."""
+    if _pruebas_activas():
+        return
+    hilo = threading.Thread(target=_hilo_judicial_directo, daemon=True, name="nexora-judicial-directo")
+    hilo.start()

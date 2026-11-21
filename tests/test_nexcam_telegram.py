@@ -241,6 +241,31 @@ def test_rgm_resultado_judicial_panel_solo_a_chats_admin(bot):
     assert 556112 not in por_chat
 
 
+def test_texto_judicial_pone_la_financiera_primero_y_marca_privados(bot):
+    """Prompt 8 punto 6: los procesos donde el demandante coincide con el
+    acreedor del RGM van primero, con "🏦 Demanda la financiera"; los
+    privados salen como "🔒 Proceso privado", sin radicado ni botón."""
+    admin = _crear_usuario("Admin Tele70", "Admin", "admin.tele70", telegram_id=556700)
+    db.insertar_placa("JUD999", "carro", admin["id"], None)
+    db.crear_snapshot("JUD999", "RGM", json.dumps({"estado": "OK", "acreedor": {"razon_social": "BANCO FINANDINA SA BIC"}}))
+
+    resultado_judicial = {
+        "procesos": [
+            {"radicado": "R-OTRO", "despacho": "Juzgado 1", "fecha_ultima_actuacion": "2026-01-01",
+             "privado": False, "sujetos": [{"rol": "Demandante", "nombre": "OTRO BANCO"}]},
+            {"radicado": None, "despacho": "Juzgado Privado", "privado": True, "sujetos": []},
+            {"radicado": "R-FINANDINA", "despacho": "Juzgado 2", "fecha_ultima_actuacion": "2026-06-01",
+             "privado": False, "sujetos": [{"rol": "Demandante/accionante", "nombre": "BANCO FINANDINA S.A. BIC"}]},
+        ],
+    }
+    texto = bot._texto_resultado_judicial("JUD999", resultado_judicial, es_admin=True)
+    assert texto.index("R-FINANDINA") < texto.index("R-OTRO")  # la financiera primero
+    assert "🏦 <code>R-FINANDINA</code>" in texto  # marcada
+    assert "<code>R-OTRO</code>" in texto and "🏦 <code>R-OTRO</code>" not in texto  # el otro, sin marca
+    assert "🔒 Proceso privado · Juzgado Privado" in texto
+    assert "Demandante/accionante: BANCO FINANDINA" in texto
+
+
 def test_rgm_resultado_telegram_responde_solo_al_chat_que_pidio_y_filtra_por_rol(bot):
     """El botón 🔎 RGM lo puede usar cualquier chat con usuario asignado
     (pedir no es sensible); el resultado SÍ se filtra según el rol de

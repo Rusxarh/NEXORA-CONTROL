@@ -20,6 +20,8 @@ Orden de trabajo:
 | 4 | Prompt 4 (en NEXDOC) | Fase 15 |
 | 1b | Prompt 5 (después de los 0, 2 y 2b; antes del 3) | Fase 16 |
 | 1c | Prompt 6 (antes del 3) + apps 0.5.4 y 0.5.5 | Fase 16 (16.9 a 16.20) |
+| 1c2 | Prompt 6b (correcciones de la prueba del 6) | 16.9, 16.12, 16.13, 16.17, 16.20 |
+| 1c3 | Prompt 6c (botones lentos, búsqueda en vivo, chat sin usuario) | 16.12, 16.13, 16.21, 16.22 |
 | 1d | Prompt 7 (RGM a pedido + acceso desde internet) | Fase 17 |
 | 1e | Prompt 8 (RGM y Judicial en segundo plano, todo en NEXORA) | Fase 18 |
 | 1f | Prompt 9 (Telegram limpio con menú y Volver) | Fase 19 |
@@ -734,6 +736,125 @@ ficha web con datos bajo la placa; arreglo de RGM viejos aplicado una sola vez;
 el botón responde sin pasar por la cola de alertas.
 ```
 
+## Prompt 6b: correcciones de la prueba del Prompt 6 (20/11/2026)
+
+Resultado: 16.11 OK, 16.18 OK. Fallan o faltan detalles en 16.17, 16.9/16.10, 16.12/16.13 y 16.20.
+
+```text
+Rama nexcam, sin preguntar (CLAUDE.md). Hazlo apenas termines lo que estés haciendo
+(antes del Prompt 9). Commit por punto, push al final, reporte con "Pruebas para tu
+visto bueno" (16.9, 16.12, 16.13, 16.17, 16.20 de nuevo).
+
+1) Vehículos (16.17): la tabla todavía muestra una barra de desplazamiento
+   horizontal blanca. Gabriel quiere las columnas "a justo": que la tabla quepa
+   completa en su caja sin barra a 1280, 1366 y 1440 px (anchos de columna
+   ajustados al contenido, placa y botón Ficha sin cortar, Vehículo en dos líneas
+   si hace falta, fechas más compactas "13/09/2026 10:05 p. m."). Solo por debajo
+   de 1024 px se permite el desplazamiento, y entonces con barra oscura del tema
+   (scrollbar-color / ::-webkit-scrollbar), nunca blanca. Vehículo con mayúscula
+   inicial ("Chevrolet Tracker"). Capturas con Playwright a los 3 anchos.
+
+2) Botón 🔎 RGM en las alertas (16.9/16.10): Gabriel no lo ve. Hoy se oculta si hay
+   RGM de menos de 24 h. Cámbialo: el botón SIEMPRE está en la alerta y en la
+   ficha de Telegram; si ya hay RGM reciente dice "🔄 Actualizar RGM", si no hay,
+   "🔎 Consultar RGM". (Admin; operadores no lo ven.) Revisa también por qué
+   placas de la lista vistas por la cámara (ej. JXO455, cargada 20/11 3:48 a. m.)
+   quedaron sin datos: si el RGM automático no corrió, que la ficha diga
+   "Sin RGM todavía · [Consultar]" y reporta la causa.
+
+3) Últimas y botones lentos (16.12/16.13): Gabriel no nota mejoría. Mide de verdad
+   en su PC, no solo en pruebas: agrega un log de tiempos por botón (recibido de
+   Telegram → respuesta enviada) y reporta los números de 10 toques. Revisa:
+   - getUpdates con long polling real (timeout=25-50) y SIN sleep entre llamadas;
+     si hay un time.sleep o un intervalo fijo de sondeo, quítalo.
+   - que el hilo de getUpdates nunca espere a la base, a fotos ni a envíos;
+     callbacks atendidos en un hilo/pool aparte.
+   - que armar la página de Últimas no haga consultas pesadas (índices en
+     lecturas por fecha; máximo 1 consulta por página).
+   - que las ediciones del mensaje vivo de Últimas no se encolen detrás de las
+     ediciones del paginado.
+   Meta medida: menos de 1 s entre el toque y el cambio en 9 de 10 toques.
+
+4) "🗂️ Ya la viste" tarda en llegar (16.20): envíalo por la cola de alta prioridad
+   apenas se da de alta la placa (no al final de un proceso ni por un trabajo
+   periódico). Meta: menos de 5 s. Reporta cuánto tardaba y cuánto tarda.
+```
+
+## Prompt 6c: botones lentos, búsqueda en vivo y chat sin usuario (prueba del 20/11/2026, 3:35 p. m.)
+
+Resultado: 16.17 OK, 16.20 OK, 17.1 OK, 17.4 OK. 16.9/16.10: el botón RGM no salía porque el chat de Telegram de Gabriel no tenía usuario de NEXORA asignado (`usuario_id` vacío → `es_admin=False`); por eso tampoco veía acreedor ni deudor. Se arregla asignándolo en NEXCAM → Telegram; el punto 3 de abajo evita que vuelva a pasar sin aviso.
+
+```text
+Rama nexcam, sin preguntar (CLAUDE.md). Commit por punto, push al final, reporte con
+"Pruebas para tu visto bueno".
+
+1) CAUSA ENCONTRADA EN EL LOG DE GABRIEL (20/11/2026): todas las líneas dicen
+   TIEMPO_BOTON ack≈21,7 s y total≈43,4 s (= 2 × 21,7 s). 21 s es exactamente el
+   tiempo que Windows espera para darse por vencido al abrir una conexión TCP
+   (3+6+12 s de reintentos). Es decir: CADA llamada a api.telegram.org con
+   urllib.urlopen abre una conexión nueva, primero intenta una dirección que no
+   responde (casi seguro IPv6, que su red no tiene), espera 21 s y luego cae a
+   IPv4. Eso explica la demora de TODO: botones, alertas, "Ya la viste",
+   cámara encendida/apagada.
+   Arreglo (sin dependencias nuevas, solo librería estándar):
+   - Un cliente HTTP propio para Telegram que fuerce IPv4 (resolver
+     api.telegram.org con socket.getaddrinfo(..., family=AF_INET) y conectar a esa
+     IP con SNI/Host correctos, p. ej. http.client.HTTPSConnection con
+     server_hostname, o un parche acotado de getaddrinfo SOLO para ese host) y que
+     REUTILICE la conexión (keep-alive, una conexión por hilo: getUpdates, envíos
+     normales, envíos prioritarios/botones), reconectando si se cae.
+   - Timeout de conexión 5 s y de lectura 35 s (getUpdates) / 15 s (resto).
+   - Configurable TG_FORZAR_IPV4=1 (por defecto sí) por si algún día su red tiene IPv6.
+   - Log por llamada: método, tiempo de conexión y tiempo total (TIEMPO_TG).
+   - Prueba automática con un servidor simulado que solo escucha en IPv4 y un
+     host que también resuelve a una IPv6 inalcanzable: la llamada no debe tardar
+     más de 1 s.
+   - Además: "no se pudo paginar Últimas - HTTP 400": lee la descripción del 400;
+     si es "message is not modified", ignóralo en silencio; si es otro, regístralo
+     con el texto completo.
+   Después de esto, revisa lo de abajo solo si sigue habiendo demora.
+
+1b) BOTONES (refuerzo, 16.12/16.13): grabación de Gabriel: 6 toques
+   seguidos a "◀ Anteriores" → el botón queda "cargando" y solo avanza 1 página
+   ~15 s después. El callback no se responde a tiempo.
+   - answerCallbackQuery ANTES de cualquier otra cosa, en su propio hilo, sin
+     esperar la base ni la cola de envíos. Verifícalo con TIEMPO_BOTON.
+   - Registra en el log toda respuesta 429 (Too Many Requests / retry_after). Si
+     el bot duerme el retry_after en el mismo hilo o cola que atiende botones,
+     sepáralo: las ediciones automáticas (lista en vivo, Últimas en vivo) nunca
+     bloquean respuestas a botones.
+   - Ediciones automáticas: máximo 1 cada 5 s por mensaje y 1 por segundo en todo
+     el chat; con 429 se saltan (la siguiente trae lo último), no se encolan.
+   - Toques repetidos al mismo botón: aplica solo el último (6× Anteriores =
+     avanzar 6 páginas en una sola edición).
+   - Registra el atraso de getUpdates (hora del update vs. hora en que se procesa).
+   Mide 10 toques en la PC de Gabriel y reporta antes/después.
+
+2) BÚSQUEDA EN VIVO (Vehículos y Consulta): mientras Gabriel escribe, sin Enter, la
+   tabla se filtra letra por letra (desde la 1.ª letra; espera de 200 ms entre
+   teclas; endpoint JSON que busca por prefijo y por "contiene", máx. 50
+   resultados, sin recargar la página). Respeta los filtros Todos/Activos/Dados de
+   baja. Enter o clic abre la ficha si queda una sola placa. En Consulta, la caja
+   de placa muestra sugerencias debajo mientras se escribe.
+
+0) BUG (primero, es de una línea): en nexcam_web.py,
+   nexcam_asignar_usuario_telegram recibe `usuario_id: str = ""` sin Form(), así
+   que FastAPI lo lee de la URL y no del formulario: el selector de NEXCAM →
+   Telegram SIEMPRE guarda "Sin usuario" (Gabriel lo intentó varias veces). Cambia a
+   `usuario_id: str = Form("")` y revisa TODAS las rutas POST del proyecto por el
+   mismo error (parámetros de formulario sin Form). Prueba: enviar el formulario
+   con un usuario → queda asignado.
+
+3) CHAT SIN USUARIO: si un chat vinculado no tiene usuario de NEXORA asignado,
+   - en el panel NEXCAM → Telegram sale un aviso amarillo "Este chat no tiene
+     usuario: no verá datos de Admin ni el botón RGM" con el selector a la vista;
+   - el bot le manda UNA vez a ese chat "⚠️ Este chat no tiene usuario de NEXORA
+     asignado: pídele al Admin que lo asigne en el panel (NEXCAM → Telegram)".
+   - Al vincular con /vincular desde un chat cuyo Telegram coincide con el de un
+     usuario, se asigna solo (ya existe); si el único Admin no tiene Telegram
+     registrado, la página de Usuarios lo sugiere.
+```
+
 ## Prompt 7: RGM a pedido que no responde + NEXORA accesible desde internet
 
 Resultado de las pruebas del 18/11/2026: todo OK salvo que el 🔎 RGM pedido desde Telegram a veces no responde (hay latido de Consulta, pero el resultado nunca llega al chat). Y ya toca abrir NEXORA para entrar desde cualquier red.
@@ -822,6 +943,28 @@ Resultado de la grabación de Gabriel (20/11/2026, placa de prueba LRY517) y de 
 - **SELECCIONAR no abre el proceso:** la pestaña Judicial se cierra o la consulta deja de ser "la activa en el motor" cuando la cola sigue, y el detalle nunca llega.
 - **"Último resultado guardado" en Consulta sigue en JSON crudo.**
 
+### Hallazgos de las capturas de red (HAR de Gabriel, 20/11/2026) — reemplazan la "investigación" de los puntos 1 y 4
+
+**Rama Judicial: API JSON pública.** Sin login, sin captcha, sin cookies, con CORS `*`. Base: `https://consultaprocesos.ramajudicial.gov.co:448/api/v2/`
+- `GET Procesos/Consulta/NombreRazonSocial?nombre=<NOMBRE>&tipoPersona=nat&SoloActivos=false&codificacionDespacho=&pagina=1`
+  → `{tipoConsulta, procesos:[{idProceso, idConexion, llaveProceso (radicado), fechaProceso, fechaUltimaActuacion, despacho, departamento, sujetosProcesales, esPrivado, cantFilas}], parametros:{…}, paginacion:{cantidadRegistros, registrosPagina, cantidadPaginas, pagina}}`
+  - `sujetosProcesales` es UN texto separado por `|`: `"Demandante/accionante: X| Demandado/indiciado/causante: Y| Defensor Privado: Z"`. Se parte por `|` y luego por el primer `:`.
+  - En la captura se usó `SoloActivos=true` ("actuaciones recientes"). Para todos los procesos: `false`. Recorrer todas las páginas (`cantidadPaginas`).
+  - Persona jurídica: `tipoPersona=jur` (confírmalo con una prueba manual de una sola consulta).
+- `GET Proceso/Detalle/{idProceso}` → `{idRegProceso, llaveProceso, idConexion, esPrivado, fechaProceso, codDespachoCompleto, despacho, ponente, tipoProceso, claseProceso, subclaseProceso, recurso, ubicacion, contenidoRadicacion, fechaConsulta, ultimaActualizacion}`
+- `GET Proceso/Actuaciones/{idProceso}?pagina=1` → `{actuaciones:[{idRegActuacion, llaveProceso, consActuacion, fechaActuacion, actuacion, anotacion, fechaInicial, fechaFinal, fechaRegistro, codRegla, conDocumentos, cant}], paginacion:{…}}` (40 por página).
+- Probable también `GET Proceso/Sujetos/{idProceso}` (no salió en la captura; si responde, úsalo; si no, basta el texto del listado).
+- `GET Lista/Departamentos` → `[{codigo, nombre}]`.
+
+**Decisión: Judicial lo consulta NEXORA directamente desde el servidor (Python, httpx), sin Connector ni pestañas.** Funciona aunque Brave esté cerrado. Con cuidado: máximo 1 petición cada 1,5 s, timeout de 20 s, 3 reintentos con espera, User-Agent de navegador normal, caché de 24 h por nombre. Si algún día el portal bloquea al servidor (por ejemplo, al pasar a la nube con IP de fuera), queda el plan B: el Connector hace las mismas llamadas con fetch desde su service worker.
+
+**RGM (garantiasmobiliarias.com.co): ASP.NET WebForms con UpdatePanel.** No hay API JSON.
+- Flujo: `GET ConsultaGarantia.aspx` → `POST` asíncrono (`X-MicrosoftAjax: Delta=true`, `__ASYNCPOST=true`) con `__VIEWSTATE`, `__EVENTVALIDATION`, `__VIEWSTATEGENERATOR`, `ctl00$ctl00$hdnCSFK` (token de 64 caracteres), el campo de placa, el radio "Consultas no oficiales" y el botón Consultar → respuesta "delta" con la grilla.
+- Segundo `POST` seleccionando la fila de la grilla → `pageRedirect` a `ResultadoConsultaGarantias.aspx?CodigoGarantia=…&ConsultaOficial=…&FechaInscripcionInicial=…&NombreTipoFormulario=…` → `GET` del HTML del detalle (lo que ya lee content.js).
+- El formulario trae un campo `recaptchaResponse` (vacío en la captura: hoy no se exige, pero puede activarse) y la página usa `?_TSM` (protección anti-bots tipo F5 con cookies del navegador).
+- **Decisión: el RGM lo hace el Connector con fetch desde su service worker** (usa las cookies del navegador de Gabriel; sin pestaña): GET → extraer los campos ocultos → POST consulta → POST selección → GET detalle → mismo parser de content.js sobre el HTML (con DOMParser en un offscreen document si el service worker no tiene DOM). Si una respuesta pide captcha o trae una página de desafío → plan B automático: pestaña inactiva en una ventana aparte que nunca se activa, y aviso en Diagnóstico.
+- Nunca guardar en el repo ni en los logs las cookies, el ViewState ni los tokens.
+
 ```text
 Dos repos, sin preguntar (CLAUDE.md), DESPUÉS del Prompt 7 bloque A:
 - Connector: C:\Users\Rus\Documents\NEXORA\nexora-connector-rgm-v0.1, rama
@@ -834,7 +977,9 @@ respuestas grabadas con datos ficticios.
 Meta de Gabriel: pedir RGM y Judicial desde NEXORA y ver todo en NEXORA, sin que se
 abra, active ni cambie de pestaña nada. Los portales trabajan en segundo plano.
 
-1) JUDICIAL SIN PESTAÑA (investiga primero, luego implementa):
+1) JUDICIAL SIN PESTAÑA: YA INVESTIGADO (ver "Hallazgos de las capturas de red"
+   arriba de este bloque). Implementa la consulta desde el servidor de NEXORA con
+   la API JSON; lo de abajo queda solo como referencia:
    - Con la pestaña del portal abierta a mano, registra en un archivo de
      diagnóstico (no en el repo) qué peticiones de red hace la página
      consultaprocesos.ramajudicial.gov.co al buscar por nombre, al abrir un proceso,
@@ -865,7 +1010,8 @@ abra, active ni cambie de pestaña nada. Los portales trabajan en segundo plano.
      plano). Se guarda como snapshot y se muestra en NEXORA; nunca abre el portal
      al frente.
 
-4) RGM EN SEGUNDO PLANO:
+4) RGM EN SEGUNDO PLANO: YA INVESTIGADO (ver "Hallazgos"). Implementa el fetch
+   desde el service worker del Connector con plan B automático. Referencia:
    - Investiga igual las peticiones de garantiasmobiliarias.com.co (ASP.NET). Si se
      puede consultar por fetch (ViewState) sin captcha ni sesión especial, hazlo sin
      pestaña. Si no, la pestaña RGM se abre inactiva en una ventana aparte y nunca
@@ -1074,6 +1220,8 @@ Antes de cada tanda: reiniciar NEXORA (cerrar la ventana y abrir `iniciar-nexora
 - **16.18** Tocar ⏻ en la app → en menos de 2 s el mensaje de Telegram cambia a "⏹️ Cámara apagada"; al encender, igual.
 - **16.19** App 0.5.5: al día siguiente (o cambiando la fecha del teléfono a mañana), "Hoy" arranca en 0 placas y la tira de abajo queda vacía; el Historial conserva lo de ayer.
 - **16.20** Dar de alta en la web una placa que la cámara ya vio como "sin novedad" → llega "🗂️ Ya la viste" con la foto y la lista de ubicaciones; en la web, el aviso arriba de la ficha.
+- **16.21** Vehículos: escribir "GC" → la tabla se filtra sola sin Enter; "GCT9" → queda GCT 953; Enter abre la ficha.
+- **16.22** Panel NEXCAM → Telegram: un chat sin usuario muestra el aviso amarillo; al asignarle tu usuario Admin, las alertas traen 🔄/🔎 RGM y acreedor/deudor.
 
 **Fase 17: RGM a pedido y acceso desde internet (Prompt 7)**
 - **17.1** Con la cámara viendo una placa de la lista (se encola sola), pulsar 🔎 RGM en su alerta → llega "Consultando… (puesto N)" y luego la alerta se reordena con los datos.
@@ -1143,4 +1291,16 @@ Antes: recargar el Connector en `brave://extensions` y reiniciar NEXORA.
 | 16.14 | 18/11/2026 | OK | Botones 🌙 y ⏻ visibles |
 | 16.15 | 18/11/2026 | OK | Sin placas inventadas de direcciones/cédulas; lee las placas reales escritas en el chat (TSZ716, GWV599), con buen enfoque |
 | 16.1 a 16.3, 16.5, 16.6 | 18/11/2026 | Con cambios | Pasan al Prompt 6 (16.9 a 16.13) |
+| 16.11 | 20/11/2026 | OK | Datos del vehículo bajo la placa |
+| 16.18 | 20/11/2026 | OK | Encender/apagar sin demora |
+| 16.17 | 20/11/2026 | Con cambios | Barra horizontal blanca; columnas a justo → Prompt 6b |
+| 16.9, 16.10 | 20/11/2026 | Falla | No aparece el botón de RGM → Prompt 6b |
+| 16.12, 16.13 | 20/11/2026 | Falla | Sin mejoría en la demora → Prompt 6b |
+| 16.20 | 20/11/2026 | Con cambios | "Ya la viste" llega tarde → Prompt 6b |
+| 16.12, 16.13 (2.ª vez) | 20/11/2026 | Falla | Grabación: 6 toques seguidos a ◀ Anteriores → solo avanzó 1 página en ~15 s; el botón queda "cargando" (callback sin responder) |
+| 16.17 | 20/11/2026 | OK | Pide búsqueda en vivo → 16.21 |
+| 16.20 | 20/11/2026 | OK | |
+| 17.1, 17.4 | 20/11/2026 | OK | |
+| 16.9, 16.10 (2.ª vez) | 20/11/2026 | Falla | Chat de Telegram sin usuario Admin asignado → asignarlo en NEXCAM → Telegram |
+| 16.12, 16.13 (log) | 20/11/2026 | Falla | TIEMPO_BOTON ack≈21,7 s total≈43,4 s en todos los toques → conexión a Telegram tarda 21 s (IPv6/TCP) → Prompt 6c punto 1 |
 | 7.1 | | | |

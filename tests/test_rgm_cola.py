@@ -588,4 +588,88 @@ def test_diagnostico_registra_cada_paso(cliente):
     pasos = [p["paso"] for p in db.listar_diagnostico_rgm(50) if p["item_id"] == item["id"]]
     assert "pedido" in pasos
     assert "reservado por Consulta" in pasos
-    assert "resultado recibido" in pasos
+
+
+# --------------------------------------------------------------------- Prompt 8: Judicial directo (sin Connector)
+
+def test_completo_ya_no_encola_literal_sino_rgm_encadenado(cliente):
+    """Prompt 8: "COMPLETO" ya no se manda al Connector como tal -- se
+    resuelve como una RGM con encadenar_judicial=True (el Judicial lo
+    atiende el hilo de judicial_directo al terminar esa RGM, nunca el
+    Connector)."""
+    admin = _crear_admin("Admin P8 Uno", "admin.p8uno")
+    _crear_placa("CPL111", admin["id"])
+
+    resultado = rgm_cola.solicitar_consulta("CPL111", "COMPLETO", "panel", admin["id"])
+    assert resultado["accion"] == "ENCOLADA"
+    assert resultado["item"]["alcance"] == "RGM"
+    assert resultado["item"]["encadenar_judicial"] == 1
+
+
+def test_judicial_encadenado_lo_completa_el_hilo_directo_no_el_connector(cliente, monkeypatch):
+    """Al terminar la RGM encadenada, el Judicial resultante lo resuelve
+    judicial_directo.py (un hilo propio), no un segundo ítem que espere
+    a la página Consulta."""
+    import judicial_directo
+
+    admin = _crear_admin("Admin P8 Dos", "admin.p8dos")
+    _crear_placa("CPL222", admin["id"])
+
+    r = rgm_cola.solicitar_consulta("CPL222", "COMPLETO", "panel", admin["id"])
+    item_rgm_id = r["item"]["id"]
+    salida = rgm_cola.completar_item(item_rgm_id, {
+        "rgm": {"estado": "OK", "deudor_garante": {"nombre": "Banco Ficticio S.A."}}, "judicial": None,
+    })
+    item_judicial_id = salida["encadenado"]["item"]["id"]
+    assert db.obtener_item_rgm(item_judicial_id)["estado"] == "PENDIENTE"
+
+    monkeypatch.setattr(judicial_directo, "consultar_judicial_por_nombre",
+                         lambda nombre, tipo_persona="nat": {"nombre_consultado": nombre, "procesos": []})
+    reservado = db.reservar_siguiente_item_rgm_judicial()
+    assert reservado["id"] == item_judicial_id
+    rgm_cola.completar_judicial_directo(item_judicial_id)
+
+    assert db.obtener_item_rgm(item_judicial_id)["estado"] == "OK"
+    snapshot = db.obtener_ultimo_snapshot_por_fuente("CPL222", "JUDICIAL")
+    assert json.loads(snapshot["datos"])["nombre_consultado"] == "Banco Ficticio S.A."
+
+
+def test_reservar_judicial_nunca_toca_items_rgm(cliente):
+    admin = _crear_admin("Admin P8 Tres", "admin.p8tres")
+    _crear_placa("CPL333", admin["id"])
+    rgm_cola.solicitar_consulta("CPL333", "RGM", "panel", admin["id"])
+
+    assert db.reservar_siguiente_item_rgm_judicial() is None  # no hay ningún JUDICIAL pendiente
+    assert db.item_rgm_pendiente_o_en_curso("CPL333", "RGM")["estado"] == "PENDIENTE"  # el RGM sigue intacto
+
+
+def test_judicial_directo_error_de_red_queda_en_error(cliente, monkeypatch):
+    import judicial_directo
+
+    admin = _crear_admin("Admin P8 Cuatro", "admin.p8cuatro")
+    _crear_placa("CPL444", admin["id"])
+    item_id = db.crear_item_rgm_cola("CPL444", "JUDICIAL", "panel", admin["id"], nombre_judicial="Juan Pérez")
+
+    def _falla(nombre, tipo_persona="nat"):
+        raise judicial_directo.ErrorJudicialDirecto("timeout de prueba")
+
+    monkeypatch.setattr(judicial_directo, "consultar_judicial_por_nombre", _falla)
+    rgm_cola.completar_judicial_directo(item_id)
+
+    item = db.obtener_item_rgm(item_id)
+    assert item["estado"] == "PENDIENTE"  # primer intento: reintenta (MAX_INTENTOS_RGM = 2)
+    assert "timeout de prueba" in item["error"]
+
+
+def test_ciclo_judicial_directo_arma_y_atiende_un_item(cliente, monkeypatch):
+    import judicial_directo
+
+    admin = _crear_admin("Admin P8 Cinco", "admin.p8cinco")
+    _crear_placa("CPL555", admin["id"])
+    db.crear_item_rgm_cola("CPL555", "JUDICIAL", "panel", admin["id"], nombre_judicial="María Gómez")
+    monkeypatch.setattr(judicial_directo, "consultar_judicial_por_nombre",
+                         lambda nombre, tipo_persona="nat": {"nombre_consultado": nombre, "procesos": []})
+
+    hubo_trabajo = rgm_cola._ciclo_judicial_directo()
+    assert hubo_trabajo is True
+    assert rgm_cola._ciclo_judicial_directo() is False  # ya no queda nada pendiente

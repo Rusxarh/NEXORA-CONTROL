@@ -18,3 +18,39 @@
 <p class="text-xs text-zinc-500 mt-1">{{ ciudad }}</p>
 {% endif %}
 {% endmacro %}
+
+{#
+  Prompt 8 punto 6: tarjetas legibles de procesos judiciales, compartidas
+  entre Consulta y la ficha de Vehículos -- `procesos` ya viene ordenado
+  y marcado por judicial_directo.ordenar_y_marcar_procesos (financiera
+  primero, "coincide_acreedor"); radicados repetidos ya vienen sin
+  duplicar. "Ver proceso" (punto 3) pide el detalle y las actuaciones
+  por AJAX (script en base.html) y las despliega debajo, sin abrir nada
+  fuera de NEXORA.
+#}
+{% macro judicial_tarjetas(procesos, placa_actual) %}
+{% if not procesos %}
+<p class="text-sm text-zinc-500">No se encontraron procesos judiciales.</p>
+{% else %}
+<div class="space-y-3">
+  {% for p in procesos %}
+  {% if p.privado %}
+  <div class="text-sm text-zinc-400">🔒 Proceso privado · {{ p.despacho or '—' }}</div>
+  {% else %}
+  <div class="border border-zinc-800 rounded-lg p-3 text-sm space-y-1">
+    {% if p.coincide_acreedor %}<p class="text-xs font-semibold" style="color: var(--nx-success);">🏦 Demanda la financiera</p>{% endif %}
+    <p class="font-mono text-zinc-100">{{ p.radicado or '—' }}</p>
+    <p class="text-zinc-400 text-xs">{{ p.despacho or '—' }}{% if p.departamento %} ({{ p.departamento }}){% endif %}</p>
+    <p class="text-zinc-500 text-xs">Radicado el {{ p.fecha_radicacion or '—' }} · Última actuación {{ p.fecha_ultima_actuacion or '—' }}</p>
+    {% for s in p.sujetos %}
+    <p class="text-xs"><span class="text-zinc-500">{{ s.rol }}:</span> <span class="text-zinc-300">{{ s.nombre }}</span></p>
+    {% endfor %}
+    <button type="button" class="btn-secondary btn-sm mt-1 boton-ver-proceso"
+            data-placa="{{ placa_actual }}" data-id-proceso="{{ p.id_proceso }}">Ver proceso</button>
+    <div class="detalle-proceso text-xs text-zinc-400 mt-2" style="display:none;"></div>
+  </div>
+  {% endif %}
+  {% endfor %}
+</div>
+{% endif %}
+{% endmacro %}

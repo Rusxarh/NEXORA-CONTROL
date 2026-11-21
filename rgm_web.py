@@ -15,9 +15,13 @@ docs/PLAN-NEXCAM-FASE6-7.md) -- estas 4 rutas son solo API, consumidas
 por el JavaScript de /consulta mientras esa pestaña sigue abierta.
 """
 
+import json
+
 from fastapi import APIRouter, Depends, Form, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 
 import database as db
+import nexcam_api
 import rgm_cola
 import usuarios
 from templates import templates
@@ -83,9 +87,17 @@ def rgm_solicitar(placa: str = Form(...), alcance: str = Form("RGM"), volver: st
     elif resultado["accion"] == "YA_EN_COLA":
         mensaje = f"Ya hay una consulta de {etiqueta} en curso para {placa_normalizada}."
     else:
-        conectado = "sí" if rgm_cola.trabajador_conectado() else "no -- abre la pestaña Consulta en la PC"
+        # Prompt 8: Judicial ya no depende de la pestaña Consulta (lo
+        # atiende un hilo propio de NEXORA) -- solo RGM sigue necesitando
+        # que el Connector esté conectado. Se mira el alcance REAL del
+        # ítem encolado (una "JUDICIAL" pedida sin nombre reciente
+        # encadena una "RGM" primero, ver rgm_cola.solicitar_consulta).
         extra = f" {resultado['mensaje']}" if resultado.get("mensaje") else ""
-        mensaje = f"Consulta de {etiqueta} encolada para {placa_normalizada}.{extra} ¿Hay alguien atendiendo la cola? {conectado}."
+        if resultado["item"]["alcance"] == "JUDICIAL":
+            mensaje = f"Consulta de {etiqueta} encolada para {placa_normalizada}.{extra} NEXORA la atiende sola en segundo plano."
+        else:
+            conectado = "sí" if rgm_cola.trabajador_conectado() else "no -- abre la pestaña Consulta en la PC"
+            mensaje = f"Consulta de {etiqueta} encolada para {placa_normalizada}.{extra} ¿Hay alguien atendiendo la cola de RGM? {conectado}."
 
     return usuarios.redirigir_con_mensaje(destino, mensaje, "info")
 
@@ -108,3 +120,42 @@ def consulta_diagnostico(request: Request, usuario_actual: dict = Depends(usuari
             "pasos": db.listar_diagnostico_rgm(50),
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Prompt 8 punto 5: tiempo real en Consulta/ficha -- stream SSE PROPIO,
+# detrás de sesión de Admin (a diferencia de /app/stream, que no exige
+# sesión porque lo usa la app con Bearer; no se reutiliza esa ruta para
+# no mandar eventos sensibles -- RGM/Judicial -- a quien no tenga sesión
+# web). Mismo broadcast() de siempre (rgm.solicitud/rgm.resultado/rgm.error),
+# un consumidor más.
+# ---------------------------------------------------------------------------
+
+@router.get("/rgm/stream")
+async def rgm_stream(usuario_actual: dict = Depends(usuarios.requerir_admin)):
+    return nexcam_api.respuesta_sse()
+
+
+# ---------------------------------------------------------------------------
+# Prompt 8 punto 3: "Ver proceso" trae detalle + actuaciones de un
+# radicado EN CUALQUIER MOMENTO (la cola puede seguir con otras placas),
+# directo de la API real -- nunca abre el portal al frente. Se llama por
+# AJAX desde las tarjetas de judicial_tarjetas() (_macros.html).
+# ---------------------------------------------------------------------------
+
+@router.post("/rgm/judicial/ver-proceso")
+def rgm_ver_proceso(placa: str = Form(...), id_proceso: int = Form(...),
+                     usuario_actual: dict = Depends(usuarios.requerir_admin)):
+    import judicial_directo
+
+    placa_normalizada = placa.strip().upper()
+    try:
+        detalle = judicial_directo.obtener_detalle_proceso(id_proceso)
+        actuaciones = judicial_directo.obtener_actuaciones_proceso(id_proceso)
+    except judicial_directo.ErrorJudicialDirecto as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=502)
+
+    resultado = {"detalle": detalle, "actuaciones": actuaciones}
+    db.crear_snapshot(placa_normalizada, "JUDICIAL_DETALLE", json.dumps(resultado, ensure_ascii=False))
+    db.registrar_diagnostico_rgm("ver proceso", None, placa_normalizada, f"id_proceso={id_proceso}")
+    return {"ok": True, **resultado}
