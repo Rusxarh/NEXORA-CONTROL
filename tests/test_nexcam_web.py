@@ -91,6 +91,30 @@ def test_telegram_asignar_usuario_lee_el_formulario_no_la_query(tmp_path, monkey
     assert bot._chat(777)["usuario_id"] is None
 
 
+def test_panel_telegram_avisa_chat_sin_usuario(tmp_path, monkeypatch, cliente):
+    """Prompt 6c punto 3: aviso amarillo en NEXCAM -> Telegram para un chat
+    sin usuario de NEXORA, con el selector de asignación a la vista."""
+    import nexcam_telegram
+
+    _crear_admin("Admin Web Tele Aviso", "admin.web.tele.aviso")
+    _login_web(cliente, "admin.web.tele.aviso")
+
+    ruta_cfg = tmp_path / "telegram.json"
+    ruta_cfg.write_text(
+        '{"token": "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabc12", '
+        '"chats": [{"id": 321, "nombre": "Chat Sin Usuario", "desde": 0, "usuario_id": null}], '
+        '"modo": "alertas", "silencio": false, "en_vivo": true}'
+    )
+    bot = nexcam_telegram.BotTelegram(ruta_cfg, log=lambda *a: None)
+    bot.activo = True
+    monkeypatch.setattr(nexcam_telegram, "_instancia", bot)
+
+    r = cliente.get("/nexcam?tab=telegram")
+    assert r.status_code == 200
+    assert "no verá datos de Admin ni el botón RGM" in r.text
+    assert "/nexcam/telegram/321/asignar-usuario" in r.text  # el selector sigue a la vista
+
+
 def test_panel_buscar_placa_muestra_ficha_y_avistamientos(cliente):
     admin = _crear_admin("Admin Web Dos", "admin.web2")
     _login_web(cliente, "admin.web2")

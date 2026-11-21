@@ -310,7 +310,9 @@
               <span class="text-zinc-200">{{ c.usuario_nombre }}</span>
               <span class="badge-neutral ml-1">{{ c.usuario_rol }}</span>
               {% else %}
-              <span class="badge-warning">Sin usuario asignado</span>
+              <div class="rounded-md border border-amber-700/40 bg-amber-900/20 px-2.5 py-1.5 text-amber-300 text-xs max-w-xs">
+                ⚠️ Este chat no tiene usuario: no verá datos de Admin ni el botón RGM.
+              </div>
               {% endif %}
             </td>
             <td class="table-cell text-right">

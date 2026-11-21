@@ -331,12 +331,23 @@ def usuarios_vista(
         for u in lista_usuarios
     ]
 
+    # Prompt 6c punto 3: si el único Admin activo no tiene Telegram
+    # registrado (telegram_id provisional, siempre negativo -- ver
+    # db.telegram_id_provisional), /vincular nunca podrá emparejarlo solo
+    # (compara por telegram_id exacto): se sugiere acá cómo resolverlo a
+    # mano, en vez de dejarlo pasar en silencio.
+    admins_activos = [u for u in lista_usuarios if u["rol"] == "Admin" and u["estado"] == "activo"]
+    admin_sin_telegram = (
+        admins_activos[0] if len(admins_activos) == 1 and admins_activos[0]["telegram_id"] < 0 else None
+    )
+
     return templates.TemplateResponse(
         request,
         "usuarios.html",
         {
             "request": request,
             "usuarios": lista_usuarios,
+            "admin_sin_telegram": admin_sin_telegram,
             "roles_usuario": db.ROLES_USUARIO,
             "usuario_actual": usuario_actual,
             # Reabrir el formulario de "Crear usuario" tras un error, con lo ya escrito.

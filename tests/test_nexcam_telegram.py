@@ -84,6 +84,42 @@ def test_vincular_sin_usuario_nexora_queda_sin_usuario(bot):
     assert bot._usuario_de_chat(777) is None
 
 
+def test_vincular_sin_usuario_ya_marca_el_aviso_como_enviado(bot):
+    """Prompt 6c punto 3: el mensaje de bienvenida de _vincular ya incluye
+    el aviso de 'sin usuario' -- no debe mandarse un segundo mensaje
+    genérico al arrancar."""
+    bot._vincular(777, [bot.codigo], "Chat Sin Usuario")
+    assert bot._chat(777)["aviso_sin_usuario_enviado"] is True
+
+    llamadas_antes = len(bot.llamadas)
+    bot._avisar_chats_sin_usuario_una_vez()
+    assert len(bot.llamadas) == llamadas_antes  # no se repitió
+
+
+def test_avisar_chats_sin_usuario_una_vez_solo_manda_una_vez(bot):
+    """Chat vinculado ANTES de este cambio (sin la marca todavía): recibe
+    el aviso la primera vez que se corre la revisión, nunca más."""
+    bot.cfg["chats"].append({"id": 999888, "nombre": "Chat Viejo", "desde": 0, "usuario_id": None})
+
+    bot._avisar_chats_sin_usuario_una_vez()
+    mensajes = [c for m, c in bot.llamadas if m == "sendMessage" and c["chat_id"] == 999888]
+    assert len(mensajes) == 1
+    assert "no tiene usuario de NEXORA asignado" in mensajes[0]["text"]
+    assert bot._chat(999888)["aviso_sin_usuario_enviado"] is True
+
+    bot._avisar_chats_sin_usuario_una_vez()
+    mensajes_despues = [c for m, c in bot.llamadas if m == "sendMessage" and c["chat_id"] == 999888]
+    assert len(mensajes_despues) == 1  # sigue siendo 1: no se repitió
+
+
+def test_avisar_chats_sin_usuario_no_molesta_a_los_que_ya_tienen(bot):
+    admin = _crear_usuario("Admin Con Chat", "Admin", "admin.conchat", telegram_id=555222)
+    bot.cfg["chats"].append({"id": 555222, "nombre": "Admin Con Chat", "desde": 0, "usuario_id": admin["id"]})
+
+    bot._avisar_chats_sin_usuario_una_vez()
+    assert not any(m == "sendMessage" and c["chat_id"] == 555222 for m, c in bot.llamadas)
+
+
 # --------------------------------------------------------------------- acciones que exigen usuario
 
 def test_agregar_sin_usuario_asignado_pide_asignacion(bot):

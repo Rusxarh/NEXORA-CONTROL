@@ -10,6 +10,15 @@
   <button type="button" class="btn-primary" onclick="abrirModalUsuario()">+ Crear usuario</button>
 </div>
 
+{% if admin_sin_telegram %}
+<div class="rounded-md border border-amber-700/40 bg-amber-900/20 px-4 py-3 text-amber-300 text-sm mb-5">
+  ⚠️ El único Admin activo, <strong>{{ admin_sin_telegram.nombre }}</strong>, no tiene un Telegram ID registrado:
+  <code class="text-xs">/vincular</code> no podrá emparejarlo solo. Pídele que le escriba al bot con
+  <code class="text-xs">/vincular</code> y el código que muestra el panel, y después asígnale ese chat desde
+  <a href="/nexcam?tab=telegram" class="underline hover:text-amber-200">NEXCAM → Telegram</a>.
+</div>
+{% endif %}
+
 <div>
   <!-- Listado de usuarios -->
   <section class="card">

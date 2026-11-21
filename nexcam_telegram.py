@@ -1540,7 +1540,10 @@ class BotTelegram:
         if args and args[0] == self.codigo:
             usuario = db.obtener_usuario_por_telegram_id(chat_id)
             self.cfg["chats"].append({"id": chat_id, "nombre": nombre, "desde": int(time.time() * 1000),
-                                       "usuario_id": usuario["id"] if usuario else None})
+                                       "usuario_id": usuario["id"] if usuario else None,
+                                       # Ya le avisamos abajo en el mensaje de bienvenida (mismo propósito que
+                                       # _avisar_chats_sin_usuario_una_vez): que ese aviso de arranque no se repita.
+                                       "aviso_sin_usuario_enviado": usuario is None})
             self._guardar()
             self.codigo = str(secrets.randbelow(900000) + 100000)
             self.log(f"Telegram: chat vinculado ({nombre}). Nuevo código: {self.codigo}")
@@ -1894,6 +1897,27 @@ class BotTelegram:
         self._guardar()
         return True
 
+    def _avisar_chats_sin_usuario_una_vez(self):
+        """Prompt 6c punto 3: a cada chat vinculado SIN usuario de NEXORA
+        se le avisa UNA sola vez (no en cada reinicio de NEXORA) que le
+        falta un Admin que lo asigne -- cubre tanto chats vinculados antes
+        de este cambio (nunca recibieron ningún aviso) como los nuevos,
+        marcados ya al vincularse (ver _vincular, que manda su propio
+        mensaje de bienvenida con el mismo aviso incluido)."""
+        cambio = False
+        for c in self.cfg["chats"]:
+            if c.get("usuario_id") or c.get("aviso_sin_usuario_enviado"):
+                continue
+            try:
+                self._texto(c["id"], "⚠️ Este chat no tiene usuario de NEXORA asignado: pídele al Admin que lo asigne en el panel (NEXCAM → Telegram).")
+            except Exception as e:
+                self.log(f"Telegram: no se pudo avisar 'sin usuario' a {c.get('nombre') or c['id']} - {e}")
+                continue
+            c["aviso_sin_usuario_enviado"] = True
+            cambio = True
+        if cambio:
+            self._guardar()
+
     def arrancar(self):
         if _pruebas_activas():
             # Salvaguarda explícita (incidente FASE 5): nunca un bot real
@@ -1920,6 +1944,10 @@ class BotTelegram:
                 self._llamar("setMyDescription", {"description": "NEXCAM te avisa cuando una cámara lee una placa de tu lista, con foto del vehículo y ubicación. Muestra en vivo lo que lee cada cámara y te deja cargar la lista del día. Solo responde a chats vinculados."})
             except Exception:
                 pass
+            try:
+                self._avisar_chats_sin_usuario_una_vez()
+            except Exception as e:
+                self.log(f"Telegram: no se pudo avisar a los chats sin usuario - {e}")
         except Exception as e:
             self.log(f"  Telegram: el token no funciona o no hay internet: {e}")
 
