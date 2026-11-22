@@ -172,18 +172,19 @@ async def rgm_stream(usuario_actual: dict = Depends(usuarios.requerir_admin)):
 # ---------------------------------------------------------------------------
 
 @router.post("/rgm/judicial/ver-proceso")
-def rgm_ver_proceso(placa: str = Form(...), id_proceso: int = Form(...),
+def rgm_ver_proceso(placa: str = Form(...), id_proceso: int = Form(...), forzar: bool = Form(False),
                      usuario_actual: dict = Depends(usuarios.requerir_admin)):
     import judicial_directo
 
     placa_normalizada = placa.strip().upper()
     try:
-        detalle = judicial_directo.obtener_detalle_proceso(id_proceso)
-        actuaciones = judicial_directo.obtener_actuaciones_proceso(id_proceso)
+        # Prompt 8d punto 3: cacheado 6 h por id_proceso (antes se guardaba
+        # bajo la fuente fija "JUDICIAL_DETALLE", sin el id -- dos procesos
+        # distintos de la misma placa se pisaban el caché uno al otro).
+        # "forzar" (botón "🔄 Actualizar") lo vuelve a pedir de verdad.
+        resultado = judicial_directo.obtener_detalle_y_actuaciones_cacheado(placa_normalizada, id_proceso, forzar=forzar)
     except judicial_directo.ErrorJudicialDirecto as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=502)
 
-    resultado = {"detalle": detalle, "actuaciones": actuaciones}
-    db.crear_snapshot(placa_normalizada, "JUDICIAL_DETALLE", json.dumps(resultado, ensure_ascii=False))
     db.registrar_diagnostico_rgm("ver proceso", None, placa_normalizada, f"id_proceso={id_proceso}")
     return {"ok": True, **resultado}

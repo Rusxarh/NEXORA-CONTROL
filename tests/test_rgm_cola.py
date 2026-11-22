@@ -776,3 +776,94 @@ def test_ciclo_judicial_directo_arma_y_atiende_un_item(cliente, monkeypatch):
     hubo_trabajo = rgm_cola._ciclo_judicial_directo()
     assert hubo_trabajo is True
     assert rgm_cola._ciclo_judicial_directo() is False  # ya no queda nada pendiente
+
+
+# --------------------------------------------------------------------- Prompt 8d punto 5: ítems colgados
+
+def _envejecer_reserva(item_id, minutos):
+    viejo = (datetime.now() - timedelta(minutes=minutos)).strftime("%Y-%m-%d %H:%M:%S")
+    with db.get_connection() as conn:
+        conn.execute("UPDATE rgm_cola SET reservado_en = ? WHERE id = ?", (viejo, item_id))
+
+
+def test_vigilar_colgados_no_toca_items_en_curso_recientes(cliente):
+    admin = _crear_admin("Admin P8d Uno", "admin.p8duno")
+    _crear_placa("COL111", admin["id"])
+    item = rgm_cola.solicitar_consulta("COL111", "RGM", "panel", admin["id"])["item"]
+    rgm_cola.reservar_siguiente()  # EN_CURSO, reservado_en = ahora
+
+    assert rgm_cola.vigilar_items_en_curso_colgados() == 0
+    assert db.obtener_item_rgm(item["id"])["estado"] == "EN_CURSO"
+
+
+def test_vigilar_colgados_libera_a_pendiente_con_motivo_connector_si_quedan_reintentos(cliente):
+    admin = _crear_admin("Admin P8d Dos", "admin.p8ddos")
+    _crear_placa("COL222", admin["id"])
+    item = rgm_cola.solicitar_consulta("COL222", "RGM", "panel", admin["id"])["item"]
+    rgm_cola.reservar_siguiente()  # intentos=1 (MAX_INTENTOS_RGM=2: todavía le queda un reintento)
+    _envejecer_reserva(item["id"], db.MINUTOS_ABANDONO_ITEM_RGM + 1)
+
+    liberados = rgm_cola.vigilar_items_en_curso_colgados()
+    assert liberados == 1
+    final = db.obtener_item_rgm(item["id"])
+    assert final["estado"] == "PENDIENTE"
+    assert final["error"] == "sin respuesta del Connector"
+
+
+def test_vigilar_colgados_pasa_a_error_tras_agotar_los_reintentos(cliente):
+    admin = _crear_admin("Admin P8d Tres", "admin.p8dtres")
+    _crear_placa("COL333", admin["id"])
+    item = rgm_cola.solicitar_consulta("COL333", "RGM", "panel", admin["id"])["item"]
+
+    rgm_cola.reservar_siguiente()  # intentos=1
+    _envejecer_reserva(item["id"], db.MINUTOS_ABANDONO_ITEM_RGM + 1)
+    rgm_cola.vigilar_items_en_curso_colgados()  # -> PENDIENTE
+    rgm_cola.reservar_siguiente()  # intentos=2 (== MAX_INTENTOS_RGM)
+    _envejecer_reserva(item["id"], db.MINUTOS_ABANDONO_ITEM_RGM + 1)
+
+    rgm_cola.vigilar_items_en_curso_colgados()
+    final = db.obtener_item_rgm(item["id"])
+    assert final["estado"] == "ERROR"
+    assert final["error"] == "sin respuesta del Connector"
+
+
+def test_vigilar_colgados_judicial_usa_motivo_del_hilo_directo_no_del_connector(cliente):
+    admin = _crear_admin("Admin P8d Cuatro", "admin.p8dcuatro")
+    _crear_placa("COL444", admin["id"])
+    item_id = db.crear_item_rgm_cola("COL444", "JUDICIAL", "panel", admin["id"], nombre_judicial="Juan Pérez")
+    db.reservar_siguiente_item_rgm_judicial()
+    _envejecer_reserva(item_id, db.MINUTOS_ABANDONO_ITEM_RGM + 1)
+
+    rgm_cola.vigilar_items_en_curso_colgados()
+    final = db.obtener_item_rgm(item_id)
+    assert final["estado"] == "PENDIENTE"
+    assert final["error"] == "sin respuesta del hilo de Judicial directo"
+
+
+def test_vigilar_colgados_queda_anotado_en_diagnostico(cliente):
+    admin = _crear_admin("Admin P8d Cinco", "admin.p8dcinco")
+    _crear_placa("COL555", admin["id"])
+    item = rgm_cola.solicitar_consulta("COL555", "RGM", "panel", admin["id"])["item"]
+    rgm_cola.reservar_siguiente()
+    _envejecer_reserva(item["id"], db.MINUTOS_ABANDONO_ITEM_RGM + 1)
+
+    rgm_cola.vigilar_items_en_curso_colgados()
+    pasos = [d["paso"] for d in db.listar_diagnostico_rgm(50) if d["item_id"] == item["id"]]
+    assert "error" in pasos
+
+
+def test_ya_no_impide_pedirla_de_nuevo_una_vez_liberada(cliente):
+    """El bug real del Prompt 8d punto 5: NHP973 quedó "En curso" y el
+    aviso "Ya hay una consulta en curso" impedía pedirla de nuevo. Tras
+    liberarse sola, un nuevo pedido debe poder encolarse (o reservarse)
+    normalmente."""
+    admin = _crear_admin("Admin P8d Seis", "admin.p8dseis")
+    _crear_placa("COL666", admin["id"])
+    item = rgm_cola.solicitar_consulta("COL666", "RGM", "panel", admin["id"])["item"]
+    rgm_cola.reservar_siguiente()
+    _envejecer_reserva(item["id"], db.MINUTOS_ABANDONO_ITEM_RGM + 1)
+    rgm_cola.vigilar_items_en_curso_colgados()
+
+    de_nuevo = rgm_cola.solicitar_consulta("COL666", "RGM", "panel", admin["id"])
+    assert de_nuevo["accion"] == "YA_EN_COLA"  # sigue siendo el mismo ítem, pero ya es PENDIENTE, no un limbo
+    assert db.obtener_item_rgm(item["id"])["estado"] == "PENDIENTE"

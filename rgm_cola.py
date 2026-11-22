@@ -442,3 +442,45 @@ def arrancar_hilo_judicial_directo():
         return
     hilo = threading.Thread(target=_hilo_judicial_directo, daemon=True, name="nexora-judicial-directo")
     hilo.start()
+
+
+# ---------------------------------------------------------------------------
+# Prompt 8d punto 5: ítems colgados en EN_CURSO (NHP973 quedó "En curso" más
+# de 7 min y el aviso "Ya hay una consulta en curso" impedía pedirla de
+# nuevo). Antes, la liberación de un ítem EN_CURSO abandonado solo pasaba
+# DENTRO de reservar_siguiente_item_rgm/_judicial -- si nadie volvía a pedir
+# trabajo de la cola (p. ej. porque el único ítem pendiente era justo el
+# colgado), nunca se liberaba. Este hilo corre solo, sin depender de que
+# nadie más llame nada, y reutiliza marcar_error() (que ya sabe decidir
+# PENDIENTE con reintento vs. ERROR final según MAX_INTENTOS_RGM, y ya
+# anota Diagnóstico y avisa por SSE/Telegram si queda en ERROR).
+# ---------------------------------------------------------------------------
+
+VIGILANCIA_COLGADOS_SEGUNDOS = 30
+
+
+def vigilar_items_en_curso_colgados() -> int:
+    colgados = db.listar_items_rgm_en_curso_colgados()
+    for item in colgados:
+        motivo = ("sin respuesta del Connector" if item["alcance"] != "JUDICIAL"
+                  else "sin respuesta del hilo de Judicial directo")
+        marcar_error(item["id"], motivo)
+    return len(colgados)
+
+
+def _hilo_vigilante_colgados():
+    while True:
+        time.sleep(VIGILANCIA_COLGADOS_SEGUNDOS)
+        try:
+            vigilar_items_en_curso_colgados()
+        except Exception as e:
+            print(f"AVISO: el hilo vigilante de ítems colgados tuvo un error inesperado: {e}")
+
+
+def arrancar_hilo_vigilante_colgados():
+    """Llamado una sola vez desde main.py (mismo patrón que
+    arrancar_hilo_judicial_directo): nunca bajo pruebas."""
+    if _pruebas_activas():
+        return
+    hilo = threading.Thread(target=_hilo_vigilante_colgados, daemon=True, name="nexora-vigilante-colgados")
+    hilo.start()

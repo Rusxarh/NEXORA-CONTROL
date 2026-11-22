@@ -186,7 +186,14 @@
             <td class="table-cell text-zinc-300">{{ it.alcance }}</td>
             <td class="table-cell">
               {% if it.estado == 'OK' %}<span class="badge-success">OK</span>
-              {% elif it.estado == 'ERROR' %}<span class="badge-danger" title="{{ it.error or '' }}">Error</span>
+              {% elif it.estado == 'ERROR' %}
+              <span class="badge-danger" title="{{ it.error or '' }}">Error</span>
+              <form method="post" action="/rgm/solicitar" class="inline-block ml-1">
+                <input type="hidden" name="placa" value="{{ it.placa }}">
+                <input type="hidden" name="alcance" value="{{ it.alcance }}">
+                <input type="hidden" name="volver" value="/consulta">
+                <button type="submit" class="btn-secondary btn-sm" title="{{ it.error or '' }}">🔁 Reintentar</button>
+              </form>
               {% elif it.estado == 'EN_CURSO' %}<span class="badge-warning">En curso</span>
               {% else %}<span class="badge-neutral">Pendiente</span>{% endif %}
             </td>

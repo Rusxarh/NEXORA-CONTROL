@@ -277,29 +277,128 @@ def test_rgm_resultado_judicial_panel_solo_a_chats_admin(bot):
     assert 556112 not in por_chat
 
 
-def test_texto_judicial_pone_la_financiera_primero_y_marca_privados(bot):
-    """Prompt 8 punto 6: los procesos donde el demandante coincide con el
-    acreedor del RGM van primero, con "🏦 Demanda la financiera"; los
-    privados salen como "🔒 Proceso privado", sin radicado ni botón."""
+def test_lista_judicial_agrupa_financiera_primero_y_marca_privados(bot):
+    """Prompt 8d punto 2: grupos "🏦 De la financiera"/"📁 Otros" (el
+    demandante que coincide con el acreedor del RGM va en el primer
+    grupo), tarjetas numeradas y fechas dd/mm/aaaa; los privados salen
+    como "🔒 Proceso privado", sin radicado ni número."""
     admin = _crear_usuario("Admin Tele70", "Admin", "admin.tele70", telegram_id=556700)
+    bot._vincular(556700, [bot.codigo], "Admin Tele70")
     db.insertar_placa("JUD999", "carro", admin["id"], None)
     db.crear_snapshot("JUD999", "RGM", json.dumps({"estado": "OK", "acreedor": {"razon_social": "BANCO FINANDINA SA BIC"}}))
+    bot.llamadas.clear()
 
     resultado_judicial = {
         "procesos": [
             {"radicado": "R-OTRO", "despacho": "Juzgado 1", "fecha_ultima_actuacion": "2026-01-01",
-             "privado": False, "sujetos": [{"rol": "Demandante", "nombre": "OTRO BANCO"}]},
-            {"radicado": None, "despacho": "Juzgado Privado", "privado": True, "sujetos": []},
+             "privado": False, "sujetos": [{"rol": "Demandante", "nombre": "OTRO BANCO"}], "id_proceso": 1},
+            {"radicado": None, "despacho": "Juzgado Privado", "privado": True, "sujetos": [], "id_proceso": 2},
             {"radicado": "R-FINANDINA", "despacho": "Juzgado 2", "fecha_ultima_actuacion": "2026-06-01",
-             "privado": False, "sujetos": [{"rol": "Demandante/accionante", "nombre": "BANCO FINANDINA S.A. BIC"}]},
+             "privado": False, "sujetos": [{"rol": "Demandante/accionante", "nombre": "BANCO FINANDINA S.A. BIC"}], "id_proceso": 3},
         ],
     }
-    texto = bot._texto_resultado_judicial("JUD999", resultado_judicial, es_admin=True)
+    bot.on_evento("rgm.resultado", {
+        "item_id": 3, "placa": "JUD999", "alcance": "JUDICIAL", "origen": "panel", "avistamiento_id": None,
+        "resultado": {"rgm": None, "judicial": resultado_judicial},
+    })
+
+    textos = [c["text"] for metodo, c in bot.llamadas if metodo == "sendMessage" and c["chat_id"] == 556700]
+    texto = "\n\n".join(textos)
     assert texto.index("R-FINANDINA") < texto.index("R-OTRO")  # la financiera primero
-    assert "🏦 <code>R-FINANDINA</code>" in texto  # marcada
-    assert "<code>R-OTRO</code>" in texto and "🏦 <code>R-OTRO</code>" not in texto  # el otro, sin marca
+    assert "🏦 De la financiera (1)" in texto
+    assert "📁 Otros (2)" in texto
     assert "🔒 Proceso privado · Juzgado Privado" in texto
-    assert "Demandante/accionante: BANCO FINANDINA" in texto
+    assert "👤 Demandante: Banco Finandina S.A. BIC" in texto
+    assert "01/01/2026" in texto  # fecha corta, nunca "T00:00:00"
+
+
+# --------------------------------------------------------------------- Prompt 8d punto 3: ver proceso / paginar / PDF / volver
+
+def _detalle_falso():
+    return {"detalle": {"radicado": "R-1", "despacho": "Juzgado 1"},
+            "actuaciones": [{"fecha_actuacion": f"2026-0{min(i, 9)}-01", "actuacion": f"Actuación {i}",
+                              "anotacion": "", "con_documentos": False} for i in range(1, 13)]}
+
+
+def test_boton_procver_manda_un_panel_nuevo_con_detalle_y_boton_pdf(bot, monkeypatch):
+    admin = _crear_usuario("Admin Tele80", "Admin", "admin.tele80", telegram_id=556800)
+    bot._vincular(556800, [bot.codigo], "Admin Tele80")
+    bot.llamadas.clear()
+
+    import judicial_directo
+    monkeypatch.setattr(judicial_directo, "obtener_detalle_y_actuaciones_cacheado",
+                         lambda placa, id_proceso, forzar=False: _detalle_falso())
+
+    bot._boton_pulsado({"id": "cbq", "message": {"chat": {"id": 556800}, "message_id": 10}, "data": "procver:5:JUD999"})
+
+    enviados = [c for m, c in bot.llamadas if m == "sendMessage" and c["chat_id"] == 556800]
+    assert len(enviados) == 1
+    texto = enviados[0]["text"]
+    assert "R-1" in texto and "Actuación 10" in texto  # página 1 = las 10 más recientes (12 en total)
+    botones = [b["text"] for fila in enviados[0]["reply_markup"]["inline_keyboard"] for b in fila]
+    assert "📑 Proceso completo (PDF)" in botones
+    assert "⬅️ Volver a la lista" in botones
+    assert "◀ Más antiguas" in botones  # hay una página 2 (12 actuaciones, 10 por página)
+
+
+def test_boton_procpag_edita_el_mismo_mensaje_no_manda_uno_nuevo(bot, monkeypatch):
+    admin = _crear_usuario("Admin Tele81", "Admin", "admin.tele81", telegram_id=556801)
+    bot._vincular(556801, [bot.codigo], "Admin Tele81")
+
+    import judicial_directo
+    monkeypatch.setattr(judicial_directo, "obtener_detalle_y_actuaciones_cacheado",
+                         lambda placa, id_proceso, forzar=False: _detalle_falso())
+    bot.llamadas.clear()
+
+    bot._boton_pulsado({"id": "cbq", "message": {"chat": {"id": 556801}, "message_id": 10}, "data": "procpag:5:JUD999:2"})
+
+    assert not any(m == "sendMessage" for m, c in bot.llamadas)
+    ediciones = [c for m, c in bot.llamadas if m == "editMessageText"]
+    assert len(ediciones) == 1
+    assert ediciones[0]["message_id"] == 10
+    assert "Actuación 12" in ediciones[0]["text"] or "Actuación 11" in ediciones[0]["text"]  # página 2: las más viejas
+
+
+def test_boton_procvolver_borra_el_mensaje(bot):
+    admin = _crear_usuario("Admin Tele82", "Admin", "admin.tele82", telegram_id=556802)
+    bot._vincular(556802, [bot.codigo], "Admin Tele82")
+    bot.llamadas.clear()
+
+    bot._boton_pulsado({"id": "cbq", "message": {"chat": {"id": 556802}, "message_id": 42}, "data": "procvolver"})
+
+    borrados = [c for m, c in bot.llamadas if m == "deleteMessage"]
+    assert borrados == [{"chat_id": 556802, "message_id": 42}]
+
+
+def test_boton_procpdf_genera_y_envia_el_pdf_y_queda_registrado(bot, monkeypatch, tmp_path):
+    admin = _crear_usuario("Admin Tele83", "Admin", "admin.tele83", telegram_id=556803)
+    bot._vincular(556803, [bot.codigo], "Admin Tele83")
+    db.insertar_placa("JUD998", "carro", admin["id"], None)
+    bot.llamadas.clear()
+
+    import judicial_directo
+    import judicial_pdf
+    monkeypatch.setattr(judicial_directo, "obtener_detalle_y_actuaciones_cacheado",
+                         lambda placa, id_proceso, forzar=False: _detalle_falso())
+    monkeypatch.setattr(judicial_pdf, "CARPETA_PDF", tmp_path / "procesos_pdf")
+
+    bot._boton_pulsado({"id": "cbq", "message": {"chat": {"id": 556803}, "message_id": 10}, "data": "procpdf:7:JUD998"})
+
+    documentos = [c for m, c in bot.llamadas if m == "sendDocument"]
+    assert len(documentos) == 1
+    assert documentos[0][0] == 556803  # chat_id, primer argumento posicional
+    guardado = db.obtener_ultimo_pdf_proceso("JUD998", 7)
+    assert guardado is not None and guardado["radicado"] == "R-1"
+
+
+def test_boton_procver_operador_no_recibe_nada(bot):
+    oper = _crear_usuario("Oper Tele84", "Operador", "oper.tele84", telegram_id=556804)
+    bot._vincular(556804, [bot.codigo], "Oper Tele84")
+    bot.llamadas.clear()
+
+    bot._boton_pulsado({"id": "cbq", "message": {"chat": {"id": 556804}, "message_id": 10}, "data": "procver:5:JUD999"})
+
+    assert not any(m in ("sendMessage", "editMessageText", "sendDocument") for m, c in bot.llamadas)
 
 
 def test_rgm_resultado_telegram_responde_solo_al_chat_que_pidio_y_filtra_por_rol(bot):

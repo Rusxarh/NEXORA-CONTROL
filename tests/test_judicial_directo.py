@@ -131,3 +131,57 @@ def test_consultar_judicial_por_nombre_arma_el_shape_para_el_snapshot(monkeypatc
     resultado = jd.consultar_judicial_por_nombre("BANCO FICTICIO X")
     assert resultado["nombre_consultado"] == "BANCO FICTICIO X"
     assert len(resultado["procesos"]) == 1
+
+
+# --------------------------------------------------------------------- Prompt 8d punto 3: cache de detalle/actuaciones
+
+def test_obtener_detalle_y_actuaciones_cacheado_no_repite_la_peticion_dentro_de_6h(cliente, monkeypatch):
+    llamadas = {"n": 0}
+
+    def _get_falso(ruta, params=None):
+        llamadas["n"] += 1
+        if ruta.startswith("Proceso/Detalle"):
+            return {"llaveProceso": "R1", "despacho": "D1"}
+        return {"actuaciones": [], "paginacion": {"cantidadPaginas": 1}}
+
+    monkeypatch.setattr(jd, "_get", _get_falso)
+
+    r1 = jd.obtener_detalle_y_actuaciones_cacheado("GCT953", 10)
+    assert r1["detalle"]["radicado"] == "R1"
+    llamadas_tras_primera = llamadas["n"]
+    assert llamadas_tras_primera > 0
+
+    r2 = jd.obtener_detalle_y_actuaciones_cacheado("GCT953", 10)
+    assert r2 == r1
+    assert llamadas["n"] == llamadas_tras_primera  # no volvió a pedirlo
+
+
+def test_obtener_detalle_y_actuaciones_cacheado_forzar_vuelve_a_pedirlo(cliente, monkeypatch):
+    llamadas = {"n": 0}
+
+    def _get_falso(ruta, params=None):
+        llamadas["n"] += 1
+        if ruta.startswith("Proceso/Detalle"):
+            return {"llaveProceso": "R1"}
+        return {"actuaciones": [], "paginacion": {"cantidadPaginas": 1}}
+
+    monkeypatch.setattr(jd, "_get", _get_falso)
+    jd.obtener_detalle_y_actuaciones_cacheado("GCT953", 10)
+    tras_primera = llamadas["n"]
+    jd.obtener_detalle_y_actuaciones_cacheado("GCT953", 10, forzar=True)
+    assert llamadas["n"] > tras_primera
+
+
+def test_obtener_detalle_y_actuaciones_cacheado_distintos_id_proceso_no_se_pisan(cliente, monkeypatch):
+    def _get_falso(ruta, params=None):
+        if ruta == "Proceso/Detalle/10":
+            return {"llaveProceso": "R10"}
+        if ruta == "Proceso/Detalle/20":
+            return {"llaveProceso": "R20"}
+        return {"actuaciones": [], "paginacion": {"cantidadPaginas": 1}}
+
+    monkeypatch.setattr(jd, "_get", _get_falso)
+    r10 = jd.obtener_detalle_y_actuaciones_cacheado("GCT953", 10)
+    r20 = jd.obtener_detalle_y_actuaciones_cacheado("GCT953", 20)
+    assert r10["detalle"]["radicado"] == "R10"
+    assert r20["detalle"]["radicado"] == "R20"

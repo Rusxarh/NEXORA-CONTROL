@@ -32,6 +32,7 @@ Decisiones de esta fase:
 import re
 import threading
 import time
+from datetime import datetime
 from typing import Optional
 
 BASE_URL = "https://consultaprocesos.ramajudicial.gov.co:448/api/v2"
@@ -210,6 +211,42 @@ def obtener_sujetos_proceso(id_proceso) -> Optional[list]:
         return _parsear_sujetos(lista)
     return [{"rol": s.get("rol") or s.get("tipoSujeto"), "nombre": s.get("nombre") or s.get("razonSocial")}
             for s in lista if (s.get("rol") or s.get("tipoSujeto")) and (s.get("nombre") or s.get("razonSocial"))]
+
+
+VIGENCIA_DETALLE_PROCESO_HORAS = 6
+
+
+def _fuente_detalle_proceso(id_proceso) -> str:
+    return f"JUDICIAL_DETALLE_{id_proceso}"
+
+
+def obtener_detalle_y_actuaciones_cacheado(placa: str, id_proceso, forzar: bool = False) -> dict:
+    """
+    Prompt 8d punto 3: {"detalle": ..., "actuaciones": [...]} de un
+    proceso, cacheado VIGENCIA_DETALLE_PROCESO_HORAS horas en
+    snapshots_placa (fuente "JUDICIAL_DETALLE_<id_proceso>") -- "Ver
+    proceso"/cambiar de página de actuaciones reutiliza el caché; el
+    botón "🔄 Actualizar" pasa forzar=True para pedirlo de nuevo. `placa`
+    es solo la llave de la tabla (snapshots_placa vive por placa); un
+    id_proceso siempre es del mismo proceso real, sin importar la placa
+    desde la que se abrió.
+    """
+    import json
+
+    import database as db
+
+    fuente = _fuente_detalle_proceso(id_proceso)
+    if not forzar:
+        snap = db.obtener_ultimo_snapshot_por_fuente(placa, fuente)
+        if snap:
+            momento = datetime.strptime(str(snap["creado_en"])[:19], "%Y-%m-%d %H:%M:%S")
+            if (datetime.now() - momento).total_seconds() / 3600 < VIGENCIA_DETALLE_PROCESO_HORAS:
+                return json.loads(snap["datos"])
+    detalle = obtener_detalle_proceso(id_proceso)
+    actuaciones = obtener_actuaciones_proceso(id_proceso)
+    resultado = {"detalle": detalle, "actuaciones": actuaciones}
+    db.crear_snapshot(placa, fuente, json.dumps(resultado, ensure_ascii=False))
+    return resultado
 
 
 def consultar_judicial_por_nombre(nombre: str, tipo_persona: str = "nat") -> dict:

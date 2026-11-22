@@ -65,6 +65,11 @@ nexcam_telegram.iniciar()
 # que NEXORA-CONTROL esté corriendo (ver rgm_cola.py).
 rgm_cola.arrancar_hilo_judicial_directo()
 
+# Prompt 8d punto 5: libera solo los ítems EN_CURSO colgados (sin resultado
+# ni heartbeat por más de 3 min), sin depender de que algo más vuelva a
+# pedir trabajo de la cola (ver rgm_cola.py).
+rgm_cola.arrancar_hilo_vigilante_colgados()
+
 
 # ---------------------------------------------------------------------------
 # Traducción de errores de autenticación/autorización a redirects.

@@ -1226,39 +1226,51 @@ class BotTelegram:
             usuario = self._usuario_de_chat(chat_id)
             es_admin = bool(usuario and usuario["rol"] == "Admin" and usuario["estado"] == "activo")
 
-            textos = []
             if rgm_resultado is not None:
-                textos.append(self._texto_ficha_telegram(placa, es_admin=es_admin))
+                texto_ficha = self._texto_ficha_telegram(placa, es_admin=es_admin)
+                botones = [{"text": "📋 Ficha", "callback_data": f"ficha:{placa}"}]
+                if judicial_resultado is None and es_admin:
+                    botones.append({"text": "⚖️ Procesos judiciales", "callback_data": f"rgm_judicial:{placa}"})
+                try:
+                    self._texto(chat_id, texto_ficha, {"reply_markup": {"inline_keyboard": [botones]}})
+                    db.registrar_diagnostico_rgm("aviso enviado", item_id, placa, f"chat_id={chat_id}")
+                except Exception as e:
+                    self.log(f"Telegram: no se pudo avisar rgm.resultado a {chat_id} - {e}")
+                    db.registrar_diagnostico_rgm("aviso fallido", item_id, placa, f"chat_id={chat_id}: {e}")
+
             if judicial_resultado is not None:
-                textos.append(self._texto_resultado_judicial(placa, judicial_resultado, es_admin))
-            texto = "\n\n".join(textos)
+                try:
+                    self._enviar_lista_procesos(chat_id, placa, judicial_resultado, es_admin)
+                    db.registrar_diagnostico_rgm("aviso enviado (procesos)", item_id, placa, f"chat_id={chat_id}")
+                except Exception as e:
+                    self.log(f"Telegram: no se pudo avisar judicial.resultado a {chat_id} - {e}")
+                    db.registrar_diagnostico_rgm("aviso fallido (procesos)", item_id, placa, f"chat_id={chat_id}: {e}")
 
-            botones = [{"text": "📋 Ficha", "callback_data": f"ficha:{placa}"}]
-            if rgm_resultado is not None and judicial_resultado is None and es_admin:
-                botones.append({"text": "⚖️ Procesos judiciales (en prueba)", "callback_data": f"rgm_judicial:{placa}"})
-            try:
-                self._texto(chat_id, texto, {"reply_markup": {"inline_keyboard": [botones]}})
-                db.registrar_diagnostico_rgm("aviso enviado", item_id, placa, f"chat_id={chat_id}")
-            except Exception as e:
-                self.log(f"Telegram: no se pudo avisar rgm.resultado a {chat_id} - {e}")
-                db.registrar_diagnostico_rgm("aviso fallido", item_id, placa, f"chat_id={chat_id}: {e}")
-
-    def _texto_resultado_judicial(self, placa: str, resultado: dict, es_admin: bool) -> str:
+    def _enviar_lista_procesos(self, chat_id, placa: str, resultado: dict, es_admin: bool):
         """
-        Prompt 8 punto 6: usa el shape NUEVO de judicial_directo.py
-        (consultaprocesos.ramajudicial.gov.co, API directa -- ya no el
-        de la vieja pestaña del Connector). Los de la financiera primero
-        (judicial_directo.ordenar_y_marcar_procesos, comparando contra el
-        acreedor del último RGM de esta placa), privados sin radicado.
+        Prompt 8d punto 2: lista legible de procesos judiciales (grupos
+        financiera/otros, tarjetas cortas, fechas dd/mm/aaaa, nombres con
+        mayúscula inicial) -- usa el shape de judicial_directo.py
+        (consultaprocesos.ramajudicial.gov.co, API directa). Los de la
+        financiera primero (judicial_directo.ordenar_y_marcar_procesos,
+        comparando contra el acreedor del último RGM de esta placa),
+        privados sin radicado ni botón. Partido en varios mensajes sin
+        cortar una tarjeta a la mitad (judicial_formato.particionar_
+        mensajes_telegram) si no cabe en 4096 caracteres. Botones
+        [📄 N]... + [🔄 Actualizar][⬅️ Volver] solo en el último mensaje.
         """
         if not es_admin:
-            return f"📄 <b>Procesos judiciales consultados: {_esc(_fmt_placa(placa))}</b>\nConsulta hecha."
+            self._texto(chat_id, f"📄 <b>Procesos judiciales consultados: {_esc(_fmt_placa(placa))}</b>\nConsulta hecha.")
+            return
 
         import judicial_directo
+        import judicial_formato as jf
 
         procesos = resultado.get("procesos") or []
         if not procesos:
-            return f"⚖️ <b>{_esc(_fmt_placa(placa))}</b>: no se encontraron procesos judiciales."
+            self._texto(chat_id, f"⚖️ <b>{_esc(_fmt_placa(placa))}</b>: no se encontraron procesos judiciales.",
+                        {"reply_markup": {"inline_keyboard": [[{"text": "⬅️ Volver", "callback_data": "procvolver"}]]}})
+            return
 
         acreedor = None
         snap_rgm = db.obtener_ultimo_snapshot_por_fuente(placa, "RGM")
@@ -1268,20 +1280,94 @@ class BotTelegram:
             except Exception:
                 acreedor = None
         ordenados = judicial_directo.ordenar_y_marcar_procesos(procesos, acreedor)
+        armado = jf.construir_tarjetas_judicial(_fmt_placa(placa), ordenados)
+        mensajes = jf.particionar_mensajes_telegram(armado["piezas"])
 
-        lineas = [f"⚖️ <b>Procesos judiciales: {_esc(_fmt_placa(placa))}</b> (en prueba: verifica en el portal antes de actuar)"]
-        for p in ordenados[:10]:
-            if p.get("privado"):
-                lineas.append(f"🔒 Proceso privado · {_esc(p.get('despacho') or '—')}")
-                continue
-            marca = "🏦 " if p.get("coincide_acreedor") else ""
-            lineas.append(f"{marca}<code>{_esc(p.get('radicado') or '—')}</code> · {_esc(p.get('despacho') or '—')}"
-                          f" · última actuación {_esc(p.get('fecha_ultima_actuacion') or '—')}")
-            for s in (p.get("sujetos") or [])[:4]:
-                lineas.append(f"  {_esc(s.get('rol') or '')}: {_esc(s.get('nombre') or '')}")
-        if len(ordenados) > 10:
-            lineas.append(f"… y {len(ordenados) - 10} más, ver en la web.")
-        return "\n".join(lineas)
+        botones_procesos = [
+            {"text": f"📄 {n}", "callback_data": f"procver:{id_proceso}:{placa}"}
+            for id_proceso, n in sorted(armado["numero_por_id_proceso"].items(), key=lambda kv: kv[1])
+        ]
+        filas_botones = [botones_procesos[i:i + 4] for i in range(0, len(botones_procesos), 4)]
+        filas_botones.append([{"text": "🔄 Actualizar", "callback_data": f"rgm_judicial:{placa}"},
+                               {"text": "⬅️ Volver", "callback_data": "procvolver"}])
+
+        for i, texto in enumerate(mensajes):
+            extra = {"reply_markup": {"inline_keyboard": filas_botones}} if i == len(mensajes) - 1 else None
+            self._texto(chat_id, texto, extra)
+
+    def _mostrar_detalle_proceso(self, chat_id, message_id, id_proceso: int, placa: str, pagina: int,
+                                  nuevo_mensaje: bool, forzar: bool = False):
+        """
+        Prompt 8d punto 3: "Ver proceso" (📄 N) manda un panel NUEVO con el
+        detalle + actuaciones (10 por página, más reciente arriba); cambiar
+        de página EDITA ese mismo panel (nunca manda uno nuevo). Caché de
+        6 h (judicial_directo.obtener_detalle_y_actuaciones_cacheado).
+        """
+        import judicial_directo
+        import judicial_formato as jf
+
+        try:
+            datos = judicial_directo.obtener_detalle_y_actuaciones_cacheado(placa, id_proceso, forzar=forzar)
+        except judicial_directo.ErrorJudicialDirecto as e:
+            texto_error = f"No se pudo consultar el proceso: {_esc(e)}"
+            extra = {"reply_markup": {"inline_keyboard": [[{"text": "⬅️ Volver", "callback_data": "procvolver"}]]}}
+            if nuevo_mensaje:
+                self._texto(chat_id, texto_error, extra)
+            else:
+                try:
+                    self._llamar("editMessageText", {"chat_id": chat_id, "message_id": message_id,
+                                                       "parse_mode": "HTML", "text": texto_error,
+                                                       "reply_markup": extra["reply_markup"]})
+                except Exception:
+                    pass
+            return
+
+        detalle = datos.get("detalle") or {}
+        actuaciones = datos.get("actuaciones") or []
+        pag = jf.paginar(actuaciones, pagina)
+
+        piezas = [jf.texto_detalle_proceso(detalle),
+                  f"Actuaciones ({pag['total']}), página {pag['pagina']}/{pag['total_paginas']}:"]
+        piezas.extend(jf.texto_actuacion(a) for a in pag["items"])
+        texto = "\n\n".join(piezas) or "Sin actuaciones."
+
+        nav = []
+        if pag["pagina"] < pag["total_paginas"]:
+            nav.append({"text": "◀ Más antiguas", "callback_data": f"procpag:{id_proceso}:{placa}:{pag['pagina'] + 1}"})
+        if pag["pagina"] > 1:
+            nav.append({"text": "Más recientes ▶", "callback_data": f"procpag:{id_proceso}:{placa}:{pag['pagina'] - 1}"})
+        filas = [nav] if nav else []
+        filas.append([{"text": "📑 Proceso completo (PDF)", "callback_data": f"procpdf:{id_proceso}:{placa}"}])
+        filas.append([{"text": "⬅️ Volver a la lista", "callback_data": "procvolver"}])
+        reply_markup = {"inline_keyboard": filas}
+
+        if nuevo_mensaje:
+            self._texto(chat_id, texto, {"reply_markup": reply_markup})
+        else:
+            try:
+                self._llamar("editMessageText", {"chat_id": chat_id, "message_id": message_id,
+                                                   "parse_mode": "HTML", "text": texto, "reply_markup": reply_markup})
+            except Exception as e:
+                self.log(f"Telegram: no se pudo cambiar de página el detalle del proceso - {e}")
+
+    def _enviar_pdf_proceso(self, chat_id, id_proceso: int, placa: str):
+        """Prompt 8d punto 3: "📑 Proceso completo (PDF)" -- detalle +
+        TODAS las actuaciones (anotaciones completas, sin recortar), se
+        guarda también para la ficha del vehículo (procesos_pdf)."""
+        import judicial_directo
+        import judicial_pdf
+
+        try:
+            datos = judicial_directo.obtener_detalle_y_actuaciones_cacheado(placa, id_proceso)
+            detalle = datos.get("detalle") or {}
+            contenido = judicial_pdf.generar_pdf_proceso(detalle, datos.get("actuaciones") or [], placa)
+            ruta = judicial_pdf.guardar_pdf_proceso(contenido, detalle.get("radicado"), placa)
+            db.registrar_pdf_proceso(placa, id_proceso, detalle.get("radicado"), str(ruta))
+            self._enviar_documento(chat_id, ruta, f"📑 Proceso completo: {_fmt_placa(placa)}", ruta.name, "application/pdf")
+            db.registrar_diagnostico_rgm("PDF de proceso enviado", None, placa, f"id_proceso={id_proceso}")
+        except Exception as e:
+            self.log(f"Telegram: no se pudo generar/enviar el PDF del proceso - {e}")
+            self._texto(chat_id, "No pude generar el PDF ahora. Inténtalo otra vez con 📑 Proceso completo (PDF).")
 
     # ------------------------------------------------------------ acciones del usuario
 
@@ -1754,8 +1840,7 @@ class BotTelegram:
                         elif alcance == "RGM":
                             self._texto(chat_id, self._texto_ficha_telegram(placa, es_admin=es_admin))
                         else:
-                            self._texto(chat_id, self._texto_resultado_judicial(
-                                placa, json.loads(resultado["snapshot"]["datos"]), es_admin))
+                            self._enviar_lista_procesos(chat_id, placa, json.loads(resultado["snapshot"]["datos"]), es_admin)
                     except Exception as e:
                         self.log(f"Telegram: no se pudo mostrar el snapshot vigente de {placa} - {e}")
                 else:
@@ -1775,6 +1860,37 @@ class BotTelegram:
 
             if accion == "noop":
                 return  # el botón "1/4" (indicador de página): solo hacía falta el ack de arriba
+
+            if accion == "procvolver":
+                # Prompt 8d punto 3 (criterio del Prompt 9): el panel de
+                # detalle/lista de procesos se BORRA al volver, nunca manda
+                # nada nuevo.
+                message_id = (q.get("message") or {}).get("message_id")
+                try:
+                    self._llamar("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+                except Exception:
+                    pass
+                return
+
+            if accion in ("procver", "procpag", "procpdf"):
+                usuario = self._usuario_de_chat(chat_id)
+                es_admin = bool(usuario and usuario["rol"] == "Admin" and usuario["estado"] == "activo")
+                if not es_admin:
+                    return
+                partes = valor.split(":")
+                try:
+                    id_proceso = int(partes[0])
+                except (ValueError, IndexError):
+                    return
+                placa = partes[1] if len(partes) > 1 else ""
+                message_id = (q.get("message") or {}).get("message_id")
+                if accion == "procpdf":
+                    self._enviar_pdf_proceso(chat_id, id_proceso, placa)
+                else:
+                    pagina = int(partes[2]) if accion == "procpag" and len(partes) > 2 and partes[2].isdigit() else 1
+                    self._mostrar_detalle_proceso(chat_id, message_id, id_proceso, placa, pagina,
+                                                   nuevo_mensaje=(accion == "procver"))
+                return
 
             if accion == "uvivo":
                 # Prompt 6 punto 3: [◀ Anteriores]/[🔴 En vivo] EDITAN este

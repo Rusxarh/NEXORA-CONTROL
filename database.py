@@ -62,11 +62,13 @@ ORIGENES_CONSULTA_RGM = ("camara", "telegram", "panel")
 ESTADOS_ITEM_RGM = ("PENDIENTE", "EN_CURSO", "OK", "ERROR")
 MAX_INTENTOS_RGM = 2
 VIGENCIA_SNAPSHOT_RGM_HORAS = 24
-# Si la página Consulta se recarga a mitad de un ítem EN_CURSO, ese ítem
-# queda huérfano (nadie va a completarlo ni a reportar error): se libera
-# solo pasado este tiempo, más holgado que el timeout propio del
-# JavaScript (2 min) para no competir con un reintento que sí sigue vivo.
-MINUTOS_ABANDONO_ITEM_RGM = 4
+# Si la página Consulta se recarga a mitad de un ítem EN_CURSO, o el hilo
+# de Judicial directo se cae a mitad de una consulta, ese ítem queda
+# huérfano (nadie va a completarlo ni a reportar error): se libera solo
+# pasado este tiempo (Prompt 8d punto 5: "sin latido ni resultado por más
+# de 3 min" -- ver rgm_cola._hilo_vigilante_colgados, que corre solo,
+# sin depender de que alguien vuelva a pedir trabajo de la cola).
+MINUTOS_ABANDONO_ITEM_RGM = 3
 
 # Prompt 7 bloque A: prioridad explícita de rgm_cola (antes el orden era
 # un FIFO puro por `id`, sin distinguir quién la pidió -- un ítem de
@@ -316,6 +318,20 @@ CREATE TABLE IF NOT EXISTS rgm_diagnostico (
     creado_en  TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
 CREATE INDEX IF NOT EXISTS idx_rgm_diagnostico_creado ON rgm_diagnostico (creado_en);
+
+-- Prompt 8d punto 3: "Proceso completo (PDF)" generado por NEXORA (detalle +
+-- TODAS las actuaciones) -- se guarda en disco (judicial_pdf.CARPETA_PDF) y
+-- aquí queda el registro para no regenerarlo cada vez y mostrar el enlace
+-- en la ficha del vehículo (sección Procesos).
+CREATE TABLE IF NOT EXISTS procesos_pdf (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    placa       TEXT NOT NULL,
+    id_proceso  INTEGER,
+    radicado    TEXT,
+    ruta        TEXT NOT NULL,
+    creado_en   TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_procesos_pdf_placa ON procesos_pdf (placa, id_proceso);
 
 -- Índices para las búsquedas más frecuentes
 CREATE INDEX IF NOT EXISTS idx_vehiculos_placa  ON vehiculos (placa);
@@ -1519,23 +1535,12 @@ def reservar_siguiente_item_rgm():
     misma fila) para que dos llamadas simultáneas nunca reserven la
     misma fila dos veces.
 
-    Antes de reservar, libera los ítems EN_CURSO abandonados (una
-    recarga de la página Consulta a mitad de una consulta real no debe
-    dejarlos colgados para siempre, ver MINUTOS_ABANDONO_ITEM_RGM).
+    Un ítem EN_CURSO abandonado (recarga de la página Consulta a mitad de
+    una consulta real) se libera solo, sin depender de esta función: ver
+    rgm_cola._hilo_vigilante_colgados (Prompt 8d punto 5), que corre
+    aparte y no necesita que nadie vuelva a pedir trabajo de la cola.
     """
     with get_connection() as conn:
-        limite = (datetime.now() - timedelta(minutes=MINUTOS_ABANDONO_ITEM_RGM)).strftime("%Y-%m-%d %H:%M:%S")
-        for colgado in conn.execute(
-            "SELECT id, intentos FROM rgm_cola WHERE estado = 'EN_CURSO' AND reservado_en < ?", (limite,)
-        ).fetchall():
-            if colgado["intentos"] >= MAX_INTENTOS_RGM:
-                conn.execute(
-                    "UPDATE rgm_cola SET estado = 'ERROR', error = ?, terminado = datetime('now', 'localtime') WHERE id = ?",
-                    ("Abandonada: nadie reportó el resultado (¿se recargó la página Consulta?).", colgado["id"]),
-                )
-            else:
-                conn.execute("UPDATE rgm_cola SET estado = 'PENDIENTE', reservado_en = NULL WHERE id = ?", (colgado["id"],))
-
         fila = conn.execute(
             "SELECT id FROM rgm_cola WHERE estado = 'PENDIENTE' ORDER BY prioridad ASC, id ASC LIMIT 1"
         ).fetchone()
@@ -1557,22 +1562,10 @@ def reservar_siguiente_item_rgm_judicial():
     lo atiende un hilo propio de NEXORA-CONTROL (judicial_directo.py)
     contra la API real. Misma mecánica que reservar_siguiente_item_rgm
     pero acotada a alcance='JUDICIAL' (nunca toca ni reserva ítems RGM,
-    que siguen siendo del Connector).
+    que siguen siendo del Connector). La liberación de ítems EN_CURSO
+    abandonados corre aparte (ver reservar_siguiente_item_rgm arriba).
     """
     with get_connection() as conn:
-        limite = (datetime.now() - timedelta(minutes=MINUTOS_ABANDONO_ITEM_RGM)).strftime("%Y-%m-%d %H:%M:%S")
-        for colgado in conn.execute(
-            "SELECT id, intentos FROM rgm_cola WHERE alcance = 'JUDICIAL' AND estado = 'EN_CURSO' AND reservado_en < ?",
-            (limite,),
-        ).fetchall():
-            if colgado["intentos"] >= MAX_INTENTOS_RGM:
-                conn.execute(
-                    "UPDATE rgm_cola SET estado = 'ERROR', error = ?, terminado = datetime('now', 'localtime') WHERE id = ?",
-                    ("Abandonada: el hilo de Judicial no reportó el resultado.", colgado["id"]),
-                )
-            else:
-                conn.execute("UPDATE rgm_cola SET estado = 'PENDIENTE', reservado_en = NULL WHERE id = ?", (colgado["id"],))
-
         fila = conn.execute(
             "SELECT id FROM rgm_cola WHERE alcance = 'JUDICIAL' AND estado = 'PENDIENTE' "
             "ORDER BY prioridad ASC, id ASC LIMIT 1"
@@ -1613,6 +1606,20 @@ def marcar_item_rgm_error(item_id: int, mensaje: str):
             )
         else:
             conn.execute("UPDATE rgm_cola SET estado = 'PENDIENTE', error = ? WHERE id = ?", (mensaje, item_id))
+
+
+def listar_items_rgm_en_curso_colgados() -> list:
+    """Prompt 8d punto 5: ítems EN_CURSO sin resultado ni heartbeat desde
+    hace más de MINUTOS_ABANDONO_ITEM_RGM minutos -- solo LEE, no toca
+    nada (rgm_cola._hilo_vigilante_colgados decide qué hacer con cada
+    uno, reusando marcar_error() para no duplicar la lógica de
+    reintentos de marcar_item_rgm_error)."""
+    with get_connection() as conn:
+        limite = (datetime.now() - timedelta(minutes=MINUTOS_ABANDONO_ITEM_RGM)).strftime("%Y-%m-%d %H:%M:%S")
+        filas = conn.execute(
+            "SELECT id, placa, alcance FROM rgm_cola WHERE estado = 'EN_CURSO' AND reservado_en < ?", (limite,)
+        ).fetchall()
+        return [dict(f) for f in filas]
 
 
 def listar_items_rgm_activos():
@@ -1709,6 +1716,26 @@ def listar_diagnostico_rgm(limite: int = 50) -> list:
             "SELECT * FROM rgm_diagnostico ORDER BY id DESC LIMIT ?", (limite,)
         ).fetchall()
         return [dict(f) for f in filas]
+
+
+def registrar_pdf_proceso(placa: str, id_proceso, radicado, ruta: str) -> int:
+    """Prompt 8d punto 3: deja constancia del PDF generado para que la
+    ficha del vehículo pueda mostrar "ya generado" sin regenerarlo."""
+    with get_connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO procesos_pdf (placa, id_proceso, radicado, ruta) VALUES (?, ?, ?, ?)",
+            (placa.strip().upper(), id_proceso, radicado, ruta),
+        )
+        return cur.lastrowid
+
+
+def obtener_ultimo_pdf_proceso(placa: str, id_proceso):
+    with get_connection() as conn:
+        fila = conn.execute(
+            "SELECT * FROM procesos_pdf WHERE placa = ? AND id_proceso = ? ORDER BY id DESC LIMIT 1",
+            (placa.strip().upper(), id_proceso),
+        ).fetchone()
+        return dict(fila) if fila else None
 
 
 def listar_ultimos_items_rgm(limite: int = 20):
