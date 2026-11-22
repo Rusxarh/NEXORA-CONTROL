@@ -22,48 +22,8 @@
   });
 })();
 
-// Prompt 8 punto 3: "Ver proceso" trae detalle + actuaciones por AJAX,
-// nunca abre el portal al frente (judicial_tarjetas en _macros.html arma
-// el boton con data-placa/data-id-proceso).
-document.addEventListener("click", function (e) {
-  var boton = e.target.closest(".boton-ver-proceso");
-  if (!boton) return;
-  var contenedor = boton.nextElementSibling;
-  var placa = boton.dataset.placa;
-  var idProceso = boton.dataset.idProceso;
-  var textoOriginal = boton.textContent;
-  boton.disabled = true;
-  boton.textContent = "Consultando…";
-  var datos = new URLSearchParams();
-  datos.set("placa", placa);
-  datos.set("id_proceso", idProceso);
-  fetch("/rgm/judicial/ver-proceso", { method: "POST", body: datos })
-    .then(function (r) { return r.json(); })
-    .then(function (resp) {
-      boton.disabled = false;
-      boton.textContent = textoOriginal;
-      if (!resp.ok) {
-        contenedor.textContent = "No se pudo consultar: " + (resp.error || "error desconocido");
-        contenedor.style.display = "block";
-        return;
-      }
-      var d = resp.detalle || {};
-      var actuaciones = resp.actuaciones || [];
-      var filas = actuaciones.map(function (a) {
-        var anotacion = a.anotacion ? " (" + a.anotacion + ")" : "";
-        return "<p>" + (a.fecha_actuacion || "—") + " — " + (a.actuacion || "") + anotacion + "</p>";
-      }).join("");
-      contenedor.innerHTML =
-        "<p>Despacho: " + (d.despacho || "—") + "</p>" +
-        "<p>Tipo de proceso: " + (d.tipo_proceso || "—") + (d.clase_proceso ? " · " + d.clase_proceso : "") + "</p>" +
-        "<p class=\"mt-1\">Actuaciones (" + actuaciones.length + "), más reciente arriba:</p>" +
-        (filas || "<p>Sin actuaciones.</p>");
-      contenedor.style.display = "block";
-    })
-    .catch(function () {
-      boton.disabled = false;
-      boton.textContent = textoOriginal;
-      contenedor.textContent = "No se pudo consultar (sin conexión).";
-      contenedor.style.display = "block";
-    });
-});
+// Prompt 8d punto 3/4: "Ver proceso"/paginado/PDF se mudó al panel lateral
+// compartido (drawer en base.html, lógica en static/js/judicial_panel.js) --
+// este archivo ya no lo maneja, para no tener dos manejadores del mismo
+// botón (ver judicial_panel.js: también delegado en document, así que
+// sigue funcionando aunque la columna derecha se reemplace por AJAX).

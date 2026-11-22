@@ -141,7 +141,7 @@
 
       <section class="card">
         <div class="flex items-center justify-between gap-2 mb-2">
-          <h2 class="text-sm font-semibold text-zinc-100">Procesos judiciales <span class="badge-en-prueba ml-1">En prueba</span></h2>
+          <h2 class="text-sm font-semibold text-zinc-100">⚖️ Procesos judiciales</h2>
         </div>
         {% if usuario_actual.rol == 'Admin' %}
         <form method="post" action="/rgm/solicitar" class="mb-3">
@@ -165,7 +165,6 @@
         {% else %}
         <p class="text-sm text-zinc-500">Todavía no se han consultado procesos judiciales para esta placa.</p>
         {% endif %}
-        <p class="text-xs text-zinc-500 mt-3">Verifica en el portal antes de actuar: dato en prueba.</p>
       </section>
     </div>
   </div>

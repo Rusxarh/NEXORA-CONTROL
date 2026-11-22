@@ -175,6 +175,7 @@ async def rgm_stream(usuario_actual: dict = Depends(usuarios.requerir_admin)):
 def rgm_ver_proceso(placa: str = Form(...), id_proceso: int = Form(...), forzar: bool = Form(False),
                      usuario_actual: dict = Depends(usuarios.requerir_admin)):
     import judicial_directo
+    import judicial_formato as jf
 
     placa_normalizada = placa.strip().upper()
     try:
@@ -187,4 +188,53 @@ def rgm_ver_proceso(placa: str = Form(...), id_proceso: int = Form(...), forzar:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=502)
 
     db.registrar_diagnostico_rgm("ver proceso", None, placa_normalizada, f"id_proceso={id_proceso}")
-    return {"ok": True, **resultado}
+
+    # Prompt 8d punto 4: la web usa las MISMAS fechas dd/mm/aaaa y nombres
+    # con mayúscula inicial que Telegram -- se formatean aquí (Python, un
+    # solo lugar) en vez de duplicar esa lógica en JavaScript. Los campos
+    # crudos ("detalle"/"actuaciones") se mantienen para no romper nada
+    # que ya los lea.
+    detalle = resultado.get("detalle") or {}
+    actuaciones = resultado.get("actuaciones") or []
+    detalle_formateado = {
+        "radicado": detalle.get("radicado"),
+        "despacho": jf.normalizar_nombre_visible(detalle.get("despacho")),
+        "ponente": jf.normalizar_nombre_visible(detalle.get("ponente")) if detalle.get("ponente") else None,
+        "tipo_proceso": detalle.get("tipo_proceso"),
+        "clase_proceso": detalle.get("clase_proceso"),
+        "ubicacion": jf.normalizar_nombre_visible(detalle.get("ubicacion")) if detalle.get("ubicacion") else None,
+        "fecha_proceso": jf.formatear_fecha_corta(detalle.get("fecha_proceso")),
+    }
+    actuaciones_formateadas = [
+        {
+            "fecha_actuacion": jf.formatear_fecha_corta(a.get("fecha_actuacion")),
+            "actuacion": a.get("actuacion"),
+            "anotacion": (a.get("anotacion") or "").strip(),
+            "con_documentos": bool(a.get("con_documentos")),
+        }
+        for a in actuaciones
+    ]
+    return {"ok": True, **resultado, "detalle_formateado": detalle_formateado,
+            "actuaciones_formateadas": actuaciones_formateadas}
+
+
+@router.get("/rgm/judicial/pdf-proceso")
+def rgm_pdf_proceso(placa: str, id_proceso: int, usuario_actual: dict = Depends(usuarios.requerir_admin)):
+    """Prompt 8d punto 4: botón "Descargar PDF" en la web -- mismo PDF
+    (detalle + TODAS las actuaciones) que el "📑 Proceso completo (PDF)"
+    de Telegram, un solo generador (judicial_pdf.py)."""
+    import judicial_directo
+    import judicial_pdf
+    from fastapi import Response
+
+    placa_normalizada = placa.strip().upper()
+    try:
+        generado = judicial_pdf.generar_y_guardar_pdf_proceso(placa_normalizada, id_proceso)
+    except judicial_directo.ErrorJudicialDirecto as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=502)
+
+    db.registrar_diagnostico_rgm("PDF de proceso descargado", None, placa_normalizada, f"id_proceso={id_proceso}")
+    return Response(
+        content=generado["contenido"], media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{generado["ruta"].name}"'},
+    )

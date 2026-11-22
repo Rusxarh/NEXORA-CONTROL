@@ -20,37 +20,56 @@
 {% endmacro %}
 
 {#
-  Prompt 8 punto 6: tarjetas legibles de procesos judiciales, compartidas
-  entre Consulta y la ficha de Vehículos -- `procesos` ya viene ordenado
-  y marcado por judicial_directo.ordenar_y_marcar_procesos (financiera
-  primero, "coincide_acreedor"); radicados repetidos ya vienen sin
-  duplicar. "Ver proceso" (punto 3) pide el detalle y las actuaciones
-  por AJAX (script en base.html) y las despliega debajo, sin abrir nada
-  fuera de NEXORA.
+  Prompt 8 punto 6 + Prompt 8d punto 4: tarjetas legibles de procesos
+  judiciales, compartidas entre Consulta y la ficha de Vehículos --
+  `procesos` ya viene ordenado, marcado ("coincide_acreedor") y con
+  fechas/nombres formateados (judicial_directo.ordenar_y_marcar_procesos
+  + vehiculos._formatear_procesos_para_vista); radicados repetidos ya
+  vienen sin duplicar. Filtro por grupo + buscador por juzgado/ciudad
+  (JS puro, static/js/judicial_panel.js, sin pedir nada al servidor:
+  todas las tarjetas ya están en la página). "Ver proceso" abre el panel
+  lateral (drawer, definido una sola vez en base.html) con detalle y
+  actuaciones; "Descargar PDF" es un enlace normal, sin JS.
 #}
 {% macro judicial_tarjetas(procesos, placa_actual) %}
 {% if not procesos %}
 <p class="text-sm text-zinc-500">No se encontraron procesos judiciales.</p>
 {% else %}
-<div class="space-y-3">
-  {% for p in procesos %}
-  {% if p.privado %}
-  <div class="text-sm text-zinc-400">🔒 Proceso privado · {{ p.despacho or '—' }}</div>
-  {% else %}
-  <div class="border border-zinc-800 rounded-lg p-3 text-sm space-y-1">
-    {% if p.coincide_acreedor %}<p class="text-xs font-semibold" style="color: var(--nx-success);">🏦 Demanda la financiera</p>{% endif %}
-    <p class="font-mono text-zinc-100">{{ p.radicado or '—' }}</p>
-    <p class="text-zinc-400 text-xs">{{ p.despacho or '—' }}{% if p.departamento %} ({{ p.departamento }}){% endif %}</p>
-    <p class="text-zinc-500 text-xs">Radicado el {{ p.fecha_radicacion or '—' }} · Última actuación {{ p.fecha_ultima_actuacion or '—' }}</p>
-    {% for s in p.sujetos %}
-    <p class="text-xs"><span class="text-zinc-500">{{ s.rol }}:</span> <span class="text-zinc-300">{{ s.nombre }}</span></p>
-    {% endfor %}
-    <button type="button" class="btn-secondary btn-sm mt-1 boton-ver-proceso"
-            data-placa="{{ placa_actual }}" data-id-proceso="{{ p.id_proceso }}">Ver proceso</button>
-    <div class="detalle-proceso text-xs text-zinc-400 mt-2" style="display:none;"></div>
+{% set n_financiera = procesos | selectattr("coincide_acreedor") | list | length %}
+<div class="judicial-panel">
+  <div class="flex flex-wrap items-center gap-2 mb-3">
+    <button type="button" class="btn-secondary btn-sm boton-filtro-judicial is-activo" data-filtro-judicial="todos">Todos ({{ procesos | length }})</button>
+    <button type="button" class="btn-secondary btn-sm boton-filtro-judicial" data-filtro-judicial="financiera">🏦 De la financiera ({{ n_financiera }})</button>
+    <button type="button" class="btn-secondary btn-sm boton-filtro-judicial" data-filtro-judicial="otros">📁 Otros ({{ procesos | length - n_financiera }})</button>
+    <input type="search" class="input-field flex-1" style="min-width:120px;" placeholder="Juzgado o ciudad…" data-buscador-judicial>
   </div>
-  {% endif %}
-  {% endfor %}
+  <div class="space-y-3" data-lista-judicial>
+    {% for p in procesos %}
+    {% set lugar = ((p.despacho or "") ~ " " ~ (p.departamento or "")) | lower %}
+    {% if p.privado %}
+    <div class="judicial-tarjeta judicial-tarjeta-privada text-sm text-zinc-400" data-grupo-judicial="otros" data-lugar-judicial="{{ lugar }}">
+      🔒 Proceso privado · {{ p.despacho or '—' }}{% if p.departamento %} · {{ p.departamento }}{% endif %}
+    </div>
+    {% else %}
+    <div class="judicial-tarjeta {{ 'judicial-tarjeta-financiera' if p.coincide_acreedor }} text-sm space-y-1"
+         data-grupo-judicial="{{ 'financiera' if p.coincide_acreedor else 'otros' }}" data-lugar-judicial="{{ lugar }}">
+      {% if p.coincide_acreedor %}<p class="text-xs font-semibold" style="color: var(--nx-success);">🏦 Demanda la financiera</p>{% endif %}
+      <p class="font-mono text-zinc-100">{{ p.radicado or '—' }}</p>
+      <p class="text-zinc-400 text-xs">{{ p.despacho or '—' }}{% if p.departamento %} · {{ p.departamento }}{% endif %}</p>
+      <p class="text-zinc-500 text-xs">Radicado el {{ p.fecha_radicacion or '—' }} · Última actuación {{ p.fecha_ultima_actuacion or '—' }}</p>
+      {% for s in p.sujetos %}
+      <p class="text-xs"><span class="text-zinc-500">{{ s.rol }}:</span> <span class="text-zinc-300">{{ s.nombre }}</span></p>
+      {% endfor %}
+      <div class="flex flex-wrap gap-2 mt-1">
+        <button type="button" class="btn-secondary btn-sm boton-ver-proceso"
+                data-placa="{{ placa_actual }}" data-id-proceso="{{ p.id_proceso }}">Ver proceso</button>
+        <a class="btn-secondary btn-sm" href="/rgm/judicial/pdf-proceso?placa={{ placa_actual }}&id_proceso={{ p.id_proceso }}">📑 Descargar PDF</a>
+      </div>
+    </div>
+    {% endif %}
+    {% endfor %}
+  </div>
+  <p class="text-sm text-zinc-500 hidden mt-2" data-sin-resultados-judicial>Ningún proceso coincide con el filtro/búsqueda.</p>
 </div>
 {% endif %}
 {% endmacro %}

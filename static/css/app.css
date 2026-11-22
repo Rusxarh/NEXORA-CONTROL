@@ -540,7 +540,6 @@ h1, h2, h3, .font-condensed {
 .badge-activa .punto { background-color: var(--nx-activo-punto); }
 .badge-en-alerta { background-color: var(--nx-posible-fondo); color: var(--nx-posible-texto); border-color: var(--nx-posible-borde); }
 .badge-suspendida { background-color: var(--nx-en-lista-fondo); color: var(--nx-en-lista-texto); border-color: var(--nx-en-lista-borde); }
-.badge-en-prueba { background-color: var(--nx-surface-2); color: var(--nx-text-muted); border-color: var(--nx-border); font-style: italic; }
 
 /* ---------------------------------------------------------------------
    Placa colombiana (FASE 7): macro Jinja único `placa(texto, tamano)` en
@@ -608,6 +607,22 @@ h1, h2, h3, .font-condensed {
 .modal-overlay { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding-left: 1rem; padding-right: 1rem; }
 .modal-backdrop { position: absolute; inset: 0; background-color: color-mix(in srgb, var(--nx-bg) 70%, transparent); }
 .modal-panel { position: relative; width: 100%; max-width: 28rem; background-color: var(--nx-surface); border: 1px solid var(--nx-border); border-radius: .75rem; box-shadow: var(--nx-shadow-lg); padding: 1.25rem; }
+
+/* Prompt 8d punto 4: panel lateral ("drawer") de detalle de un proceso
+   judicial -- mismo truco de .modal-overlay (display:flex), pero pegado
+   a la derecha y a todo el alto, en vez de centrado. Declarado junto a
+   .modal-* (antes de .hidden, ver nota de abajo) por la misma razón. */
+.drawer-overlay { position: fixed; inset: 0; z-index: 50; display: flex; align-items: stretch; justify-content: flex-end; }
+.drawer-backdrop { position: absolute; inset: 0; background-color: color-mix(in srgb, var(--nx-bg) 70%, transparent); }
+.drawer-panel { position: relative; width: 100%; max-width: 32rem; height: 100%; background-color: var(--nx-surface); border-left: 1px solid var(--nx-border); box-shadow: var(--nx-shadow-lg); padding: 1.25rem; overflow-y: auto; }
+
+/* Prompt 8d punto 4: tarjetas de proceso judicial (Consulta y ficha de
+   Vehículos) -- borde verde + fondo tenue para las que demandan la
+   financiera, gris para los privados, normal para el resto. */
+.judicial-tarjeta { border: 1px solid var(--nx-border); border-radius: .5rem; padding: .75rem; }
+.judicial-tarjeta-financiera { border-color: color-mix(in srgb, var(--nx-success) 45%, var(--nx-border)); background-color: color-mix(in srgb, var(--nx-success) 8%, var(--nx-surface)); }
+.judicial-tarjeta-privada { background-color: var(--nx-surface-2); border: 1px solid var(--nx-border); border-radius: .5rem; padding: .75rem; }
+.boton-filtro-judicial.is-activo { background-color: var(--nx-primary); color: #fff; border-color: var(--nx-primary); }
 
 /* ---------------------------------------------------------------------
    Iconos de tarjetas del Dashboard (Etapa 3)
@@ -678,4 +693,13 @@ h1, h2, h3, .font-condensed {
   .lg\:col-span-1 { grid-column: span 1 / span 1; }
   .lg\:col-span-2 { grid-column: span 2 / span 2; }
   .lg\:col-span-3 { grid-column: span 3 / span 3; }
+}
+
+/* Prompt 8d punto 4: Consulta en dos columnas (izquierda ≈420px fija,
+   derecha el resto) -- por debajo de 1100px, una sola columna (la
+   derecha debajo de la izquierda), ancho de "Gabriel: tenemos buen
+   espacio" resuelto a partir de 1100px. */
+.grid-consulta { display: grid; grid-template-columns: 1fr; gap: 1.5rem; align-items: start; }
+@media (min-width: 1100px) {
+  .grid-consulta { grid-template-columns: 420px 1fr; }
 }

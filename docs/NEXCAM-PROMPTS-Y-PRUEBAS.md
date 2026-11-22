@@ -26,6 +26,7 @@ Orden de trabajo:
 | 1e | Prompt 8 (RGM y Judicial en segundo plano, todo en NEXORA) | Fase 18 |
 | 1e2 | Prompt 8b (RGM sigue abriendo pestaña, 500 FK, database locked, Ya vistas) | Fase 18 de nuevo |
 | 1e3 | Prompt 8c (RGM sin pestaña de verdad, con RGM-PLAN-A.md) | 18.1, 18.9 |
+| 1e4 | Prompt 8d (procesos completos y legibles en Telegram + plan A sin falsa alarma) | Fase 18 (18.12 a 18.16) |
 | 1f | Prompt 9 (Telegram limpio con menú y Volver) | Fase 19 |
 
 ### Regla para todos los reportes de Claude Code
@@ -1142,6 +1143,113 @@ déjalo como plan B documentado.
 Push de las dos ramas. Termina con "Pruebas para tu visto bueno".
 ```
 
+## Prompt 8d: procesos judiciales completos y legibles en Telegram + plan A del RGM
+
+Resultado de la prueba del 21/11/2026, 6:05 p. m.: todo OK (RGM termina, Judicial directo funciona, Ver proceso en la web, Telegram ⚖️ Procesos con la financiera primero). Pero:
+- El RGM siempre cae a plan B: "plan B porque: paso 1: la respuesta parece un captcha/desafío, no el formulario". Casi seguro es una falsa alarma: el formulario real del RGM trae el campo `recaptchaResponse` (vacío) y scripts con la palabra "captcha", así que buscar esa palabra en el HTML siempre da positivo.
+- Gabriel quiere ver el proceso completo en Telegram y una vista más legible (hoy: fechas "2026-07-22T00:00:00", nombres en mayúsculas mezcladas, todo en un bloque largo).
+
+```text
+Rama nexcam (y alcance-rgm para el punto 1), sin preguntar (CLAUDE.md). Commit por
+punto, push al final, reporte con "Pruebas para tu visto bueno".
+
+1) PLAN A DEL RGM, FALSA ALARMA DE CAPTCHA: en el paso 1 no decidas "captcha" por
+   la palabra en el HTML. El formulario es válido si trae __VIEWSTATE,
+   __EVENTVALIDATION, ctl00$ctl00$hdnCSFK y el campo txtNumBien. Solo es desafío si
+   faltan esos campos Y aparece una página de desafío (p. ej. g-recaptcha visible
+   con data-sitekey en un formulario sin __VIEWSTATE, o un HTML muy corto con
+   script de verificación). Si el paso 1 está bien, sigue con el paso 2; si más
+   adelante el portal pide captcha de verdad, el delta lo dirá (sin grilla y con
+   mensaje de error): entonces plan B con ese motivo. Pruebas con un HTML de
+   formulario que contiene recaptchaResponse vacío → plan A sigue.
+
+2) TELEGRAM, LISTA DE PROCESOS MÁS LEGIBLE (botón ⚖️ Procesos, solo Admin):
+   Cabecera: "⚖️ Procesos de GCT 953 · 7 encontrados · consulta del 21/11/2026"
+   Dos grupos:
+     🏦 De la financiera (3)   (demandante = acreedor del RGM, nombre normalizado)
+     📁 Otros (4)
+   Cada proceso, una tarjeta corta y separada por una línea en blanco:
+     <b>1.</b> <code>11001400302220260067500</code>
+     🏛 Juzgado 002 Civil Municipal · Bogotá
+     📅 Radicado 07/05/2026 · última actuación 22/07/2026
+     👤 Demandante: GM Financial Colombia
+     👤 Demandado: Pedro Nel Hernández Peñaloza
+   - Fechas en dd/mm/aaaa (nunca "T00:00:00"). Nombres y juzgados con mayúscula
+     inicial; siglas como S.A., S.A.S., BIC tal cual; sin "Compañía de
+     Financiamiento" ni dobles espacios en la vista (el dato completo se guarda).
+   - Roles cortos: "Demandante/accionante" → Demandante, "Demandado/indiciado/
+     causante" → Demandado; otros roles (Defensor, Apoderado, Tercero) en una
+     línea "Otros: …" solo si caben.
+   - Privados: "🔒 Proceso privado · Juzgado … · Medellín", sin botón.
+   - Si no cabe en 4.096 caracteres, se parte en varios mensajes sin cortar una
+     tarjeta a la mitad.
+   - Botones debajo: [📄 1] [📄 2] … (uno por proceso no privado, 4 por fila) y
+     [🔄 Actualizar] [⬅️ Volver].
+
+3) VER EL PROCESO COMPLETO EN TELEGRAM: al tocar [📄 N]:
+   - Panel con el detalle (API Proceso/Detalle): radicado, despacho, ponente, tipo
+     y clase de proceso, ubicación, fecha de radicación, sujetos completos.
+   - Actuaciones (API Proceso/Actuaciones), la más reciente arriba, 10 por página:
+       📌 22/07/2026 · Auto admite demanda
+          <anotación recortada a ~200 caracteres>
+     con [◀ Más antiguas] [Más recientes ▶] que editan el mismo mensaje, y
+     [⬅️ Volver a la lista].
+   - Botón [📑 Proceso completo (PDF)]: NEXORA arma un PDF con el detalle y TODAS
+     las actuaciones (anotaciones completas), con el encabezado "Consulta de
+     procesos – Rama Judicial · generado por NEXORA el <fecha>" y lo manda con
+     sendDocument. Nombre: <radicado>-<placa>.pdf. Se guarda también en la ficha
+     web del vehículo (sección Procesos). Solo Admin.
+   - Si la actuación indica que tiene documentos (conDocumentos), mostrar "📎 con
+     documentos" (verlos queda en el portal: enlace al portal de consulta).
+   - Todo lo que se abre aquí es un panel con [⬅️ Volver] (mismo criterio del
+     Prompt 9: se borra al volver).
+   - Caché: detalle y actuaciones se guardan 6 h; [🔄 Actualizar] los pide de nuevo.
+
+4) WEB, PÁGINA CONSULTA EN DOS COLUMNAS (Gabriel: "que los procesos judiciales se
+   vean al lado, tenemos buen espacio"): hoy todo va en una columna angosta en el
+   centro y sobra espacio a los lados. Nuevo diseño (estilo "Asfalto y placa", el
+   mismo de la web):
+
+   ┌─ izquierda (≈420 px) ───────────┐ ┌─ derecha (el resto) ─────────────────────┐
+   │ Buscar placa (con sugerencias)  │ │ Placa grande · estado · vehículo          │
+   │ Consulta RGM / Judicial         │ │ Datos RGM (acreedor, deudor) en tarjeta   │
+   │  · Connector vX conectado       │ │ ─────────────────────────────────────────  │
+   │  · [RGM] [Judicial] [Ambos]     │ │ ⚖️ Procesos judiciales (7)                │
+   │  · Consultar · Estado           │ │  [🏦 De la financiera 3] [📁 Otros 4]     │
+   │ Cola (pendientes y en curso)    │ │  tarjetas: radicado · juzgado · ciudad ·  │
+   │ Últimas 20 (con 🩺 Diagnóstico) │ │  fechas · demandante · demandado ·        │
+   │                                 │ │  [Ver proceso] [PDF]                      │
+   └─────────────────────────────────┘ │ Al tocar "Ver proceso": panel lateral     │
+                                       │ (drawer) con detalle y actuaciones        │
+                                       │ (línea de tiempo, la más reciente arriba, │
+                                       │ "Cargar más"), sin salir de la página.    │
+                                       └───────────────────────────────────────────┘
+   - La columna derecha muestra la placa elegida: la buscada, o la que se toque en
+     la cola / Últimas 20 (clic en la fila → se carga a la derecha sin recargar).
+   - Mientras corre la consulta, la derecha muestra el avance en vivo (RGM… →
+     Judicial… → listo) con los eventos SSE que ya existen.
+   - Tarjetas de proceso: borde verde y etiqueta "🏦 Demanda la financiera" para las
+     del acreedor; privados en gris con 🔒; filtros por grupo y buscador por
+     juzgado/ciudad; orden por última actuación.
+   - Mismas fechas dd/mm/aaaa y nombres con mayúscula inicial que en Telegram;
+     botón "Descargar PDF" del proceso completo.
+   - El JSON crudo, solo plegado en "Ver datos originales".
+   - Por debajo de 1100 px vuelve a una sola columna (derecha debajo).
+   - La ficha de Vehículos usa el mismo bloque de procesos y el mismo drawer.
+   - Revisa con capturas de Playwright a 1366 y 1440 px.
+
+5) ÍTEMS COLGADOS: NHP973 quedó "En curso" más de 7 min (pedido 6:10 p. m.) y el
+   aviso "Ya hay una consulta en curso" impide pedirla de nuevo. Un ítem en curso
+   sin latido ni resultado por más de 3 min vuelve a Pendiente (máx. 2
+   reintentos) y luego pasa a Error con motivo "sin respuesta del Connector";
+   botón "Reintentar" en la fila de la cola. Anótalo en Diagnóstico.
+
+Pruebas con respuestas simuladas de la API judicial (datos ficticios): formato de
+la lista (fechas, nombres, grupos), partición en varios mensajes, paginado de
+actuaciones, PDF generado con todas las actuaciones, plan A no se detiene por
+recaptchaResponse vacío.
+```
+
 ## Prompt 9: Telegram limpio, todo por menú y paneles que se cierran con "Volver"
 
 Pedido de Gabriel (20/11/2026): que no aparezca el menú escrito (la lista "📊 Estado: teléfonos…, 🕒 Últimas: …"); que todo sea por botones; y que lo que él abre (Últimas, Estado, Buscar, Ficha…) se cierre con "Volver" y desaparezca del chat, para que siempre queden a la vista las cosas importantes: las alertas con foto y la cámara en vivo.
@@ -1339,6 +1447,16 @@ Antes: recargar el Connector en `brave://extensions` y reiniciar NEXORA.
 - **18.7** Telegram ⚖️ Procesos (Admin): mismo resumen, la financiera primero.
 - **18.8** Dejar Brave minimizado 10 min con varias placas en cola → todas terminan.
 
+**Después del Prompt 8d**
+- **18.12** Consulta → RGM de LRY517 → Diagnóstico dice "plan A OK" (sin ventana).
+- **18.13** Telegram ⚖️ Procesos de GCT 953: grupos "🏦 De la financiera" y "📁 Otros", fechas dd/mm/aaaa, nombres con mayúscula inicial, tarjetas separadas.
+- **18.14** Tocar [📄 1] → detalle del proceso y las 10 actuaciones más recientes; ◀ Más antiguas cambia el mismo mensaje; ⬅️ Volver regresa a la lista.
+- **18.15** [📑 Proceso completo (PDF)] → llega el PDF con todas las actuaciones; también aparece en la ficha web.
+- **18.16** Un proceso privado sale como "🔒 Proceso privado" sin botón.
+- **18.17** Página Consulta en dos columnas: a la izquierda buscar, consultar, cola y Últimas 20; a la derecha la placa, datos RGM y los procesos en tarjetas; "Ver proceso" abre el panel lateral con las actuaciones.
+- **18.18** Tocar una fila de Últimas 20 → la placa se carga a la derecha sin recargar la página.
+- **18.19** Un ítem que queda "En curso" más de 3 min vuelve a intentarse solo y, si no, pasa a Error con "Reintentar".
+
 **Fase 19: Telegram limpio (Prompt 9)**
 - **19.1** Escribir /start → no llega el texto largo; abajo queda el teclado con los botones.
 - **19.2** 🕒 Últimas → se abre el panel; [⬅️ Volver] → desaparece el panel y también tu toque del botón; el chat queda como antes.
@@ -1402,4 +1520,5 @@ Antes: recargar el Connector en `brave://extensions` y reiniciar NEXORA.
 | 18.1 a 18.8 | 21/11/2026 | Falla | RGM sigue abriendo la pestaña; 500 FK con NHP973; database locked → Prompt 8b |
 | 18.9 | 21/11/2026 | OK | Connector v0.2.0 conectado |
 | 18.1 (8b) | 21/11/2026 | Falla | Plan B: "Invalid value for bounds… 50% within visible screen space" → ningún RGM termina → Prompt 8c punto 0 |
+| 18.1, 18.2 a 18.7, 18.9, 18.10 | 21/11/2026 | OK | RGM por plan B (falsa alarma de captcha → Prompt 8d); Judicial directo OK |
 | 7.1 | | | |

@@ -158,8 +158,14 @@ def test_ver_proceso_judicial_trae_detalle_y_actuaciones(cliente, monkeypatch):
     assert cuerpo["ok"] is True
     assert cuerpo["detalle"]["despacho"] == "Juzgado Ficticio"
     assert cuerpo["actuaciones"][0]["actuacion"] == "Auto admisorio"
-    snapshot = db.obtener_ultimo_snapshot_por_fuente("VPR111", "JUDICIAL_DETALLE")
+    # Prompt 8d punto 3: la fuente del caché incluye el id_proceso (antes
+    # era fija "JUDICIAL_DETALLE" y dos procesos de la misma placa se
+    # pisaban el caché uno al otro).
+    snapshot = db.obtener_ultimo_snapshot_por_fuente("VPR111", "JUDICIAL_DETALLE_99")
     assert snapshot is not None
+    # Prompt 8d punto 4: la web usa las mismas fechas/nombres que Telegram.
+    assert cuerpo["detalle_formateado"]["despacho"] == "Juzgado Ficticio"
+    assert cuerpo["actuaciones_formateadas"][0]["fecha_actuacion"] == "01/01/2026"
 
 
 def test_ver_proceso_judicial_error_de_red_responde_502(cliente, monkeypatch):
@@ -177,6 +183,44 @@ def test_ver_proceso_judicial_error_de_red_responde_502(cliente, monkeypatch):
     r = cliente.post("/rgm/judicial/ver-proceso", data={"placa": "VPR222", "id_proceso": 1})
     assert r.status_code == 502
     assert r.json()["ok"] is False
+
+
+def test_descargar_pdf_proceso_devuelve_un_pdf_para_descargar(cliente, monkeypatch, tmp_path):
+    import judicial_directo
+    import judicial_pdf
+
+    admin = _crear_usuario("Admin PDF Web", "Admin", "admin.pdfweb")
+    db.insertar_placa("PDF111", "carro", admin["id"], None)
+    _login_web(cliente, "admin.pdfweb")
+
+    monkeypatch.setattr(judicial_pdf, "CARPETA_PDF", tmp_path / "procesos_pdf")
+    monkeypatch.setattr(judicial_directo, "obtener_detalle_proceso",
+                        lambda id_proceso: {"id_proceso": id_proceso, "radicado": "R-PDF-1", "despacho": "Juzgado Ficticio"})
+    monkeypatch.setattr(judicial_directo, "obtener_actuaciones_proceso", lambda id_proceso: [])
+
+    r = cliente.get("/rgm/judicial/pdf-proceso", params={"placa": "PDF111", "id_proceso": 77})
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/pdf"
+    assert "R-PDF-1-PDF111.pdf" in r.headers["content-disposition"]
+    assert r.content[:5] == b"%PDF-"
+    guardado = db.obtener_ultimo_pdf_proceso("PDF111", 77)
+    assert guardado is not None and guardado["radicado"] == "R-PDF-1"
+
+
+def test_descargar_pdf_proceso_error_de_red_responde_502(cliente, monkeypatch):
+    import judicial_directo
+
+    admin = _crear_usuario("Admin PDF Web2", "Admin", "admin.pdfweb2")
+    db.insertar_placa("PDF222", "carro", admin["id"], None)
+    _login_web(cliente, "admin.pdfweb2")
+
+    def _falla(id_proceso):
+        raise judicial_directo.ErrorJudicialDirecto("timeout")
+
+    monkeypatch.setattr(judicial_directo, "obtener_detalle_proceso", _falla)
+
+    r = cliente.get("/rgm/judicial/pdf-proceso", params={"placa": "PDF222", "id_proceso": 1})
+    assert r.status_code == 502
 
 
 def test_rgm_stream_exige_sesion_admin(cliente):

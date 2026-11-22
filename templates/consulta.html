@@ -1,9 +1,17 @@
 {% extends "base.html" %}
-{% from "_macros.html" import judicial_tarjetas %}
 {% block titulo %}Consulta de Placas · NEXORA{% endblock %}
 
 {% block contenido %}
-<div class="max-w-2xl mx-auto space-y-6">
+{#
+  Prompt 8d punto 4: dos columnas (izquierda ≈420px: buscar/consultar/
+  cola/últimas 20; derecha: la placa elegida -- la buscada arriba, o la
+  que se toque en la cola/Últimas 20, cargada por AJAX sin recargar la
+  página, ver script "cargarPlacaEnPanelDerecho" más abajo). Por debajo
+  de 1100px, una sola columna (.grid-consulta en app.css).
+#}
+<div class="max-w-6xl mx-auto space-y-6">
+<div class="grid-consulta">
+<div class="space-y-6">
 
   <section class="card">
     <h2 class="text-sm font-semibold text-zinc-100 mb-1">Consulta de placas</h2>
@@ -30,57 +38,6 @@
       {% endif %}
     </form>
   </section>
-
-  {% if buscado %}
-    {% if vehiculo %}
-    <section class="card">
-      <div class="flex flex-wrap items-center justify-between gap-3 mb-4 pb-4 border-b border-zinc-800">
-        <div>
-          <p class="text-2xl font-mono font-bold tracking-widest text-zinc-100">{{ vehiculo.placa }}</p>
-          <p class="text-xs text-zinc-500 capitalize mt-0.5">{{ vehiculo.tipo_vehiculo }}</p>
-        </div>
-        {% if vehiculo.estado == 'activo' %}
-        <span class="badge-success"><span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span> Activo</span>
-        {% else %}
-        <span class="badge-danger"><span class="h-1.5 w-1.5 rounded-full bg-red-400"></span> Baja</span>
-        {% endif %}
-      </div>
-
-      <dl class="space-y-2 text-sm">
-        <div class="flex justify-between gap-3">
-          <dt class="text-zinc-500">Fecha de ingreso</dt>
-          <dd class="text-zinc-300">{{ vehiculo.fecha_ingreso | fecha_co }}</dd>
-        </div>
-        <div class="flex justify-between gap-3">
-          <dt class="text-zinc-500">Fecha de baja</dt>
-          <dd class="text-zinc-300">{{ vehiculo.fecha_baja | fecha_co }}</dd>
-        </div>
-        <div class="flex justify-between gap-3">
-          <dt class="text-zinc-500">Registrado por</dt>
-          <dd class="text-zinc-300">{{ vehiculo.registrado_por or '—' }}</dd>
-        </div>
-      </dl>
-
-      {% if vehiculo.observaciones %}
-      <div class="mt-4 pt-4 border-t border-zinc-800">
-        <p class="label-field">Observaciones</p>
-        <p class="text-sm text-zinc-300">{{ vehiculo.observaciones }}</p>
-      </div>
-      {% endif %}
-
-      <div class="mt-4 pt-4 border-t border-zinc-800">
-        <a href="/historial/{{ vehiculo.placa }}" class="btn-secondary btn-sm">Ver historial</a>
-      </div>
-    </section>
-    {% else %}
-    <section class="card text-center py-8">
-      <p class="text-sm text-zinc-400">
-        No se encontró ningún vehículo con la placa <span class="font-mono text-zinc-200">{{ q | trim | upper }}</span>.
-      </p>
-      <a href="/consulta" class="btn-secondary btn-sm inline-flex mt-4">Nueva consulta</a>
-    </section>
-    {% endif %}
-  {% endif %}
 
   <!-- ============================================================
        CONSULTA NEXORA (FASE 6) — habla directamente con NEXORA-CONNECTOR
@@ -148,7 +105,7 @@
         </thead>
         <tbody class="table-body">
           {% for it in cola_activa %}
-          <tr class="table-row">
+          <tr class="table-row cursor-pointer" data-placa-fila="{{ it.placa }}" title="Ver {{ it.placa }} en la columna derecha">
             <td class="table-cell font-mono text-zinc-100">{{ it.placa }}</td>
             <td class="table-cell text-zinc-300">{{ it.alcance }}</td>
             <td class="table-cell text-zinc-400">{{ it.origen }}</td>
@@ -181,7 +138,7 @@
         </thead>
         <tbody class="table-body">
           {% for it in ultimos_items_rgm %}
-          <tr class="table-row">
+          <tr class="table-row cursor-pointer" data-placa-fila="{{ it.placa }}" title="Ver {{ it.placa }} en la columna derecha">
             <td class="table-cell font-mono text-zinc-100">{{ it.placa }}</td>
             <td class="table-cell text-zinc-300">{{ it.alcance }}</td>
             <td class="table-cell">
@@ -207,42 +164,13 @@
     </div>
   </section>
 
-  {% if buscado and (snapshot_rgm or snapshot_judicial) %}
-  <section class="card">
-    <p class="label-field mb-2">Último resultado guardado para {{ q | trim | upper }}</p>
-    {% if snapshot_rgm %}
-    <p class="text-xs text-zinc-500 mb-1">RGM — {{ snapshot_rgm.creado_en | fecha_co }}</p>
-    {% if rgm_datos %}
-    {% if usuario_actual.rol == 'Admin' and (rgm_datos.acreedor or rgm_datos.deudor_nombre) %}
-    <div class="space-y-1 text-sm mb-2">
-      {% if rgm_datos.acreedor %}<p>🏦 Acreedor: <span class="text-zinc-300">{{ rgm_datos.acreedor }}</span></p>{% endif %}
-      {% if rgm_datos.deudor_nombre %}
-      <p>👤 Deudor: <span class="text-zinc-300">{{ rgm_datos.deudor_nombre }}{% if rgm_datos.deudor_documento %} · {{ rgm_datos.deudor_documento }}{% endif %}{% if rgm_datos.deudor_ciudad %} · {{ rgm_datos.deudor_ciudad }}{% endif %}</span></p>
-      {% endif %}
-    </div>
-    {% endif %}
-    <details class="mb-3">
-      <summary class="text-xs text-zinc-500 cursor-pointer hover:text-zinc-300">Ver datos originales (RGM)</summary>
-      <pre class="text-xs font-mono text-zinc-500 whitespace-pre-wrap mt-2">{{ rgm_datos.crudo }}</pre>
-    </details>
-    {% else %}
-    <pre class="text-xs font-mono text-zinc-400 whitespace-pre-wrap mb-3">{{ snapshot_rgm.datos }}</pre>
-    {% endif %}
-    {% endif %}
-    {% if snapshot_judicial %}
-    <p class="text-xs text-zinc-500 mb-1">Judicial — {{ snapshot_judicial.creado_en | fecha_co }}</p>
-    {% if judicial_datos %}
-    {{ judicial_tarjetas(judicial_datos.procesos, q | trim | upper) }}
-    <details class="mt-2">
-      <summary class="text-xs text-zinc-500 cursor-pointer hover:text-zinc-300">Ver datos originales (Judicial)</summary>
-      <pre class="text-xs font-mono text-zinc-500 whitespace-pre-wrap mt-2">{{ judicial_datos.crudo }}</pre>
-    </details>
-    {% else %}
-    <pre class="text-xs font-mono text-zinc-400 whitespace-pre-wrap">{{ snapshot_judicial.datos }}</pre>
-    {% endif %}
-    {% endif %}
-  </section>
-  {% endif %}
+</div>
+<!-- ============ fin columna izquierda / inicio columna derecha ============ -->
+<div class="space-y-6">
+
+  <div id="panelDerechoConsulta">
+    {% include "_consulta_panel_derecho.html" %}
+  </div>
 
   <section class="card hidden" id="nexoraSeccionRgm">
     <h2 class="text-sm font-semibold text-zinc-100 mb-3">DATOS RGM</h2>
@@ -309,8 +237,41 @@
   </section>
 
 </div>
+</div>
+</div>
 
 <script src="/static/js/rgm_tiempo_real.js"></script>
+<script>
+  // Prompt 8d punto 4: clic en una fila de la cola/Últimas 20 carga esa
+  // placa en la columna derecha SIN recargar la página (fetch a
+  // /consulta/panel-derecho, que devuelve el mismo fragmento que ya se
+  // renderizó al cargar /consulta?q=...). Ignora clics sobre un botón/
+  // enlace/formulario dentro de la fila (p. ej. "🔁 Reintentar"), para no
+  // competir con esos.
+  (function () {
+    var panelDerecho = document.getElementById("panelDerechoConsulta");
+    if (!panelDerecho) return;
+
+    function cargarPlacaEnPanelDerecho(placa) {
+      panelDerecho.style.opacity = "0.6";
+      fetch("/consulta/panel-derecho?q=" + encodeURIComponent(placa))
+        .then(function (r) { return r.text(); })
+        .then(function (html) {
+          panelDerecho.innerHTML = html;
+          panelDerecho.style.opacity = "1";
+          try { history.replaceState(null, "", "/consulta?q=" + encodeURIComponent(placa)); } catch (e) {}
+        })
+        .catch(function () { panelDerecho.style.opacity = "1"; });
+    }
+
+    document.addEventListener("click", function (e) {
+      var fila = e.target.closest("[data-placa-fila]");
+      if (!fila) return;
+      if (e.target.closest("button, a, input, form")) return;
+      cargarPlacaEnPanelDerecho(fila.getAttribute("data-placa-fila"));
+    });
+  })();
+</script>
 <script>
   // Autocompletado de Consulta: busca SOLO contra la base real (/consulta/autocompletar),
   // sin crear datos nuevos, sin ejecutar RGM ni Judicial. Si la peticion falla o la

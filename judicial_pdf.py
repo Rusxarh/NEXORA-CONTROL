@@ -109,3 +109,19 @@ def guardar_pdf_proceso(contenido: bytes, radicado: Optional[str], placa: str) -
     ruta = CARPETA_PDF / nombre_archivo_pdf(radicado, placa)
     ruta.write_bytes(contenido)
     return ruta
+
+
+def generar_y_guardar_pdf_proceso(placa: str, id_proceso) -> dict:
+    """Punto de entrada único usado por Telegram (nexcam_telegram.py) y la
+    web (rgm_web.py) para no duplicar "pedir detalle+actuaciones, armar
+    el PDF, guardarlo y registrarlo en procesos_pdf" en dos lugares.
+    Devuelve {"ruta": Path, "detalle": dict, "contenido": bytes}."""
+    import judicial_directo
+    import database as db
+
+    datos = judicial_directo.obtener_detalle_y_actuaciones_cacheado(placa, id_proceso)
+    detalle = datos.get("detalle") or {}
+    contenido = generar_pdf_proceso(detalle, datos.get("actuaciones") or [], placa)
+    ruta = guardar_pdf_proceso(contenido, detalle.get("radicado"), placa)
+    db.registrar_pdf_proceso(placa, id_proceso, detalle.get("radicado"), str(ruta))
+    return {"ruta": ruta, "detalle": detalle, "contenido": contenido}

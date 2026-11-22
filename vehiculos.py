@@ -191,6 +191,41 @@ def consulta_vista(
     )
 
 
+@router.get("/consulta/panel-derecho")
+def consulta_panel_derecho(
+    request: Request,
+    usuario_actual: dict = Depends(usuarios.requerir_autenticacion),
+    q: str = "",
+):
+    """
+    Prompt 8d punto 4: clic en una fila de la cola/Últimas 20 carga esa
+    placa en la columna derecha SIN recargar la página -- este endpoint
+    devuelve solo el fragmento de esa columna (mismo contexto que
+    construye consulta_vista arriba, factorizado aquí para no duplicarlo).
+    """
+    buscado = bool(q.strip())
+    placa_normalizada = q.strip().upper() if buscado else ""
+    vehiculo = db.obtener_ficha_vehiculo(q) if buscado else None
+    snapshot_rgm = db.obtener_ultimo_snapshot_por_fuente(placa_normalizada, "RGM") if buscado else None
+    snapshot_judicial = db.obtener_ultimo_snapshot_por_fuente(placa_normalizada, "JUDICIAL") if buscado else None
+
+    return templates.TemplateResponse(
+        request,
+        "_consulta_panel_derecho.html",
+        {
+            "request": request,
+            "usuario_actual": usuario_actual,
+            "q": q,
+            "buscado": buscado,
+            "vehiculo": vehiculo,
+            "snapshot_rgm": snapshot_rgm,
+            "rgm_datos": _datos_rgm_para_ficha(snapshot_rgm),
+            "snapshot_judicial": snapshot_judicial,
+            "judicial_datos": _datos_judicial_para_vista(snapshot_judicial, snapshot_rgm),
+        },
+    )
+
+
 @router.get("/consulta/autocompletar")
 def consulta_autocompletar(
     q: str = "",
@@ -474,6 +509,35 @@ def _datos_rgm_para_ficha(snapshot_rgm: Optional[dict]) -> Optional[dict]:
     }
 
 
+def _formatear_procesos_para_vista(procesos: list) -> list:
+    """
+    Prompt 8d punto 4: la web usa las MISMAS fechas dd/mm/aaaa y nombres
+    con mayúscula inicial que Telegram (judicial_formato.py) -- se arma
+    una copia de cada proceso con esos campos ya formateados para que
+    _macros.html (judicial_tarjetas) no tenga que reimplementar el
+    formato en Jinja. El orden/"coincide_acreedor" ya se decidió ANTES de
+    llamar a esta función (judicial_directo.ordenar_y_marcar_procesos
+    usa los nombres crudos para comparar).
+    """
+    import judicial_formato as jf
+
+    formateados = []
+    for p in procesos:
+        q = dict(p)
+        if p.get("despacho"):
+            q["despacho"] = jf.normalizar_nombre_visible(p["despacho"])
+        if p.get("departamento"):
+            q["departamento"] = jf.normalizar_nombre_visible(p["departamento"])
+        if p.get("fecha_radicacion"):
+            q["fecha_radicacion"] = jf.formatear_fecha_corta(p["fecha_radicacion"])
+        if p.get("fecha_ultima_actuacion"):
+            q["fecha_ultima_actuacion"] = jf.formatear_fecha_corta(p["fecha_ultima_actuacion"])
+        q["sujetos"] = [{"rol": s.get("rol"), "nombre": jf.normalizar_nombre_visible(s.get("nombre"))}
+                        for s in (p.get("sujetos") or [])]
+        formateados.append(q)
+    return formateados
+
+
 def _datos_judicial_para_vista(snapshot_judicial: Optional[dict], snapshot_rgm: Optional[dict]) -> Optional[dict]:
     """
     Prompt 8 punto 6: "Último resultado guardado"/ficha ya NO muestran el
@@ -501,8 +565,9 @@ def _datos_judicial_para_vista(snapshot_judicial: Optional[dict], snapshot_rgm: 
         except Exception:
             acreedor = None
 
+    ordenados = judicial_directo.ordenar_y_marcar_procesos(crudo.get("procesos") or [], acreedor)
     return {
-        "procesos": judicial_directo.ordenar_y_marcar_procesos(crudo.get("procesos") or [], acreedor),
+        "procesos": _formatear_procesos_para_vista(ordenados),
         "crudo": snapshot_judicial["datos"],
     }
 

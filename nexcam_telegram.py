@@ -1354,15 +1354,11 @@ class BotTelegram:
         """Prompt 8d punto 3: "📑 Proceso completo (PDF)" -- detalle +
         TODAS las actuaciones (anotaciones completas, sin recortar), se
         guarda también para la ficha del vehículo (procesos_pdf)."""
-        import judicial_directo
         import judicial_pdf
 
         try:
-            datos = judicial_directo.obtener_detalle_y_actuaciones_cacheado(placa, id_proceso)
-            detalle = datos.get("detalle") or {}
-            contenido = judicial_pdf.generar_pdf_proceso(detalle, datos.get("actuaciones") or [], placa)
-            ruta = judicial_pdf.guardar_pdf_proceso(contenido, detalle.get("radicado"), placa)
-            db.registrar_pdf_proceso(placa, id_proceso, detalle.get("radicado"), str(ruta))
+            generado = judicial_pdf.generar_y_guardar_pdf_proceso(placa, id_proceso)
+            ruta = generado["ruta"]
             self._enviar_documento(chat_id, ruta, f"📑 Proceso completo: {_fmt_placa(placa)}", ruta.name, "application/pdf")
             db.registrar_diagnostico_rgm("PDF de proceso enviado", None, placa, f"id_proceso={id_proceso}")
         except Exception as e:
