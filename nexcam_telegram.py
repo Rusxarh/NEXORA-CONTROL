@@ -1384,8 +1384,16 @@ class BotTelegram:
         return self._enviar(chat_id, texto, foto=foto, extra={"reply_markup": self._botones_vista(v0, es_admin)})
 
     def _resumen_carga(self, resumen: dict) -> str:
-        lineas = [f"📥 <b>Lista cargada</b>: {len(resumen['insertadas']) + len(resumen['duplicadas'])} placas "
-                  f"({len(resumen['insertadas'])} nuevas, {len(resumen['duplicadas'])} ya existían)."]
+        # Prompt 3 bloque A: una placa que ya estaba activa ahora se
+        # ACTUALIZA con lo que traiga la carga (antes "ya existía" y no se
+        # tocaba); una que está de baja no se toca (ninguna reactivación
+        # es automática).
+        n_nuevas = len(resumen["insertadas"])
+        n_actualizadas = len(resumen.get("actualizadas", []))
+        n_de_baja = len(resumen.get("de_baja_no_tocadas", []))
+        detalle_de_baja = f", {n_de_baja} de baja sin tocar" if n_de_baja else ""
+        lineas = [f"📥 <b>Lista cargada</b>: {n_nuevas + n_actualizadas + n_de_baja} placas "
+                  f"({n_nuevas} nuevas, {n_actualizadas} actualizadas{detalle_de_baja})."]
         if resumen["invalidas"]:
             muestra = ", ".join(f"<code>{_esc(x[:30])}</code>" for x in resumen["invalidas"][:5])
             lineas.append(f"No entendí {len(resumen['invalidas'])} línea(s): {muestra}{'…' if len(resumen['invalidas']) > 5 else ''}")

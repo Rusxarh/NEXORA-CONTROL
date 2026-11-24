@@ -28,9 +28,12 @@ partir de la sesión de servidor.
 """
 
 import re
+import threading
+import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi.responses import JSONResponse
 
 import database as db
 import usuarios
@@ -363,69 +366,107 @@ def carga_masiva_vista(
     )
 
 
-def procesar_carga_masiva_texto(lineas: str, usuario_id: int) -> dict:
+def _parsear_linea_carga_simple(linea: str) -> Optional[dict]:
     """
-    Lógica pura de la carga masiva (sin HTTP): usada por la ruta web de
-    abajo y por el comando /cargar del bot de Telegram (nexcam_telegram.py,
-    FASE 3), para no duplicar el parseo ni el cruce con NEXCAM en dos
-    lugares. Devuelve {"insertadas", "duplicadas", "invalidas"} igual que
-    antes de esta extracción (mismo formato, mismo comportamiento).
+    Una línea de texto pegado (o de un archivo .txt subido, ver
+    carga_archivos.py): "placa,tipo,observaciones", con tipo/observaciones
+    opcionales ("tipo" por defecto "carro"). None si la línea está vacía o
+    no trae nada reconocible como placa. No valida el FORMATO de la placa
+    todavía (eso lo hace el llamador, con normalizar_y_validar_placa):
+    separado así para poder reusar este mismo parseo desde carga_archivos.py
+    sin duplicarlo.
     """
-    placas_a_insertar = []
-    formato_invalido = []
+    linea = linea.strip()
+    if not linea:
+        return None
+    partes = [p.strip() for p in linea.split(",")]
+    placa_cruda = partes[0] if partes else ""
+    if not placa_cruda:
+        return None
+    return {
+        "placa_cruda": placa_cruda,
+        "tipo_vehiculo": partes[1].lower() if len(partes) > 1 and partes[1] else "carro",
+        "observaciones": partes[2] if len(partes) > 2 and partes[2] else None,
+    }
 
-    for linea in lineas.splitlines():
-        linea = linea.strip()
-        if not linea:
-            continue
 
-        partes = [p.strip() for p in linea.split(",")]
-        placa_cruda = partes[0] if partes else ""
-        if not placa_cruda:
-            continue
-
-        tipo_vehiculo = partes[1].lower() if len(partes) > 1 and partes[1] else "carro"
-        observaciones = partes[2] if len(partes) > 2 and partes[2] else None
-
-        try:
-            placa = normalizar_y_validar_placa(placa_cruda)
-        except db.ValorInvalidoError:
-            formato_invalido.append(placa_cruda.strip().upper())
-            continue
-
-        placas_a_insertar.append(
-            {
-                "placa": placa,
-                "tipo_vehiculo": tipo_vehiculo,
-                "observaciones": observaciones,
-            }
-        )
-
-    if placas_a_insertar:
-        resumen = db.insertar_placas_masivo(placas_a_insertar, usuario_id)
-    else:
-        resumen = {"insertadas": [], "duplicadas": [], "invalidas": []}
-
-    resumen["invalidas"] = resumen["invalidas"] + formato_invalido
-
-    # Integración NEXCAM (FASE 2/3): cruza esta carga con el historial de
-    # avistamientos de la cámara ("¿ya la vimos?"), lo guarda para la
-    # pestaña "Ya vistas" del panel y avisa por SSE/Telegram. Nunca debe
-    # romper la carga masiva en sí.
+def _avisar_ya_vistas_de_carga(placas: list) -> dict:
+    """Integración NEXCAM (FASE 2/3): cruza esta carga con el historial de
+    avistamientos de la cámara ("¿ya la vimos?"), lo guarda para la
+    pestaña "Ya vistas" del panel y avisa por SSE/Telegram. Nunca debe
+    romper la carga masiva en sí. Compartida por el texto pegado y la
+    carga desde archivo (carga_archivos.py)."""
     try:
         import nexcam_api
         import nexcam_db
 
-        placas_de_esta_carga = [item["placa"] for item in placas_a_insertar]
-        if placas_de_esta_carga:
-            cruce = nexcam_db.guardar_cruce_lista_dia(placas_de_esta_carga)
-            resumen["ya_vistas"] = cruce["ya_vistas"]
-            if cruce["ya_vistas"]:
-                nexcam_api.broadcast("retro.hits", {"origen": "panel", "hits": list(cruce["ya_vistas"].values())})
+        if not placas:
+            return {}
+        cruce = nexcam_db.guardar_cruce_lista_dia(placas)
+        if cruce["ya_vistas"]:
+            nexcam_api.broadcast("retro.hits", {"origen": "panel", "hits": list(cruce["ya_vistas"].values())})
+        return cruce["ya_vistas"]
     except Exception:
-        resumen["ya_vistas"] = {}
+        return {}
 
+
+def procesar_carga_masiva_texto(lineas: str, usuario_id: int) -> dict:
+    """
+    Lógica pura de la carga masiva (sin HTTP): usada por la ruta web de
+    abajo, por el comando /cargar del bot de Telegram (nexcam_telegram.py,
+    FASE 3) y, por la misma vía (db.aplicar_carga_masiva), por la carga
+    desde archivo (carga_archivos.py) -- "la MISMA función de carga se usa
+    en la web y en Telegram" (Prompt 3 bloque A). Devuelve {"insertadas",
+    "actualizadas", "de_baja_no_tocadas", "invalidas", "ya_vistas"}.
+
+    Prompt 3 bloque A: una placa que ya estaba activa se ACTUALIZA con lo
+    que traiga esta carga (lo que no traiga se conserva), conservando su
+    fecha de ingreso original -- antes (db.insertar_placas_masivo) una
+    placa repetida no se tocaba nunca, ni siquiera si traía una
+    observación nueva; ahora si ya está de baja tampoco se toca (ninguna
+    reactivación es automática).
+    """
+    items = []
+    formato_invalido = []
+
+    for linea in lineas.splitlines():
+        crudo = _parsear_linea_carga_simple(linea)
+        if crudo is None:
+            continue
+        try:
+            placa = normalizar_y_validar_placa(crudo["placa_cruda"])
+        except db.ValorInvalidoError:
+            formato_invalido.append(crudo["placa_cruda"].strip().upper())
+            continue
+        items.append({"placa": placa, "tipo_vehiculo": crudo["tipo_vehiculo"], "observaciones": crudo["observaciones"]})
+
+    if items:
+        resumen = db.aplicar_carga_masiva(items, usuario_id)
+    else:
+        resumen = {"insertadas": [], "actualizadas": [], "sin_cambios": [], "de_baja_no_tocadas": [], "invalidas": []}
+
+    resumen["invalidas"] = resumen["invalidas"] + formato_invalido
+    resumen["ya_vistas"] = _avisar_ya_vistas_de_carga([item["placa"] for item in items])
     return resumen
+
+
+def _listar_con_limite(placas: list, limite: int = 30) -> str:
+    """"A, B, C ... y N más" -- evita un mensaje enorme si alguien pega (o
+    sube) miles de líneas de una vez; el conteo siempre es el real."""
+    if len(placas) <= limite:
+        return ", ".join(placas)
+    return ", ".join(placas[:limite]) + f"… y {len(placas) - limite} más"
+
+
+def _mensaje_resumen_carga(resumen: dict) -> str:
+    partes = [f"{len(resumen['insertadas'])} insertada(s)"]
+    if resumen.get("actualizadas"):
+        partes.append(f"{len(resumen['actualizadas'])} actualizada(s): {_listar_con_limite(resumen['actualizadas'])}")
+    if resumen.get("de_baja_no_tocadas"):
+        partes.append(f"{len(resumen['de_baja_no_tocadas'])} de baja sin tocar: {_listar_con_limite(resumen['de_baja_no_tocadas'])}")
+    if resumen["invalidas"]:
+        partes.append(f"{len(resumen['invalidas'])} inválida(s): {_listar_con_limite(resumen['invalidas'])}")
+    return "Carga masiva: " + " · ".join(partes)
 
 
 @router.post("/vehiculos/carga-masiva")
@@ -442,33 +483,140 @@ def carga_masiva_procesar(
 
     resumen = procesar_carga_masiva_texto(lineas, usuario_actual["id"])
 
-    if not resumen["insertadas"] and not resumen["invalidas"] and not resumen["duplicadas"]:
+    if not any(resumen[c] for c in ("insertadas", "actualizadas", "de_baja_no_tocadas", "invalidas")):
         return usuarios.redirigir_con_mensaje(
             "/vehiculos/carga-masiva",
             "No se encontró ninguna placa válida para procesar.",
             "error",
         )
 
-    partes_mensaje = [f"{len(resumen['insertadas'])} insertada(s)"]
-    if resumen["duplicadas"]:
-        partes_mensaje.append(
-            f"{len(resumen['duplicadas'])} duplicada(s): {', '.join(resumen['duplicadas'])}"
-        )
-    if resumen["invalidas"]:
-        partes_mensaje.append(
-            f"{len(resumen['invalidas'])} inválida(s): {', '.join(resumen['invalidas'])}"
-        )
-
-    if resumen["insertadas"] and not resumen["duplicadas"] and not resumen["invalidas"]:
+    if resumen["insertadas"] and not resumen["de_baja_no_tocadas"] and not resumen["invalidas"]:
         tipo_mensaje = "exito"
-    elif not resumen["insertadas"]:
+    elif not resumen["insertadas"] and not resumen["actualizadas"]:
         tipo_mensaje = "error"
     else:
         tipo_mensaje = "info"
 
-    mensaje = "Carga masiva: " + " · ".join(partes_mensaje)
+    return usuarios.redirigir_con_mensaje("/vehiculos/carga-masiva", _mensaje_resumen_carga(resumen), tipo_mensaje)
 
-    return usuarios.redirigir_con_mensaje("/vehiculos/carga-masiva", mensaje, tipo_mensaje)
+
+# ---------------------------------------------------------------------------
+# Antes del Prompt 10 (bloque A del Prompt 3): "Subir archivo" (.txt, .csv,
+# .xlsx y arrastrar y soltar) en Carga masiva -- usa la misma función de
+# carga que el texto pegado (database.aplicar_carga_masiva), por bloques
+# de TAMANO_LOTE_CARGA_ARCHIVO con una barra de avance. Un archivo real
+# (CARGAR_base_consolidada.csv) trae más de 100.000 placas: se procesa en
+# un hilo aparte (nunca bloquea la petición HTTP) y el navegador pregunta
+# el avance con GET /vehiculos/carga-masiva/progreso/<job_id>.
+#
+# Los trabajos viven en memoria (_TRABAJOS_CARGA_ARCHIVO), no en la base:
+# es una operación interactiva de Admin mientras mira la pantalla, no algo
+# que deba sobrevivir un reinicio de NEXORA -- igual que rgm_cola guarda
+# el "trabajador conectado" en memoria, no en disco.
+# ---------------------------------------------------------------------------
+
+_TRABAJOS_CARGA_ARCHIVO: dict = {}
+_LOCK_TRABAJOS_CARGA_ARCHIVO = threading.Lock()
+
+
+def _respaldar_antes_de_carga_archivo(nombre_archivo: str):
+    """Regla de CLAUDE.md (y del propio bloque A: "con copia de seguridad
+    de MasterPlacas.db antes"): un archivo puede traer cientos de miles de
+    filas -- antes de tocar la base, una copia con marca de tiempo. Nunca
+    debe impedir la carga si la copia falla (por ejemplo, disco lleno)."""
+    try:
+        import shutil
+        from datetime import datetime
+
+        marca = datetime.now().strftime("%Y%m%d-%H%M%S")
+        destino = db.DB_PATH.with_name(f"{db.DB_PATH.stem}.antes-carga-{marca}.bak")
+        shutil.copy2(db.DB_PATH, destino)
+    except Exception as e:
+        print(f'AVISO: no se pudo respaldar {db.DB_PATH.name} antes de cargar "{nombre_archivo}": {e}')
+
+
+def _procesar_archivo_de_carga_en_segundo_plano(job_id: str, nombre_archivo: str, contenido: bytes, usuario_id: int):
+    import carga_archivos
+
+    try:
+        leido = carga_archivos.leer_items_de_archivo(nombre_archivo, contenido)
+    except Exception as e:
+        with _LOCK_TRABAJOS_CARGA_ARCHIVO:
+            _TRABAJOS_CARGA_ARCHIVO[job_id].update(estado="error", error=str(e))
+        return
+
+    items = leido["items"]
+    with _LOCK_TRABAJOS_CARGA_ARCHIVO:
+        _TRABAJOS_CARGA_ARCHIVO[job_id]["total"] = len(items)
+    if items:
+        _respaldar_antes_de_carga_archivo(nombre_archivo)
+
+    acumulado = {"insertadas": [], "actualizadas": [], "sin_cambios": [], "de_baja_no_tocadas": [],
+                 "invalidas": list(leido["invalidas"])}
+    procesadas = 0
+    for lote in carga_archivos.lotes(items, carga_archivos.TAMANO_LOTE_CARGA_ARCHIVO):
+        # registrar_auditoria_individual=False: un archivo real trae
+        # cientos de miles de filas -- un ALTA_PLACA por cada una
+        # inundaría logs_auditoria; se deja un único resumen al final.
+        parcial = db.aplicar_carga_masiva(lote, usuario_id, registrar_auditoria_individual=False)
+        for clave in acumulado:
+            acumulado[clave].extend(parcial[clave])
+        procesadas += len(lote)
+        with _LOCK_TRABAJOS_CARGA_ARCHIVO:
+            _TRABAJOS_CARGA_ARCHIVO[job_id]["procesadas"] = procesadas
+
+    db.registrar_log(
+        usuario_id, "CARGA_MASIVA_ARCHIVO", None,
+        f'Archivo "{nombre_archivo}": {len(acumulado["insertadas"])} insertadas, '
+        f'{len(acumulado["actualizadas"])} actualizadas, {len(acumulado["de_baja_no_tocadas"])} de baja sin tocar, '
+        f'{len(acumulado["invalidas"])} inválidas.',
+    )
+
+    ya_vistas = _avisar_ya_vistas_de_carga(acumulado["insertadas"])
+    with _LOCK_TRABAJOS_CARGA_ARCHIVO:
+        _TRABAJOS_CARGA_ARCHIVO[job_id].update(estado="listo", resumen={
+            "insertadas": len(acumulado["insertadas"]), "actualizadas": len(acumulado["actualizadas"]),
+            "sin_cambios": len(acumulado["sin_cambios"]), "de_baja_no_tocadas": len(acumulado["de_baja_no_tocadas"]),
+            "invalidas": len(acumulado["invalidas"]), "ya_vistas": len(ya_vistas),
+        })
+
+
+@router.post("/vehiculos/carga-masiva/subir-archivo")
+async def carga_masiva_subir_archivo(
+    archivo: UploadFile = File(...),
+    usuario_actual: dict = Depends(usuarios.requerir_admin),
+):
+    import carga_archivos
+
+    nombre = archivo.filename or ""
+    extension = nombre.rsplit(".", 1)[-1].lower() if "." in nombre else ""
+    if extension not in carga_archivos.EXTENSIONES_ACEPTADAS:
+        return JSONResponse(
+            {"ok": False, "error": f'Formato de archivo no reconocido: ".{extension}". Usa .txt, .csv o .xlsx.'},
+            status_code=400,
+        )
+
+    contenido = await archivo.read()
+    job_id = uuid.uuid4().hex
+    with _LOCK_TRABAJOS_CARGA_ARCHIVO:
+        _TRABAJOS_CARGA_ARCHIVO[job_id] = {"total": 0, "procesadas": 0, "estado": "en_curso", "resumen": None, "error": None}
+
+    hilo = threading.Thread(
+        target=_procesar_archivo_de_carga_en_segundo_plano,
+        args=(job_id, nombre, contenido, usuario_actual["id"]),
+        daemon=True,
+    )
+    hilo.start()
+    return {"ok": True, "job_id": job_id}
+
+
+@router.get("/vehiculos/carga-masiva/progreso/{job_id}")
+def carga_masiva_progreso(job_id: str, usuario_actual: dict = Depends(usuarios.requerir_admin)):
+    with _LOCK_TRABAJOS_CARGA_ARCHIVO:
+        trabajo = _TRABAJOS_CARGA_ARCHIVO.get(job_id)
+    if trabajo is None:
+        return JSONResponse({"ok": False, "error": "Trabajo no encontrado."}, status_code=404)
+    return {"ok": True, **trabajo}
 
 
 # ---------------------------------------------------------------------------

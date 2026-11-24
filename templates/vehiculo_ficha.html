@@ -41,7 +41,7 @@
   {% endif %}
 
   <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm card">
-    <div class="flex justify-between gap-3"><dt class="text-zinc-500">Tipo</dt><dd class="text-zinc-300 capitalize">{{ vehiculo.tipo_vehiculo }}</dd></div>
+    <div class="flex justify-between gap-3"><dt class="text-zinc-500">Tipo</dt><dd class="text-zinc-300 capitalize">{{ vehiculo.tipo_vehiculo }}{% if vehiculo.clase %} · {{ vehiculo.clase | title }}{% endif %}</dd></div>
     <div class="flex justify-between gap-3"><dt class="text-zinc-500">Marca / Línea</dt><dd class="text-zinc-300">{{ vehiculo.marca or '—' }} / {{ vehiculo.linea or '—' }}</dd></div>
     <div class="flex justify-between gap-3"><dt class="text-zinc-500">Modelo</dt><dd class="text-zinc-300">{{ vehiculo.modelo or '—' }}</dd></div>
     <div class="flex justify-between gap-3"><dt class="text-zinc-500">Color</dt><dd class="text-zinc-300">{{ vehiculo.color or '—' }}</dd></div>
@@ -138,6 +138,21 @@
         <p class="text-sm text-zinc-500">Sin RGM todavía · usa "🔎 Consultar" arriba.</p>
         {% endif %}
       </section>
+
+      {% if usuario_actual.rol == 'Admin' and (vehiculo.banco or vehiculo.deudor_nombre or vehiculo.deudor_documento or vehiculo.direcciones) %}
+      <!-- Prompt 3 bloque A (CSV CARGAR_base_consolidada.csv): banco,
+           deudor, documento y direcciones vienen de una carga masiva
+           (texto o archivo), no del RGM -- datos SENSIBLES, solo Admin,
+           nunca a la app NEXCAM ni a un Operador. -->
+      <section class="card">
+        <h2 class="text-sm font-semibold text-zinc-100 mb-2">Banco / deudor (de la carga)</h2>
+        <div class="space-y-1 text-sm">
+          {% if vehiculo.banco %}<p>🏦 Banco: <span class="text-zinc-300">{{ vehiculo.banco }}</span></p>{% endif %}
+          {% if vehiculo.deudor_nombre %}<p>👤 Deudor: <span class="text-zinc-300">{{ vehiculo.deudor_nombre }}{% if vehiculo.deudor_documento %} · {{ vehiculo.deudor_documento }}{% endif %}</span></p>{% endif %}
+          {% if vehiculo.direcciones %}<p>📍 Direcciones: <span class="text-zinc-300">{{ vehiculo.direcciones }}</span></p>{% endif %}
+        </div>
+      </section>
+      {% endif %}
 
       <section class="card">
         <div class="flex items-center justify-between gap-2 mb-2">

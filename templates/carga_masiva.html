@@ -32,34 +32,66 @@ DEF456,carro,Uso temporal</pre>
   </section>
 
   <!-- Formulario de carga -->
-  <section class="lg:col-span-2 card">
-    <div class="flex items-center justify-between mb-4">
-      <h2 class="text-sm font-semibold text-zinc-100">Pegar placas a registrar</h2>
-      <span id="contador-lineas" class="text-xs text-zinc-500">0 línea(s)</span>
-    </div>
-
-    <form method="post" action="/vehiculos/carga-masiva" class="space-y-3">
-      <p class="text-[11px] text-zinc-500">
-        Se registrará como: <span class="text-zinc-300 font-medium">{{ usuario_actual.nombre }}</span>
-      </p>
-
-      <div>
-        <label class="label-field">Placas (una por línea)</label>
-        <textarea
-          id="textarea-lineas"
-          name="lineas"
-          rows="12"
-          required
-          oninput="actualizarContadorLineas()"
-          placeholder="ABC123,carro,Vehículo de reparto&#10;XYZ987,moto&#10;DEF456,carro"
-          class="input-field font-mono"
-        ></textarea>
+  <section class="lg:col-span-2 card space-y-6">
+    <div>
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-sm font-semibold text-zinc-100">Pegar placas a registrar</h2>
+        <span id="contador-lineas" class="text-xs text-zinc-500">0 línea(s)</span>
       </div>
 
-      <button type="submit" class="btn-primary w-full">
-        Procesar carga masiva
-      </button>
-    </form>
+      <form method="post" action="/vehiculos/carga-masiva" class="space-y-3">
+        <p class="text-[11px] text-zinc-500">
+          Se registrará como: <span class="text-zinc-300 font-medium">{{ usuario_actual.nombre }}</span>
+        </p>
+
+        <div>
+          <label class="label-field">Placas (una por línea)</label>
+          <textarea
+            id="textarea-lineas"
+            name="lineas"
+            rows="12"
+            required
+            oninput="actualizarContadorLineas()"
+            placeholder="ABC123,carro,Vehículo de reparto&#10;XYZ987,moto&#10;DEF456,carro"
+            class="input-field font-mono"
+          ></textarea>
+        </div>
+
+        <button type="submit" class="btn-primary w-full">
+          Procesar carga masiva
+        </button>
+      </form>
+    </div>
+
+    <!-- Antes del Prompt 10 (bloque A del Prompt 3): "Subir archivo"
+         (.txt, .csv o .xlsx) y arrastrar y soltar -- usa la misma función
+         de carga que el texto pegado, por bloques de 1.000 con barra de
+         avance (necesario: un archivo real puede traer más de 100.000
+         placas). Acepta las columnas de "CARGAR_base_consolidada.csv"
+         (fecha de ingreso original, banco, deudor, documento, datos del
+         vehículo y direcciones); banco/deudor/documento/direcciones son
+         sensibles y solo se muestran a Admin (ficha del vehículo). -->
+    <div class="pt-6 border-t border-zinc-800">
+      <h2 class="text-sm font-semibold text-zinc-100 mb-1">O sube un archivo</h2>
+      <p class="text-xs text-zinc-500 mb-3">.txt, .csv o .xlsx (por ejemplo, el CSV consolidado con banco, deudor, documento y direcciones: esos datos solo los ve un Admin).</p>
+
+      <div
+        id="zona-arrastrar-archivo"
+        class="border-2 border-dashed border-zinc-700 rounded-lg p-6 text-center cursor-pointer hover:border-zinc-500 transition"
+        onclick="document.getElementById('input-archivo-carga').click()"
+      >
+        <p class="text-sm text-zinc-400">Arrastra un archivo aquí, o</p>
+        <button type="button" class="btn-secondary btn-sm mt-2">📁 Subir archivo</button>
+        <input id="input-archivo-carga" type="file" accept=".txt,.csv,.xlsx,.xlsm" class="hidden">
+      </div>
+
+      <div id="progreso-archivo-carga" class="hidden mt-4 space-y-2">
+        <p id="progreso-archivo-texto" class="text-sm text-zinc-300">Leyendo archivo…</p>
+        <progress id="progreso-archivo-barra" class="w-full" value="0" max="1"></progress>
+      </div>
+
+      <div id="resultado-archivo-carga" class="hidden mt-4 text-sm text-zinc-300"></div>
+    </div>
   </section>
 </div>
 {% endblock %}
@@ -74,5 +106,106 @@ DEF456,carro,Uso temporal</pre>
     document.getElementById('contador-lineas').textContent = lineasValidas.length + ' línea(s)';
   }
   document.addEventListener('DOMContentLoaded', actualizarContadorLineas);
+
+  (function () {
+    var zona = document.getElementById('zona-arrastrar-archivo');
+    var input = document.getElementById('input-archivo-carga');
+    var elProgreso = document.getElementById('progreso-archivo-carga');
+    var elProgresoTexto = document.getElementById('progreso-archivo-texto');
+    var elProgresoBarra = document.getElementById('progreso-archivo-barra');
+    var elResultado = document.getElementById('resultado-archivo-carga');
+    var POLL_MS = 400;
+
+    function mostrarResultado(texto, esError) {
+      elResultado.textContent = texto;
+      elResultado.className = 'mt-4 text-sm ' + (esError ? 'text-red-300' : 'text-zinc-300');
+      elResultado.classList.remove('hidden');
+    }
+
+    function vigilarProgreso(jobId) {
+      fetch('/vehiculos/carga-masiva/progreso/' + jobId)
+        .then(function (r) { return r.json(); })
+        .then(function (datos) {
+          if (!datos.ok) {
+            elProgreso.classList.add('hidden');
+            mostrarResultado('No se pudo seguir el avance del archivo.', true);
+            return;
+          }
+          if (datos.total > 0) {
+            elProgresoBarra.max = datos.total;
+            elProgresoBarra.value = datos.procesadas;
+            elProgresoTexto.textContent = 'Procesando ' + datos.procesadas + ' de ' + datos.total + '…';
+          }
+          if (datos.estado === 'error') {
+            elProgreso.classList.add('hidden');
+            mostrarResultado('No se pudo procesar el archivo: ' + (datos.error || 'error desconocido'), true);
+            return;
+          }
+          if (datos.estado === 'listo') {
+            elProgreso.classList.add('hidden');
+            var r = datos.resumen || {};
+            var partes = [(r.insertadas || 0) + ' insertada(s)'];
+            if (r.actualizadas) partes.push(r.actualizadas + ' actualizada(s)');
+            if (r.sin_cambios) partes.push(r.sin_cambios + ' sin cambios (ya estaban al día)');
+            if (r.de_baja_no_tocadas) partes.push(r.de_baja_no_tocadas + ' de baja (no se tocaron)');
+            if (r.invalidas) partes.push(r.invalidas + ' inválida(s)');
+            if (r.ya_vistas) partes.push(r.ya_vistas + ' ya las había visto la cámara');
+            mostrarResultado('Archivo procesado: ' + partes.join(' · ') + '.', false);
+            return;
+          }
+          setTimeout(function () { vigilarProgreso(jobId); }, POLL_MS);
+        })
+        .catch(function () {
+          setTimeout(function () { vigilarProgreso(jobId); }, POLL_MS);
+        });
+    }
+
+    function subirArchivo(archivo) {
+      if (!archivo) return;
+      elResultado.classList.add('hidden');
+      elProgresoTexto.textContent = 'Subiendo "' + archivo.name + '"…';
+      elProgresoBarra.removeAttribute('value');
+      elProgreso.classList.remove('hidden');
+
+      var datos = new FormData();
+      datos.append('archivo', archivo);
+      fetch('/vehiculos/carga-masiva/subir-archivo', { method: 'POST', body: datos })
+        .then(function (r) { return r.json(); })
+        .then(function (resp) {
+          if (!resp.ok) {
+            elProgreso.classList.add('hidden');
+            mostrarResultado(resp.error || 'No se pudo subir el archivo.', true);
+            return;
+          }
+          vigilarProgreso(resp.job_id);
+        })
+        .catch(function () {
+          elProgreso.classList.add('hidden');
+          mostrarResultado('No se pudo subir el archivo (sin conexión).', true);
+        });
+    }
+
+    input.addEventListener('change', function () {
+      subirArchivo(input.files[0]);
+      input.value = '';
+    });
+
+    ['dragenter', 'dragover'].forEach(function (evento) {
+      zona.addEventListener(evento, function (e) {
+        e.preventDefault();
+        zona.classList.add('border-zinc-500');
+      });
+    });
+    ['dragleave', 'drop'].forEach(function (evento) {
+      zona.addEventListener(evento, function (e) {
+        e.preventDefault();
+        zona.classList.remove('border-zinc-500');
+      });
+    });
+    zona.addEventListener('drop', function (e) {
+      var archivo = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (archivo) subirArchivo(archivo);
+    });
+  })();
 </script>
 {% endblock %}

@@ -535,6 +535,22 @@ def _migrar_columnas_vehiculo_rgm(conn):
             conn.execute(f"ALTER TABLE vehiculos ADD COLUMN {columna} TEXT")
 
 
+def _migrar_columnas_vehiculo_consolidado(conn):
+    """
+    Prompt 3 bloque A / archivo "CARGAR_base_consolidada.csv": banco,
+    deudor_nombre, deudor_documento y direcciones son datos SENSIBLES --
+    solo se muestran a Admin (web/ficha) y NUNCA llegan a la app NEXCAM ni
+    a un Operador (nexcam_db._vehiculo_para_app es una lista blanca
+    explícita de campos: basta con no agregarlos ahí, no hace falta
+    ningún filtro adicional). "clase" (AUTOMOVIL, CAMPERO...) no es
+    sensible, viene del mismo archivo.
+    """
+    columnas = {fila["name"] for fila in conn.execute("PRAGMA table_info(vehiculos)")}
+    for columna in ("banco", "deudor_nombre", "deudor_documento", "direcciones", "clase"):
+        if columna not in columnas:
+            conn.execute(f"ALTER TABLE vehiculos ADD COLUMN {columna} TEXT")
+
+
 def _migrar_rgm_cola_alcance(conn):
     """
     FASE 6/7: `rgm_cola` nació con la columna `tipo` (solo RGM/JUDICIAL) en
@@ -776,6 +792,7 @@ def inicializar_db():
         _migrar_codigo_operativo(conn)
         _migrar_columnas_vehiculo_nexcam(conn)
         _migrar_columnas_vehiculo_rgm(conn)
+        _migrar_columnas_vehiculo_consolidado(conn)
         _migrar_prioridad_rgm_cola(conn)
     _migrar_backfill_rgm_a_vehiculos()
     print(f"Base de datos inicializada en: {DB_PATH}")
@@ -960,27 +977,82 @@ def insertar_placa(
         return vehiculo_id
 
 
-def insertar_placas_masivo(placas: list, usuario_id: int) -> dict:
-    """
-    Inserta varias placas a la vez.
-    `placas` es una lista de dicts: {"placa": ..., "tipo_vehiculo": ..., "observaciones": ...}
-    Devuelve un resumen {"insertadas": [...], "duplicadas": [...], "invalidas": [...]}
-    para que la carga masiva no se detenga por un solo error.
-    """
-    resumen = {"insertadas": [], "duplicadas": [], "invalidas": []}
+# Prompt 3 bloque A: campos del vehículo que una carga masiva puede traer
+# además de placa/tipo/observaciones -- banco/deudor_nombre/deudor_documento/
+# direcciones son sensibles (solo Admin, ver _migrar_columnas_vehiculo_consolidado);
+# marca/linea/modelo/color/tipo_servicio/clase no lo son.
+CAMPOS_VEHICULO_CARGA_MASIVA = (
+    "banco", "deudor_nombre", "deudor_documento", "direcciones",
+    "marca", "linea", "modelo", "color", "tipo_servicio", "clase",
+)
 
-    for item in placas:
-        placa = item.get("placa", "").strip().upper()
-        tipo = item.get("tipo_vehiculo")
-        obs = item.get("observaciones")
 
-        try:
-            insertar_placa(placa, tipo, usuario_id, obs)
-            resumen["insertadas"].append(placa)
-        except PlacaDuplicadaError:
-            resumen["duplicadas"].append(placa)
-        except ValorInvalidoError:
-            resumen["invalidas"].append(placa)
+def aplicar_carga_masiva(items: list, usuario_id: int, registrar_auditoria_individual: bool = True) -> dict:
+    """
+    Prompt 3 bloque A: "la MISMA función de carga se usa en la web y en
+    Telegram" -- usada tanto por el pegado de texto (vehiculos.
+    procesar_carga_masiva_texto) como por la carga desde archivo
+    (carga_archivos.py). A diferencia de insertar_placa (que SOLO inserta
+    y lanza PlacaDuplicadaError si la placa ya existe, sea cual sea su
+    estado), esta:
+    - si la placa no existe: la inserta (fecha_ingreso = la que traiga el
+      item en "fecha_ingreso_original" -- la fecha real de ingreso que
+      traen archivos históricos como CARGAR_base_consolidada.csv -- o
+      "ahora" si no trae ninguna).
+    - si existe y está ACTIVA: actualiza solo los campos de
+      CAMPOS_VEHICULO_CARGA_MASIVA que el item trae con un valor no vacío
+      (lo que no traiga se conserva) y NUNCA toca fecha_ingreso ni estado.
+    - si existe y está DADA DE BAJA: no la toca (ninguna reactivación es
+      automática) -- queda en "de_baja_no_tocadas" para que quien cargó
+      decida a mano si debe reactivarla.
+    Cada item es un dict: {"placa", "tipo_vehiculo" (por defecto "carro"),
+    "observaciones", "fecha_ingreso_original", y cualquiera de
+    CAMPOS_VEHICULO_CARGA_MASIVA}. `registrar_auditoria_individual=False`
+    deja de registrar un ALTA_PLACA por cada placa nueva -- lo usa
+    carga_archivos.py para no escribir cientos de miles de filas en
+    logs_auditoria en la carga de un archivo enorme; en su lugar, el
+    llamador deja un único log resumen del trabajo completo.
+    """
+    resumen = {"insertadas": [], "actualizadas": [], "sin_cambios": [], "de_baja_no_tocadas": [], "invalidas": []}
+    campos_actualizables_en_existente = (*CAMPOS_VEHICULO_CARGA_MASIVA, "observaciones")
+
+    with get_connection() as conn:
+        for item in items:
+            placa = (item.get("placa") or "").strip().upper()
+            if not placa:
+                continue
+            tipo_vehiculo = item.get("tipo_vehiculo") or "carro"
+            if tipo_vehiculo not in TIPOS_VEHICULO:
+                resumen["invalidas"].append(placa)
+                continue
+
+            existente = conn.execute("SELECT estado FROM vehiculos WHERE placa = ?", (placa,)).fetchone()
+            if existente is None:
+                campos_extra = {campo: item[campo] for campo in CAMPOS_VEHICULO_CARGA_MASIVA if item.get(campo)}
+                fecha_ingreso = item.get("fecha_ingreso_original") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                columnas = ["placa", "tipo_vehiculo", "observaciones", "fecha_ingreso", *campos_extra.keys()]
+                valores = [placa, tipo_vehiculo, item.get("observaciones"), fecha_ingreso, *campos_extra.values()]
+                conn.execute(
+                    f"INSERT INTO vehiculos ({', '.join(columnas)}) VALUES ({', '.join('?' for _ in columnas)})",
+                    valores,
+                )
+                if registrar_auditoria_individual:
+                    _registrar_log(conn, usuario_id, "ALTA_PLACA", placa, item.get("observaciones"))
+                resumen["insertadas"].append(placa)
+            elif existente["estado"] == "baja":
+                resumen["de_baja_no_tocadas"].append(placa)
+            else:
+                # "observaciones" sí se puede actualizar en una placa activa
+                # (a diferencia de fecha_ingreso_original, que solo cuenta
+                # al insertar); el resto son los campos del archivo.
+                campos_extra = {campo: item[campo] for campo in campos_actualizables_en_existente if item.get(campo)}
+                if campos_extra:
+                    asignaciones = ", ".join(f"{c} = ?" for c in campos_extra)
+                    conn.execute(f"UPDATE vehiculos SET {asignaciones} WHERE placa = ?",
+                                 (*campos_extra.values(), placa))
+                    resumen["actualizadas"].append(placa)
+                else:
+                    resumen["sin_cambios"].append(placa)
 
     return resumen
 
